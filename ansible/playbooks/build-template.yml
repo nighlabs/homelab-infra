@@ -1,0 +1,15 @@
+---
+# Build the Flatcar Proxmox template (idempotent). Run once up front, or any
+# time you bump flatcar_version. Separate from node provisioning so re-running
+# a node play doesn't touch the template.
+- name: Build Flatcar template
+  hosts: localhost
+  gather_facts: false
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ proxmox_api_token_secret }}"
+  roles:
+    - flatcar_template

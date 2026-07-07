@@ -1,0 +1,11 @@
+---
+# Derived download location for the Flatcar proxmoxve image. Channel/version
+# and the template vmid/name are shared config in group_vars/all/vars.yml so the
+# flatcar_vm role can reference the same template name.
+flatcar_image_url: >-
+  https://{{ flatcar_channel }}.release.flatcar-linux.net/amd64-usr/{{ flatcar_version }}/flatcar_production_proxmoxve_image.img
+flatcar_image_tmp: "/tmp/flatcar_production_proxmoxve_image.img"
+
+# Modest defaults for the template shell; per-node specs are set at clone time.
+flatcar_template_cores: 2
+flatcar_template_memory_mb: 4096

@@ -1,0 +1,139 @@
+---
+# Provision one Flatcar VM shell (no k3s). Expects `hostname` (node map key)
+# and `node` (its value dict) to be set by the caller. Proxmox API credentials
+# are applied via module_defaults (group/community.proxmox.proxmox) in the play.
+
+- name: "{{ hostname }} — preflight + derive facts"
+  ansible.builtin.include_tasks: preflight.yml
+
+# --- 1. Render + transpile Ignition (on the control node) ------------------
+- name: "{{ hostname }} — create local build dir"
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: "-{{ hostname }}-ign"
+  register: build_dir
+  delegate_to: localhost
+  changed_when: false
+
+- name: "{{ hostname }} — ensure files/ subdir for Butane local references"
+  ansible.builtin.file:
+    path: "{{ build_dir.path }}/files"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  changed_when: false
+
+- name: "{{ hostname }} — render networkd units"
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "{{ build_dir.path }}/files/{{ item | replace('.j2', '') }}"
+    mode: "0644"
+  loop:
+    - 00-eth0.network.j2
+    - 10-eth1.network.j2
+  delegate_to: localhost
+  changed_when: false
+
+- name: "{{ hostname }} — render Butane config"
+  ansible.builtin.template:
+    src: butane.yaml.j2
+    dest: "{{ build_dir.path }}/{{ hostname }}.bu"
+    mode: "0644"
+  delegate_to: localhost
+  changed_when: false
+
+- name: "{{ hostname }} — transpile Butane -> Ignition (--strict)"
+  ansible.builtin.command:
+    cmd: butane --strict --files-dir {{ build_dir.path }} {{ build_dir.path }}/{{ hostname }}.bu
+  register: butane_out
+  delegate_to: localhost
+  changed_when: false
+
+- name: "{{ hostname }} — write Ignition JSON"
+  ansible.builtin.copy:
+    content: "{{ butane_out.stdout }}"
+    dest: "{{ build_dir.path }}/{{ hostname }}.ign"
+    mode: "0644"
+  delegate_to: localhost
+  changed_when: false
+
+# --- 2. Deliver the Ignition to the Proxmox snippet storage ----------------
+# Assert the snippets dir is present before we write into it. It's created
+# root-owned in one-time host prep (see README "Proxmox SSH access"), with the
+# provisioner granted write via ACL — so DON'T set owner/mode here: as the
+# non-root provisioner a chmod would fail (it has write, not ownership). No
+# `mode` = pure existence check on an existing dir; only creates one if run as
+# a user that can (e.g. root), otherwise fails fast with a clear error.
+- name: "{{ hostname }} — assert snippet dir exists on the Proxmox host"
+  ansible.builtin.file:
+    path: "{{ proxmox_snippet_dir }}"
+    state: directory
+  delegate_to: "{{ proxmox_ssh_host }}"
+
+- name: "{{ hostname }} — upload Ignition snippet to Proxmox host"
+  ansible.builtin.copy:
+    src: "{{ build_dir.path }}/{{ hostname }}.ign"
+    dest: "{{ proxmox_snippet_dir }}/{{ hostname }}.ign"
+    mode: "0644"
+  delegate_to: "{{ proxmox_ssh_host }}"
+
+# --- 3. Clone the template + shape the VM ----------------------------------
+- name: "{{ hostname }} — clone Flatcar template -> VM {{ vmid }}"
+  community.proxmox.proxmox_kvm:
+    node: "{{ proxmox_node }}"
+    clone: "{{ flatcar_template_name }}"   # source template (by name)
+    name: "{{ hostname }}"
+    newid: "{{ vmid }}"
+    full: true
+    storage: "{{ proxmox_vm_storage }}"
+    timeout: 300
+  register: clone_result
+
+- name: "{{ hostname }} — configure CPU/RAM/NICs (MACs pinned, eth1 jumbo)"
+  community.proxmox.proxmox_kvm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid }}"
+    update: true
+    cores: "{{ node.cores | default(4) }}"
+    memory: "{{ node.memory_mb | default(8192) }}"
+    cpu: host
+    scsihw: virtio-scsi-single
+    agent: "enabled=1"
+    onboot: true
+    net:
+      net0: "virtio={{ eth0_mac }},bridge={{ dmz_network.bridge }},tag={{ dmz_network.vlan }}"
+      net1: "virtio={{ eth1_mac }},bridge={{ ceph_public_network.bridge }},tag={{ ceph_public_network.vlan }},mtu={{ ceph_public_network.mtu }}"
+
+- name: "{{ hostname }} — attach data disk (virtio1 -> /dev/vdb)"
+  community.proxmox.proxmox_disk:
+    vmid: "{{ vmid }}"
+    disk: virtio1
+    storage: "{{ proxmox_vm_storage }}"
+    size: "{{ node.data_disk_gb | default(100) }}"
+    backup: false
+    create: regular
+
+# proxmox_kvm doesn't expose cicustom on the pinned version, so set it via a
+# delegated `qm set` on the PVE host — settable by a scoped token, no root@pam
+# (design doc §3.4 / Appendix A). Requires a cloud-init drive on the template.
+- name: "{{ hostname }} — attach Ignition via cicustom"
+  ansible.builtin.command:
+    cmd: >-
+      {{ proxmox_qm }} set {{ vmid }}
+      --cicustom "user={{ proxmox_snippet_storage }}:snippets/{{ hostname }}.ign"
+  delegate_to: "{{ proxmox_ssh_host }}"
+  changed_when: true
+
+# --- 4. Boot -----------------------------------------------------------------
+- name: "{{ hostname }} — ensure VM is running"
+  community.proxmox.proxmox_kvm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid }}"
+    state: started
+
+- name: "{{ hostname }} — clean up local build dir"
+  ansible.builtin.file:
+    path: "{{ build_dir.path }}"
+    state: absent
+  delegate_to: localhost
+  changed_when: false

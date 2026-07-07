@@ -1,0 +1,80 @@
+# Butane config for {{ hostname }} — rendered from the node map, then
+# transpiled with `butane --strict` to Ignition and delivered as the
+# config-drive user-data via `qm set --cicustom` (design doc §3.1 / Appendix A).
+#
+# The two networkd units are rendered to <build>/files/ from their own Jinja2
+# templates and pulled in here with `contents.local:` (transpiled with
+# --files-dir <build>), which keeps YAML indentation sane.
+variant: flatcar
+version: 1.1.0
+
+passwd:
+  users:
+    # Dedicated admin user (not `core` left as the only account) — key-only.
+    - name: {{ node_user }}
+      groups:
+        - sudo
+        - docker
+      ssh_authorized_keys:
+{% for key in ssh_authorized_keys %}
+        - {{ key }}
+{% endfor %}
+    # Also key `core` for break-glass recovery; it has no password either.
+    - name: core
+      ssh_authorized_keys:
+{% for key in ssh_authorized_keys %}
+        - {{ key }}
+{% endfor %}
+
+storage:
+  files:
+    # Hostname from Ignition (no DHCP option 12 / reverse-DNS dependency).
+    - path: /etc/hostname
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: {{ hostname }}
+
+    # Static addressing — both NICs, bound by MAC.
+    - path: /etc/systemd/network/00-eth0.network
+      mode: 0644
+      contents:
+        local: files/00-eth0.network
+    - path: /etc/systemd/network/10-eth1.network
+      mode: 0644
+      contents:
+        local: files/10-eth1.network
+
+    # Belt-and-suspenders: forbid password auth outright (key-only).
+    - path: /etc/ssh/sshd_config.d/10-no-passwords.conf
+      mode: 0600
+      contents:
+        inline: |
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+
+    # NOPASSWD sudo for the admin user — the account has no password, so
+    # unattended `sudo reboot` (a definition-of-done check) would otherwise fail.
+    - path: /etc/sudoers.d/10-{{ node_user }}
+      mode: 0440
+      contents:
+        inline: |
+          {{ node_user }} ALL=(ALL) NOPASSWD: ALL
+
+  # Second virtio disk (virtio1 -> /dev/vdb) for local data, kept decoupled
+  # from the OS disk so the boot disk can be rebuilt without losing this.
+  disks:
+    - device: /dev/vdb
+      wipe_table: false
+      partitions:
+        - number: 1
+          label: data
+  filesystems:
+    - path: {{ data_mount_point }}
+      device: /dev/disk/by-partlabel/data
+      format: ext4
+      label: data
+      # Reformat on a from-scratch rebuild — a stale FS signature would
+      # otherwise make Ignition skip formatting (ansible/CLAUDE.md §7 item 1).
+      wipe_filesystem: true
+      with_mount_unit: true

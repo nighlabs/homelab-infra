@@ -1,0 +1,61 @@
+---
+# Template for the real vault — the encrypted home for EVERYTHING
+# environment-revealing (the API credential AND the topology).
+#
+# IMPORTANT: the real file goes in the group_vars/all/ DIRECTORY (so it loads
+# for group `all` next to vars.yml). This .example lives one level up, directly
+# under group_vars/, precisely so it does NOT auto-load. Copy it down, fill in
+# real values, then encrypt in place:
+#
+#   cp inventory/group_vars/vault.example.yml inventory/group_vars/all/vault.yml
+#   uv run ansible-vault encrypt inventory/group_vars/all/vault.yml
+#
+# The real vault.yml MUST be encrypted (it's git-ignored). all/vars.yml holds
+# only structure + {{ vault_* }} references, so nothing sensitive is committed
+# in cleartext. Values below are deliberately FAKE placeholders — fill in yours.
+
+# --- Proxmox API credential -----------------------------------------------
+# Token created as `<user>!<token_id>` with secret `<secret>`,
+# e.g. `ansible@pve!provisioning`.
+vault_proxmox_api_user: "ansible@pve"
+vault_proxmox_api_token_id: "provisioning"
+vault_proxmox_api_token_secret: "00000000-0000-0000-0000-000000000000"
+
+# --- Proxmox host / targets -----------------------------------------------
+vault_proxmox_api_host: "10.0.0.11"            # API endpoint IP/host
+vault_proxmox_node: "CHANGEME-node"            # PVE cluster node name (qm/API `node:`)
+vault_proxmox_ssh_addr: "10.0.0.11"            # SSH target for snippet upload + qm
+# Dedicated non-root shell user with scoped sudo for `qm` (recommended — see
+# README "Proxmox SSH access"). Set to "root" only if you accept root SSH.
+vault_proxmox_ssh_user: "provisioner"
+vault_proxmox_vm_storage: "CHANGEME-vmstore"   # replicated storage for VM disks (RBD, 'images' content)
+# Snippet storage — where the Ignition config-drive is delivered. Prefer a
+# SHARED storage (CephFS / NFS) with the "snippets" content type, so the
+# config-drive stays reachable from any node and survives an HA migration;
+# node-local `local` ties the VM to one host. Find enabled snippet storages
+# with:  awk '/^[[:alnum:]]+:[[:space:]]/{id=$2}/content.*snippets/{print id}' /etc/pve/storage.cfg
+vault_proxmox_snippet_storage: "cephfs"
+# On-host path backing that storage. Get it authoritatively with:
+#   pvesm path <storage>:snippets/probe.ign   (then drop the filename)
+vault_proxmox_snippet_dir: "/mnt/pve/cephfs/snippets"
+
+# --- DNS -------------------------------------------------------------------
+vault_dns_servers:
+  - "10.0.0.254"
+
+# --- Networks --------------------------------------------------------------
+# eth0: DMZ / cluster-facing. subnet_base = first three octets; node IP is
+# <base>.<node_number>.
+vault_dmz_subnet_base: "10.0.1"
+vault_dmz_vlan: 2
+vault_dmz_bridge: "vmbr0"
+vault_dmz_gateway: "10.0.1.1"
+# eth1: Ceph public network (jumbo, NO gateway).
+vault_ceph_subnet_base: "10.0.254"
+vault_ceph_vlan: 98
+vault_ceph_bridge: "vmbr1"
+
+# --- SSH access ------------------------------------------------------------
+# Public key(s) authorized on each node's admin user (key-only).
+vault_ssh_authorized_keys:
+  - "ssh-ed25519 AAAA...REPLACE_ME... homelab"

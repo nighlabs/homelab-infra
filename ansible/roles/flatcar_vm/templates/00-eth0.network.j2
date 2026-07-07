@@ -1,0 +1,14 @@
+# {{ hostname }} — eth0 (DMZ, VLAN {{ dmz_network.vlan }}). Rendered from the node map.
+# Bound by MAC so guest interface naming (eth0/enp6s0/…) doesn't matter.
+[Match]
+MACAddress={{ eth0_mac }}
+
+[Network]
+Address={{ eth0_ip }}/{{ dmz_network.prefix }}
+Gateway={{ eth0_gateway }}
+{% for ns in dns_servers %}
+DNS={{ ns }}
+{% endfor %}
+
+[Link]
+RequiredForOnline=routable

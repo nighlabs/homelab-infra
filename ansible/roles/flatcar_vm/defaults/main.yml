@@ -1,0 +1,10 @@
+---
+# Role-private defaults. Shared/topology config (networks, Proxmox connection,
+# template name) lives in group_vars/all/vars.yml.
+
+# Dedicated low-privilege admin user created on the node (not `core`).
+node_user: "admin"
+
+# Where the local data disk gets mounted. Pick this now so nothing downstream
+# (k3s local paths, container data) has to be re-pointed later.
+data_mount_point: "/var/lib/data"

@@ -1,0 +1,16 @@
+# {{ hostname }} — eth1 (Ceph public network, VLAN {{ ceph_public_network.vlan }}). Rendered from the node map.
+# Deliberately NO Gateway= and NO DNS= — this NIC only reaches the Ceph
+# mons/OSDs on {{ ceph_public_network.subnet_base }}.0/{{ ceph_public_network.prefix }} and must never own a default route.
+[Match]
+MACAddress={{ eth1_mac }}
+
+[Network]
+Address={{ eth1_ip }}/{{ ceph_public_network.prefix }}
+
+[Link]
+# Jumbo frames must be set explicitly on the guest side too — the interface
+# will NOT inherit the bridge MTU, and a silent fallback to 1500 defeats the
+# whole point of being on this link (ansible/CLAUDE.md §1.1).
+MTUBytes={{ ceph_public_network.mtu }}
+# Not routable (no gateway) — don't let systemd-networkd-wait-online block boot on it.
+RequiredForOnline=no

@@ -1,0 +1,32 @@
+# Control-node Python toolchain for this repo, managed with uv.
+#
+# This is NOT an application — it's just the pinned set of tools the Ansible
+# control node needs to provision the cluster. uv owns the interpreter
+# (.python-version), the venv (.venv/), and the lockfile (uv.lock).
+#
+# Bootstrap:  uv sync
+# Run:        uv run ansible-playbook ansible/site.yml --ask-vault-pass
+#
+# NOT pip-managed, installed separately (see ansible/README.md):
+#   - butane            : Go binary (Flatcar transpiler), not a Python package
+#   - community.proxmox : an Ansible collection, via `ansible-galaxy` not pip
+[project]
+name = "homelab-infra"
+version = "0"
+description = "Control-node Python toolchain for Flatcar/Proxmox Ansible provisioning"
+requires-python = ">=3.12"
+dependencies = [
+    # Ansible itself. ansible-core (not the batteries-included `ansible`) — we
+    # only need builtin modules plus the community.proxmox collection, which is
+    # pinned in ansible/requirements.yml and installed via ansible-galaxy.
+    "ansible-core>=2.17",
+    # Required on the control node by the community.proxmox modules
+    # (proxmox_kvm / proxmox_disk); they import these at runtime, not parse time.
+    "proxmoxer>=2.0",
+    "requests>=2.31",
+]
+
+# Keep uv from trying to build/install this repo itself as a package — it's a
+# toolchain env, not a distributable. (No build backend, nothing to package.)
+[tool.uv]
+package = false

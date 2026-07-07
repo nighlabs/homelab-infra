@@ -1,0 +1,8 @@
+# uv-managed virtualenv — recreated from uv.lock via `uv sync`, never committed.
+# Committed instead: pyproject.toml, uv.lock, .python-version (the reproducible
+# inputs). See pyproject.toml for the bootstrap.
+.venv/
+
+# Python caches
+__pycache__/
+*.pyc

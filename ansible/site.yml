@@ -1,0 +1,4 @@
+---
+# Full bring-up: build the template, then provision all node shells.
+- ansible.builtin.import_playbook: playbooks/build-template.yml
+- ansible.builtin.import_playbook: playbooks/provision-nodes.yml

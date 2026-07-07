@@ -1,0 +1,84 @@
+---
+# Structure + defaults shared by every play/role. This file is COMMITTED, so it
+# holds only:
+#   - generic, non-revealing constants (MAC OUI, Flatcar channel/version), and
+#   - the *shape* of the config, with every environment-revealing value pulled
+#     in via a {{ vault_* }} reference.
+#
+# Everything sensitive — internal IPs, subnets, VLANs, gateways, hostnames,
+# storage names, the SSH public key, and the full API credential — lives
+# encrypted in vault.yml (this same all/ directory; see ../vault.example.yml).
+# Nothing here exposes the real environment; you can read the structure without
+# the vault password, but not the values.
+#
+# NOTE: the network *topology* is also described in the root CLAUDE.md — if the
+# goal is truly zero topology in git, that doc would need scrubbing too.
+
+# --- DNS -------------------------------------------------------------------
+# Static resolvers, injected into eth0's networkd unit (ansible/CLAUDE.md §1.1).
+dns_servers: "{{ vault_dns_servers }}"
+
+# --- Networks --------------------------------------------------------------
+# eth0: DMZ / k3s cluster-facing. Plain 1500 MTU, has the default route.
+# prefix/MTU are generic constants (kept in cleartext); the revealing bits
+# (subnet, VLAN tag, bridge, gateway) come from the vault.
+dmz_network:
+  subnet_base: "{{ vault_dmz_subnet_base }}"
+  prefix: 24
+  vlan: "{{ vault_dmz_vlan }}"
+  bridge: "{{ vault_dmz_bridge }}"
+  gateway: "{{ vault_dmz_gateway }}"
+
+# eth1: Ceph public network. Tagged on vmbr* , jumbo frames end-to-end.
+# NO gateway — this NIC must never carry a default route (Ceph mons/OSDs only).
+ceph_public_network:
+  subnet_base: "{{ vault_ceph_subnet_base }}"
+  prefix: 24
+  vlan: "{{ vault_ceph_vlan }}"
+  bridge: "{{ vault_ceph_bridge }}"
+  mtu: 8996
+
+# Proxmox's registered OUI — matches what PVE auto-generates. Public/generic
+# (everyone's PVE uses it), so it stays in cleartext. MACs are derived per node
+# as <oui>:00:<node_number hex>:<nic index>.
+mac_oui: "BC:24:11"
+
+# --- SSH access ------------------------------------------------------------
+# Public key(s) authorized for the node's admin user (key-only; no passwords).
+# A public key isn't a secret, but it's identity-revealing, so it's vaulted too.
+ssh_authorized_keys: "{{ vault_ssh_authorized_keys }}"
+
+# --- Proxmox connection ----------------------------------------------------
+# API access for the proxmox_* modules (run from the control node). Uses a
+# scoped API token, NOT root@pam (ansible/CLAUDE.md; design doc Appendix A).
+# Host, node name, storage, and the full credential are all vaulted.
+proxmox_api_host: "{{ vault_proxmox_api_host }}"
+proxmox_api_user: "{{ vault_proxmox_api_user }}"
+proxmox_api_token_id: "{{ vault_proxmox_api_token_id }}"
+proxmox_api_token_secret: "{{ vault_proxmox_api_token_secret }}"
+
+# Proxmox cluster node NAME (as PVE knows it) to create the VM on — vaulted.
+proxmox_node: "{{ vault_proxmox_node }}"
+# Inventory host alias we SSH into for snippet upload + `qm` fallbacks. This is
+# a generic, non-revealing alias defined in inventory/hosts.yml (the real
+# address/user it points to are vaulted there) — safe in cleartext.
+proxmox_ssh_host: "pve"
+
+# How to invoke Proxmox's root-only `qm` CLI over SSH. PVE's CLI tools ignore
+# the API token/ACL system and require root, so when SSHing as a non-root
+# `provisioner` user (recommended — see README) we escalate with sudo, scoped
+# to just `qm` via /etc/sudoers.d/provisioner. As root, call it directly. Works
+# both ways, so the ssh user is a free choice.
+proxmox_qm: "{{ 'qm' if vault_proxmox_ssh_user == 'root' else 'sudo qm' }}"
+
+# Storage targets — names reveal the environment, so they're vaulted.
+proxmox_vm_storage: "{{ vault_proxmox_vm_storage }}"
+proxmox_snippet_storage: "{{ vault_proxmox_snippet_storage }}"
+proxmox_snippet_dir: "{{ vault_proxmox_snippet_dir }}"
+
+# --- Flatcar template ------------------------------------------------------
+# Generic upstream image coordinates — not environment-specific, kept cleartext.
+flatcar_channel: "stable"
+flatcar_version: "current"
+flatcar_template_vmid: 9000
+flatcar_template_name: "flatcar-stable"

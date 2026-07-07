@@ -1,0 +1,338 @@
+# CLAUDE.md — ansible/ (Flatcar VM / k3s bring-up)
+
+Nested memory for work inside `ansible/`. Loads automatically when Claude
+reads a file in this subtree; doesn't pollute sessions working elsewhere in
+the repo (e.g. `gitops/`). Project-wide facts (architecture, Ceph network
+topology, standing guardrails) live in the root `CLAUDE.md` — this file is
+the detailed, currently-in-progress task state that sits on top of those.
+
+Full design rationale lives in `../docs/mac-studio-inference-stack-2.md`.
+When in doubt about *why* a choice was made, check that doc's Appendix A
+decision log before re-litigating it. §6 below still records the
+k3s/multi-node plan for continuity, but treat it as "next," not "now."
+
+> **Current task:** Create a single Flatcar VM with the right network
+> interfaces, a local data disk, and SSH key access. **k3s is not installed
+> yet.** This is purely "get a correctly-shaped, reachable, rebuildable VM"
+> — the k3s server config, sysext install, and multi-node expansion are the
+> *next* task, not this one.
+
+---
+
+## 1. Current task — create the Flatcar VM shell
+
+Just the VM. No k3s, no sysext, no cluster config yet. Definition of done is
+purely: powered-on Flatcar VM, correctly networked, has a persistent data
+disk separate from the OS disk, and is SSH-reachable with key auth — and all
+of that survives an unattended `sudo reboot` and a from-scratch rebuild.
+
+### 1.1 Networking — two NICs, not one
+
+Full topology and rationale live in the root `CLAUDE.md`. Real subnets, VLAN
+tags, and bridge names are vaulted (`inventory/group_vars/all/`) — this table
+references them by variable rather than literal value:
+
+| Interface | Bridge | VLAN tag | Subnet | Purpose |
+|---|---|---|---|---|
+| `eth0` (net0) | `{{ dmz_network.bridge }}` | `{{ dmz_network.vlan }}` | `{{ dmz_network.subnet_base }}.0/24` — DMZ | Primary/cluster-facing: SSH, eventual k3s API/pod/service traffic |
+| `eth1` (net1) | `{{ ceph_public_network.bridge }}` | `{{ ceph_public_network.vlan }}` | `{{ ceph_public_network.subnet_base }}.0/24` — Ceph public network | Ceph client traffic (ceph-csi → mons on the Ceph public network + OSD client I/O) |
+
+`eth1` must be **tagged** (`{{ ceph_public_network.vlan }}`), not left
+untagged on its bridge — untagged there lands on the Ceph
+*cluster*/replication-only network, which the k3s nodes have no reason to ever
+reach. Isolation on `eth1` comes from the **VLAN itself**, not per-host/port
+firewall rules — deliberately, so it scales cleanly as the Ceph cluster grows.
+
+**Jumbo frames must be set end-to-end, not just on the physical side.**
+The Ceph-public bridge/bond runs at `mtu 8996`, but that only helps if the
+VM's virtual NIC and guest-OS interface also negotiate it — otherwise silent
+fragmentation (or a mismatch that quietly caps you back at 1500) undoes the
+whole point of moving to this link:
+- Set MTU `8996` explicitly on the VM's `net1` hardware definition in
+  Proxmox — don't leave it inherited/default.
+- Set `MTUBytes=8996` explicitly in the `systemd-networkd` unit for `eth1`
+  in Ignition/Butane — don't assume it'll pick up the bridge's MTU.
+- `eth0`/DMZ has no jumbo-frame requirement (plain 1Gb bond, no `mtu`
+  set) — leave it at the default 1500.
+
+**Implementation notes — static addressing, no DHCP:**
+- **Addressing is static, defined directly in each node's Ignition, sourced
+  from an Ansible variable file — not DHCP.** This is a different mechanism
+  than the "fragile config-drive network-data path" the project doc warned
+  about (that referred to leaning on *cloud-init's* `network-data` delivery
+  specifically); defining static addresses in Ignition's own
+  `systemd-networkd` units sidesteps that path entirely rather than
+  triggering it.
+- **Source of truth: `inventory/nodes.yml`** — one entry per node with at
+  minimum: `hostname`, `eth0_mac`, `eth0_ip`, `eth1_mac`, `eth1_ip`. This is
+  the same node map that already drives VM creation, so network identity
+  lives right alongside CPU/RAM/role — one place to look, one place to
+  change.
+- **Pin the MAC addresses at VM-creation time** via the `proxmox_kvm`
+  module's `net0`/`net1` `macaddr` option, using the same values from the
+  node map. This makes Ignition's `[Match] MACAddress=` stanza fully
+  deterministic — it no longer matters whether Proxmox/virtio names the
+  interface `eth0`, `eth1`, `enp6s0`, or anything else; the network unit
+  finds the right NIC by MAC regardless of naming, ordering, or image
+  quirks.
+- **Render the Butane network units from the node map with Jinja2**
+  (`roles/flatcar_vm/templates/`):
+
+  ```ini
+  # 00-eth0.network.j2 — rendered per node
+  [Match]
+  MACAddress={{ eth0_mac }}
+
+  [Network]
+  Address={{ eth0_ip }}/24
+  Gateway={{ eth0_gateway }}
+  DNS={{ dns_servers | join(' ') }}
+  ```
+
+  ```ini
+  # 10-eth1.network.j2 — rendered per node
+  [Match]
+  MACAddress={{ eth1_mac }}
+
+  [Network]
+  Address={{ eth1_ip }}/24
+  MTUBytes=8996
+  ```
+- `eth1` gets **no `Gateway=`** — it should only reach hosts on the Ceph
+  public network, never route anywhere else. Confirm no default route
+  appears on `eth1` (`ip route show dev eth1` should show only the
+  connected subnet).
+- **DNS servers must be set explicitly** in the `eth0` unit (or via a
+  separate `systemd-resolved` drop-in) — with DHCP gone, nothing hands the
+  VM a resolver automatically anymore. Pull this from `group_vars/all/vars.yml`
+  (a `dns_servers` list) so it's not hand-typed per node.
+- **Hostname** should also come from Ignition (a `storage.files` entry for
+  `/etc/hostname`, rendered from the node map's `hostname` field) rather
+  than relying on DHCP option 12 or reverse DNS, now that DHCP isn't in the
+  loop at all.
+- All of this stays fully rebuildable: delete the VM, re-run the Ansible
+  play, and the same MAC + same static IP + same hostname come back — no
+  DHCP server, no lease table, no reservation to keep in sync anywhere
+  outside Git.
+
+### 1.2 Local data disk
+
+- Attach a **second virtual disk** (separate from the OS/boot disk) for
+  local data — this becomes the model/weights or general working storage
+  volume later; keep it decoupled from the OS disk so the VM's boot disk can
+  be rebuilt independently of accumulated data.
+- Partition and mount it via Ignition's `storage.filesystems` /
+  `storage.disks` stanzas (Butane `storage` section), not a manual `mkfs`
+  after boot — the goal is a disk that comes back correctly formatted and
+  mounted on a from-scratch rebuild without manual steps.
+- Pick a stable mount point now (e.g. `/var/lib/data` or similar) so nothing
+  downstream (k3s local paths, container data, etc.) has to be re-pointed
+  later.
+
+### 1.3 SSH access
+
+- Inject the SSH public key via Ignition (`passwd.users[].sshAuthorizedKeys`
+  in Butane), targeting a dedicated, low-privilege user rather than `core`
+  left as the only account (matches the Mac-side pattern in the design doc).
+- No password auth — key-only. Confirm this explicitly in the rendered
+  Ignition rather than assuming Flatcar's defaults; Flatcar's `core` user
+  behavior can differ from expectations if the Butane config doesn't set it
+  cleanly.
+
+### 1.4 Definition of done
+- VM boots with the **static** addresses from the Ansible node map on both
+  `eth0` (DMZ) and `eth1` (Ceph public network) — each on its vaulted
+  subnet/VLAN — confirmed via `ip a` over SSH; no DHCP lease involved anywhere.
+- Each interface's MAC matches what Ansible pinned in the `proxmox_kvm`
+  `net0`/`net1` definition, confirmed via `ip link show`, so the
+  `[Match] MACAddress=` in Ignition is provably doing the binding rather
+  than luck of interface-naming order.
+- `eth1` shows the negotiated MTU as 8996, not 1500 — confirmed via `ip a`
+  or `ip link show eth1`, since a silent fallback to 1500 defeats the point
+  of being on this link at all.
+- `eth1` has **no default route** — confirmed via `ip route show dev eth1`
+  showing only the connected Ceph public subnet.
+- DNS resolution works over `eth0` (e.g. `resolvectl status` /
+  `getent hosts <name>`) using the statically-configured resolvers, not a
+  DHCP-supplied one.
+- `hostname` matches the node map's `hostname` field, confirmed via
+  `hostnamectl`.
+- `ssh <user>@<eth0-ip>` works with key auth, no password prompt possible.
+- The data disk is present, formatted, and mounted at the chosen path,
+  confirmed via `df -h` / `mount`.
+- `sudo reboot` with no console attached comes back in the same state.
+- Deleting the VM and re-running the same Ansible play reproduces an
+  identical result — same MAC, same static IP, same hostname — with no
+  DHCP server or reservation involved (this is the real test of
+  "rebuildable," not just "worked once").
+
+---
+
+## 2. Next task (not now) — install k3s
+
+Once the VM shell above is solid, the next task is installing k3s on it
+(single all-in-one node first, then expanding to 1 CP + 3 workers). That
+plan is kept in §6 below for continuity — don't start on it until §1's
+definition of done is met, since the Ignition/network/disk plumbing here is
+exactly what the k3s config will build on top of.
+
+---
+
+## 6. Future k3s / multi-node plan (kept for continuity — not started)
+
+Once Phase 1 is solid, expand in this order (mirrors the project doc's
+bring-up order, but starting from an already-running single node instead of
+from zero):
+
+1. **Add the CP taint** to the existing node's config now that workers are
+   coming: `node-role.kubernetes.io/control-plane=true:NoSchedule`.
+2. **Provision 3 worker VMs** the same way (Flatcar + Ignition + k3s sysext),
+   joining with the minimal agent config (server URL + token) — not the full
+   flag set above, that's server-only.
+3. **Fold provisioning into Ansible**: turn the hand-validated Ignition/k3s
+   process into a role, loop over the node map, generalize to 1 CP + 3
+   workers. Template build (Flatcar image → import → convert) is its own
+   idempotent Ansible role.
+4. **Bootstrap Flux** as the final step of the same Ansible run (Flux
+   Operator + `FluxInstance` pointed at the Git repo — see `gitops/`).
+5. **From Git, in dependency order**: Calico → MetalLB (BGP) → NGINX Gateway
+   Fabric + cert-manager (DNS-01 wildcard) → ceph-csi-operator + StorageClasses
+   → External Secrets Operator + Bitwarden SDK Server → Postgres + Redis →
+   LiteLLM → confirm a chat completion round-trips to the Mac.
+6. **Then**: Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
+7. **Then**: split DNS + external access (internal resolver, Tailscale split
+   DNS, Cloudflare Tunnel), source-IP preservation checks on both paths.
+
+Networking prep (pfSense VLAN, MetalLB `/24`, FRR ASNs, "Disable eBGP
+Require Policy") and the Ceph pool/client-user setup can happen in parallel
+with Phase 1 — they don't block the single-node milestone.
+
+---
+
+## 7. Unknowns / needs a test harness or PoC before trusting it
+
+Items **0–2 are specific to the current VM-creation task** — resolve these
+first. Items 3 onward carry over from the broader design for continuity and
+apply once k3s work starts.
+
+0. **Secondary NIC (`eth1`, Ceph public network — the tagged VLAN on its
+   bridge) may not come up reliably on Flatcar without an explicit
+   `systemd-networkd` unit** — Flatcar's default network config typically only
+   handles a single interface out of the box, and VLAN tagging adds another
+   way for this to silently go wrong (e.g. the `[Match] MACAddress=` stanza
+   failing to bind and the interface coming up unconfigured, or landing on the
+   untagged/native cluster VLAN instead of the public one if the VLAN tag
+   isn't applied where expected). **Test:** boot the VM, confirm `eth1` comes
+   up with the exact static address from the node map on the Ceph public
+   subnet (not the cluster/replication subnet, and not unconfigured), with
+   *no* default route, and confirm the negotiated MTU is actually **8996**,
+   not silently 1500 — a jumbo-frame mismatch between the VM's virtual NIC and
+   the bridge is a classic silent failure mode (things work, just slowly,
+   with no obvious error).
+
+1. **Data disk stanza in Ignition (`storage.disks`/`storage.filesystems`)
+   actually formats and mounts a *second* virtio disk correctly on first
+   boot.** **Test:** confirm the filesystem survives a full VM
+   delete-and-recreate from the same Ignition (not just a reboot of the
+   existing disk) — a stale filesystem signature from a prior attempt can
+   cause Ignition to skip formatting if `wipeFilesystem` isn't set
+   deliberately.
+
+2. **MAC-address pinning at VM creation must actually stick, or the whole
+   static-addressing scheme falls apart.** If the `proxmox_kvm` module (or
+   the pinned version of it) doesn't reliably apply the `macaddr` option on
+   `net0`/`net1`, Ignition's `[Match] MACAddress=` won't find the interface
+   it expects, and the node comes up with no network config on that link at
+   all — a much quieter failure than a missed DHCP reservation used to be.
+   **Test:** after VM creation, confirm via `qm config <vmid>` (or the
+   Proxmox API) that both NICs' MACs match the Ansible node map exactly,
+   before relying on Ignition to match against them — do this on the very
+   first node, not after the pattern's been copied into a loop.
+   Relatedly: **dropping DHCP also drops its free IP-collision protection**
+   — nothing stops the same address from being handed to two nodes if the
+   node map has a typo or a stale entry. `inventory/nodes.yml` is now the
+   **sole** source of truth for address allocation; there's no DHCP lease
+   table to cross-check against. Worth a lightweight sanity check (e.g. a
+   pre-flight Ansible task or CI lint that asserts uniqueness across all
+   `eth0_ip`/`eth1_ip` values in the node map) before it's relied on for
+   more than a couple of nodes.
+
+3. **Ignition-via-config-drive actually works on the proxmoxve image.**
+   Unverified assumption: the proxmoxve image's default OEM reads Ignition
+   cleanly from `cicustom` user-data. **PoC:** hand-build exactly one node
+   this way before writing any Ansible role around it. If it fails, the
+   fallback (fw_cfg `file=`) needs root@pam, which conflicts with the
+   scoped-token automation goal — worth knowing early.
+
+4. **`cicustom` may not be exposed by the pinned `proxmox_kvm` /
+   `community.proxmox.proxmox*` module version.** **Test harness:** a small
+   Ansible playbook that attempts `cicustom` via the module first; have the
+   `uri`/API fallback and the delegated `qm set --cicustom` fallback both
+   written and tested, not just theorized.
+
+5. **k3s sysext + Flatcar interaction is less documented than a standard
+   binary install.** **PoC:** confirm the sysext installs, updates via
+   systemd-sysupdate, and k3s actually starts cleanly on first boot before
+   assuming the happy path.
+
+6. **Node VLAN subnet — TBD.** Blocks finalizing the MetalLB `/24` and FRR
+   BGP peer addresses. Needs to be decided before k3s expansion step 5
+   (MetalLB) in §6.
+
+7. **Internal DNS resolver approach — TBD, three options undecided:**
+   pfSense Unbound host overrides vs. a single wildcard `*.apps.<domain>` +
+   HTTPRoute host routing vs. a second external-dns instance. Pick one and
+   test split-DNS behavior (including the Unbound rebinding-protection
+   whitelist) before relying on it for the "internal view."
+
+8. **FRR "Disable eBGP Require Policy" gotcha.** On current FRR this must be
+   set (or a route-map/prefix-list added) or MetalLB's routes get silently
+   refused. **Test:** confirm one MetalLB-assigned IP is actually reachable
+   over BGP before assuming the LB layer works — a silent refusal here looks
+   like "everything's fine" until you try to reach a Service externally.
+
+9. **ceph-csi version vs. Proxmox Ceph release, and RBD/CephFS image
+   features vs. the Flatcar kernel.** **Test:** provision one test PVC (RBD)
+   and one CephFS mount from the cluster before trusting either
+   StorageClass; watch for feature-flag mismatches (e.g. exclusive-lock,
+   object-map) that a specific kernel doesn't support.
+
+10. **Single control-plane node = single point of scheduling failure for API
+    server availability**, mitigated only by Proxmox HA restart, not k8s
+    quorum. Not really "unknown" — it's an accepted tradeoff — but worth a
+    **test**: kill the CP VM's host and time how long the API is actually
+    unreachable during the Proxmox HA restart, so you know the real blip
+    duration rather than assuming it's negligible.
+
+11. **secrets-encryption re-encryption path.** If `--secrets-encryption` isn't
+    enabled at first server start, turning it on later requires a rotation
+    procedure. **Test when k3s work starts**, don't defer: verify it's on
+    from boot 1, since retrofitting it is its own unverified procedure.
+
+12. **Metal-framework stability under load (Tier 1, not this task, but a
+    cross-tier dependency)** — noted in the source doc as flaky on some
+    macOS point releases. Not blocking for the VM/k3s work, but if
+    end-to-end testing later ("confirm a chat completion routes end-to-end")
+    fails intermittently, check this before assuming it's a cluster-side
+    bug.
+
+---
+
+## 8. Guardrails specific to this role
+
+(Repo-wide guardrails — no Terraform, no DHCP, no second Ceph, no CGNAT —
+live in the root `CLAUDE.md`. These are additional, specific to
+`flatcar_vm`/k3s work.)
+
+- Keep `cluster-cidr` / `service-cidr` pinned explicitly in every node's
+  config (not left as k3s implicit defaults) so Calico's IPPool always
+  matches, once k3s work starts.
+- Server-only k3s flags (the block in §6) do not go on agent/worker join
+  configs — workers get only the server URL + token.
+- `eth0` (DMZ) and `eth1` (Ceph public network) are the only two networks
+  this VM touches. Never leave `eth1` untagged/native on its bridge — that
+  lands on Ceph's `cluster_network` (replication-only), which ceph-csi has no
+  business reaching.
+- `eth1` needs MTU `8996` set explicitly (both in the Proxmox VM hardware
+  config and the Ignition network unit) — don't assume it inherits the
+  bridge's jumbo-frame setting.
