@@ -1,0 +1,40 @@
+---
+# Validate the node map entry and derive every host-shaped fact from
+# node_number. Dropping DHCP also drops its free IP-collision protection, so
+# nodes.yml is the SOLE source of address allocation — assert uniqueness before
+# creating anything (ansible/CLAUDE.md §7 item 2).
+
+- name: "{{ hostname }} — assert node_number is present and valid"
+  ansible.builtin.assert:
+    that:
+      - node.node_number is defined
+      - (node.node_number | int) > 0
+      - (node.node_number | int) < 255
+    fail_msg: "node '{{ hostname }}' needs node_number in 1..254 (it's the final IP octet)"
+    quiet: true
+
+- name: "{{ hostname }} — assert node_number uniqueness across the node map"
+  vars:
+    numbers: "{{ nodes | dict2items | map(attribute='value.node_number') | list }}"
+  ansible.builtin.assert:
+    that:
+      - (numbers | length) == (numbers | unique | length)
+    fail_msg: "Duplicate node_number in inventory/nodes.yml: {{ numbers }}"
+    quiet: true
+  run_once: true
+
+- name: "{{ hostname }} — assert butane is available on the control node"
+  ansible.builtin.command: butane --version
+  delegate_to: localhost
+  changed_when: false
+  run_once: true
+
+- name: "{{ hostname }} — derive network + VM facts from node_number"
+  ansible.builtin.set_fact:
+    node_number: "{{ node.node_number | int }}"
+    vmid: "{{ node.vmid | default(1000 + (node.node_number | int)) }}"
+    eth0_ip: "{{ dmz_network.subnet_base }}.{{ node.node_number }}"
+    eth1_ip: "{{ ceph_public_network.subnet_base }}.{{ node.node_number }}"
+    eth0_mac: "{{ mac_oui }}:00:{{ '%02X' | format(node.node_number | int) }}:00"
+    eth1_mac: "{{ mac_oui }}:00:{{ '%02X' | format(node.node_number | int) }}:01"
+    eth0_gateway: "{{ dmz_network.gateway }}"

@@ -1,0 +1,14 @@
+---
+# Install with: ansible-galaxy collection install -r requirements.yml
+# Also required on the control node (PATH): `butane` (Flatcar Butane transpiler).
+#
+# We use exactly two modules — proxmox_kvm and proxmox_disk — so we pull the
+# dedicated `community.proxmox` collection rather than the ~800-module
+# `community.general`. The proxmox_* modules were split out of community.general
+# into this collection; it's their current upstream home.
+collections:
+  # Pinned to the 2.x line (2.0.0 is current stable and what's tested here);
+  # cap the major so a future breaking 3.x can't float in silently. Installs
+  # into ansible/.ansible (collections_path in ansible.cfg), not shared ~/.ansible.
+  - name: community.proxmox
+    version: ">=2.0.0,<3.0.0"

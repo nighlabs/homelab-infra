@@ -1,0 +1,52 @@
+---
+# Build the Flatcar Proxmox template once (idempotent), so flatcar_vm can clone
+# it per node. Uses `qm` on the PVE host (delegated) — the proxmoxve image ships
+# the OEM that reads Ignition from the config-drive user-data (cicustom).
+#
+# NOTE: this is the "download image -> import -> convert to template" role from
+# the design doc §3.4. Validate it against your storage backend once; the
+# imported-disk reference below assumes a block/RBD storage (vm-<id>-disk-0).
+
+- name: "template — check whether {{ flatcar_template_name }} ({{ flatcar_template_vmid }}) already exists"
+  ansible.builtin.command: "{{ proxmox_qm }} status {{ flatcar_template_vmid }}"
+  delegate_to: "{{ proxmox_ssh_host }}"
+  register: tmpl_status
+  failed_when: false
+  changed_when: false
+
+- name: "template — build Flatcar template"
+  when: tmpl_status.rc != 0
+  delegate_to: "{{ proxmox_ssh_host }}"
+  block:
+    - name: "template — download Flatcar proxmoxve image"
+      ansible.builtin.get_url:
+        url: "{{ flatcar_image_url }}"
+        dest: "{{ flatcar_image_tmp }}"
+        mode: "0644"
+
+    - name: "template — create the template VM shell (serial console; cloud-init drive)"
+      ansible.builtin.command:
+        cmd: >-
+          {{ proxmox_qm }} create {{ flatcar_template_vmid }}
+          --name {{ flatcar_template_name }}
+          --memory {{ flatcar_template_memory_mb }} --cores {{ flatcar_template_cores }} --cpu host
+          --net0 virtio,bridge={{ dmz_network.bridge }}
+          --scsihw virtio-scsi-single --ostype l26
+          --serial0 socket --vga serial0
+          --agent enabled=1
+
+    - name: "template — import the Flatcar disk"
+      ansible.builtin.command:
+        cmd: "{{ proxmox_qm }} importdisk {{ flatcar_template_vmid }} {{ flatcar_image_tmp }} {{ proxmox_vm_storage }}"
+
+    - name: "template — attach imported disk (virtio0) + a cloud-init drive, set boot order"
+      ansible.builtin.command:
+        cmd: >-
+          {{ proxmox_qm }} set {{ flatcar_template_vmid }}
+          --virtio0 {{ proxmox_vm_storage }}:vm-{{ flatcar_template_vmid }}-disk-0
+          --ide2 {{ proxmox_vm_storage }}:cloudinit
+          --boot order=virtio0
+
+    - name: "template — convert to template"
+      ansible.builtin.command:
+        cmd: "{{ proxmox_qm }} template {{ flatcar_template_vmid }}"

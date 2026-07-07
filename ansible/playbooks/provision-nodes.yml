@@ -1,0 +1,32 @@
+---
+# Provision every Flatcar VM shell in inventory/nodes.yml (currently just
+# snoop-a2o). Clones the template, pins MACs, renders + delivers Ignition,
+# attaches the data disk, boots. No k3s — that's the next task.
+#
+# Run:  ansible-playbook playbooks/provision-nodes.yml --ask-vault-pass
+# One:  ansible-playbook playbooks/provision-nodes.yml -e node_filter=snoop-a2o --ask-vault-pass
+- name: Provision Flatcar VM shells
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../inventory/nodes.yml
+  vars:
+    node_filter: ""    # optional: limit to a single node map key
+  module_defaults:
+    group/community.proxmox.proxmox:
+      api_host: "{{ proxmox_api_host }}"
+      api_user: "{{ proxmox_api_user }}"
+      api_token_id: "{{ proxmox_api_token_id }}"
+      api_token_secret: "{{ proxmox_api_token_secret }}"
+  tasks:
+    - name: Provision each node in the node map
+      ansible.builtin.include_role:
+        name: flatcar_vm
+      vars:
+        hostname: "{{ node_item.key }}"
+        node: "{{ node_item.value }}"
+      loop: "{{ nodes | dict2items }}"
+      loop_control:
+        loop_var: node_item
+        label: "{{ node_item.key }}"
+      when: node_filter == "" or node_item.key == node_filter

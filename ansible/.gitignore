@@ -1,0 +1,16 @@
+# Real (encrypted) vault and any local vault password file — never commit the
+# password; the encrypted vault.yml itself is safe but kept out by default
+# until you decide otherwise.
+# Real (encrypted) vault lives in the group_vars/all/ DIRECTORY so it loads for
+# group `all` alongside vars.yml. Ignore it wherever it lands, defensively.
+inventory/group_vars/all/vault.yml
+inventory/group_vars/**/vault.yml
+.vault-pass
+
+# Transpiled artifacts / build scratch
+*.ign
+
+# In-repo Ansible collections path (collections_path in ansible.cfg). Restored
+# from requirements.yml via `uv run ansible-galaxy collection install`, like the
+# uv venv is from uv.lock — the pinned input is requirements.yml, not this tree.
+.ansible/
