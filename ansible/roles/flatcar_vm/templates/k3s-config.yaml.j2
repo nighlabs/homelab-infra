@@ -1,0 +1,50 @@
+# k3s server config for {{ hostname }} — rendered from the node map, written to
+# /etc/rancher/k3s/config.yaml by Ignition and read by k3s.service on boot
+# (design doc §3.1). SERVER config only; the agent join config (server URL +
+# token, k3s-agent.service) is the §6 multi-node step — this template is invoked
+# for k3s_role == 'server' nodes (all-in-one / control-plane).
+
+# NB: no `data-dir` override on purpose. The data disk (vdb) is mounted at
+# k3s's DEFAULT data-dir root ({{ data_mount_point }}), so the datastore +
+# embedded containerd + image cache (the disk-eaters) land on vdb — off the OS
+# disk — while k3s runs stock and every `k3s` CLI subcommand works with no
+# --data-dir flag. k3s.service is ordered after that mount (butane drop-in).
+
+# CNI + NetworkPolicy are Calico's, installed later via Ansible→Flux (§6). Until
+# then the node is NotReady — expected. disable-network-policy only turns off
+# k3s's built-in kube-router; NetworkPolicies still enforce once Calico is up.
+flannel-backend: none
+disable-network-policy: true
+
+# Bundled add-ons we replace from Git: traefik -> NGINX Gateway Fabric,
+# servicelb -> MetalLB, local-storage -> ceph-csi. Helm controller -> Flux.
+disable:
+  - traefik
+  - servicelb
+  - local-storage
+disable-helm-controller: true
+
+# Pinned explicitly so Calico's IPPool always matches (design §4.1, guardrail §8).
+cluster-cidr: {{ k3s_cluster_cidr }}
+service-cidr: {{ k3s_service_cidr }}
+
+# Encrypt Secret objects at rest in the datastore (aescbc) from boot 1 —
+# retrofitting this later is a separate rotation procedure (design §3.6 / §7.11).
+secrets-encryption: true
+write-kubeconfig-mode: "0640"
+
+# Pin node/cluster identity to the DMZ NIC (eth0), never the Ceph NIC (eth1).
+node-ip: {{ eth0_ip }}
+advertise-address: {{ eth0_ip }}
+tls-san:
+  - {{ eth0_ip }}
+  - {{ hostname }}
+{% for san in k3s_tls_sans %}
+  - {{ san }}
+{% endfor %}
+
+token: {{ k3s_token }}
+{% if k3s_taint %}
+node-taint:
+  - "node-role.kubernetes.io/control-plane=true:NoSchedule"
+{% endif %}

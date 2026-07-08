@@ -5,6 +5,11 @@
 # Dedicated low-privilege admin user created on the node (not `core`).
 node_user: "admin"
 
-# Where the local data disk gets mounted. Pick this now so nothing downstream
-# (k3s local paths, container data) has to be re-pointed later.
-data_mount_point: "/var/lib/data"
+# Where the local data disk (vdb) gets mounted. Deliberately k3s's DEFAULT
+# data-dir root — so k3s runs stock (no `data-dir` override) while its datastore
+# + embedded containerd + image cache (the disk-eaters) still land on vdb, off
+# the OS disk. Mounting at the default beats overriding data-dir: `k3s
+# secrets-encrypt`/`etcd-snapshot`/uninstall + community tooling all assume the
+# default path and break under a custom one (learned the hard way — see
+# ansible/CLAUDE.md §2). k3s creates `k3s/` under this on first start.
+data_mount_point: "/var/lib/rancher"
