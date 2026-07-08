@@ -68,7 +68,8 @@ pveum role add Provisioning -privs \
   "VM.Allocate VM.Clone VM.Config.Disk VM.Config.CPU VM.Config.Memory \
    VM.Config.Network VM.Config.Options VM.Config.HWType VM.Config.Cloudinit \
    VM.Config.CDROM VM.PowerMgmt VM.Audit \
-   Datastore.Audit Datastore.AllocateSpace"
+   Datastore.Audit Datastore.AllocateSpace \
+   SDN.Use"
 
 # 3. Grant it on / with propagation
 pveum acl modify / -user ansible@pve -role Provisioning
@@ -101,9 +102,14 @@ curl -sk -H "Authorization: PVEAPIToken=ansible@pve!provisioning=<secret>" \
 ```
 
 Notes:
-- If NIC/bridge assignment later fails with a permission error, add `SDN.Use`
-  to the role — only needed when bridges are managed via Proxmox SDN; plain
-  Linux bridges (`vmbr0`/`vmbr1`) don't require it.
+- `SDN.Use` is required on **Proxmox 8.x** even for plain Linux bridges
+  (`vmbr0`/`vmbr1`): PVE 8 represents them under an auto-generated SDN zone
+  (`localnetwork`), so assigning a guest NIC to a bridge — which the clone does
+  when it copies the template's `net0` — checks `SDN.Use` on
+  `/sdn/zones/localnetwork/<bridge>`. Without it the clone fails with
+  `403 Forbidden: Permission check failed (…, SDN.Use)`. It's in the role privs
+  above; to add it to an already-created role:
+  `pveum role modify Provisioning --privs "SDN.Use" --append`.
 - This token is only the **API** half. The snippet upload and
   `qm set --cicustom` go over **SSH** — see below.
 
