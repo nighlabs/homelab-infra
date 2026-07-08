@@ -8,23 +8,26 @@ the detailed, currently-in-progress task state that sits on top of those.
 
 Full design rationale lives in `../docs/mac-studio-inference-stack-2.md`.
 When in doubt about *why* a choice was made, check that doc's Appendix A
-decision log before re-litigating it. §6 below still records the
-k3s/multi-node plan for continuity, but treat it as "next," not "now."
+decision log before re-litigating it. The §6 k3s/multi-node plan is now the
+**current** task — §1's VM shell is done.
 
-> **Current task:** Create a single Flatcar VM with the right network
-> interfaces, a local data disk, and SSH key access. **k3s is not installed
-> yet.** This is purely "get a correctly-shaped, reachable, rebuildable VM"
-> — the k3s server config, sysext install, and multi-node expansion are the
-> *next* task, not this one.
+> **Current task:** Install k3s on the finished VM shell (§2 → §6) —
+> all-in-one server first, then 1 CP + 3 workers. **§1 is COMPLETE** (done
+> 2026-07-07): `snoop-a2o` was built and passed the full §1.4 DoD live,
+> including an unattended reboot and a from-scratch rebuild. §1 below is kept
+> as the reference for how the VM/network/disk/user plumbing k3s builds on was
+> shaped and verified.
 
 ---
 
-## 1. Current task — create the Flatcar VM shell
+## 1. DONE — create the Flatcar VM shell ✅
 
 Just the VM. No k3s, no sysext, no cluster config yet. Definition of done is
 purely: powered-on Flatcar VM, correctly networked, has a persistent data
 disk separate from the OS disk, and is SSH-reachable with key auth — and all
 of that survives an unattended `sudo reboot` and a from-scratch rebuild.
+**All of this was verified on `snoop-a2o` 2026-07-07** — see §1.4 for the
+checklist that passed.
 
 ### 1.1 Networking — two NICs, not one
 
