@@ -89,3 +89,28 @@ flatcar_channel: "stable"
 flatcar_version: "current"
 flatcar_template_vmid: 9000
 flatcar_template_name: "flatcar-stable"
+
+# --- k3s -------------------------------------------------------------------
+# Baked into a node's Ignition when its role is a k3s role (see
+# roles/flatcar_vm/tasks/preflight.yml). Delivered via the Flatcar k3s sysext
+# (design doc §3.1) — immutable, systemd-sysupdate-updatable, Renovate-trackable.
+#
+# k3s_version is the exact seed asset fetched at provision time; the sysext .raw
+# is https://extensions.flatcar.org/extensions/k3s-<version>-x86-64.raw . Bump it
+# (Renovate marker) when seeding a new node. k3s_minor is the sysupdate feature
+# name / MatchPattern minor pin — patch releases within it auto-apply, minor bumps
+# are a deliberate change here. Keep the two in sync (minor ⊂ version).
+k3s_version: "v1.32.2+k3s1"
+k3s_minor: "v1.32"
+
+# Cluster-internal CIDRs — pinned explicitly (never left as k3s implicit
+# defaults) so Calico's IPPool always matches (design §4.1, guardrail §8).
+# In 10.0.0.0/8; NEVER CGNAT 100.64.0.0/10 (root CLAUDE.md).
+k3s_cluster_cidr: "10.42.0.0/16"
+k3s_service_cidr: "10.43.0.0/16"
+
+# Cluster join token (server sets it, agents present it) — a secret, so vaulted.
+k3s_token: "{{ vault_k3s_token }}"
+# Extra API-cert SANs (e.g. a stable API DNS name) beyond the node IP + hostname
+# the server config always includes. Optional; defaults to none.
+k3s_tls_sans: "{{ vault_k3s_tls_sans | default([]) }}"

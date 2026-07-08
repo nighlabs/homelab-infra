@@ -34,6 +34,24 @@
   delegate_to: localhost
   changed_when: false
 
+# k3s server config + sysupdate transfer config, rendered into files/ so the
+# butane.yaml.j2 `contents.local:` refs resolve under --files-dir. Only for k3s
+# nodes; a bare VM shell (no role) skips this and its butane k3s block. Names
+# here (k3s-config.yaml / k3s-sysupdate.conf) match those local refs exactly.
+- name: "{{ hostname }} — render k3s config files"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ build_dir.path }}/files/{{ item.dest }}"
+    mode: "0644"
+  loop:
+    - { src: k3s-config.yaml.j2, dest: k3s-config.yaml }
+    - { src: k3s-sysupdate.conf.j2, dest: k3s-sysupdate.conf }
+  loop_control:
+    label: "{{ item.dest }}"
+  when: k3s_enabled
+  delegate_to: localhost
+  changed_when: false
+
 - name: "{{ hostname }} — render Butane config"
   ansible.builtin.template:
     src: butane.yaml.j2

@@ -60,6 +60,28 @@ storage:
       contents:
         inline: |
           {{ node_user }} ALL=(ALL) NOPASSWD: ALL
+{% if k3s_enabled %}
+
+    # --- k3s (baked in via the Flatcar k3s sysext) -------------------------
+    # The sysext .raw, fetched by Ignition at provision time. The symlink in
+    # storage.links (/etc/extensions/k3s.raw) activates it; systemd-sysext
+    # merges it at boot, providing /usr/local/bin/k3s + the k3s.service unit.
+    - path: /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw
+      mode: 0644
+      contents:
+        source: https://extensions.flatcar.org/extensions/k3s-{{ k3s_version }}-x86-64.raw
+    # k3s server config (server-only flags) — rendered from k3s-config.yaml.j2.
+    - path: /etc/rancher/k3s/config.yaml
+      mode: 0600
+      contents:
+        local: files/k3s-config.yaml
+    # systemd-sysupdate transfer config, minor-pinned so only patch releases
+    # within {{ k3s_minor }} auto-apply. Dir suffix = feature name k3s-{{ k3s_minor }}.
+    - path: /etc/sysupdate.k3s-{{ k3s_minor }}.d/k3s-{{ k3s_minor }}.conf
+      mode: 0644
+      contents:
+        local: files/k3s-sysupdate.conf
+{% endif %}
 
   # Second virtio disk (virtio1 -> /dev/vdb) for local data, kept decoupled
   # from the OS disk so the boot disk can be rebuilt without losing this.
@@ -78,3 +100,57 @@ storage:
       # otherwise make Ignition skip formatting (ansible/CLAUDE.md §7 item 1).
       wipe_filesystem: true
       with_mount_unit: true
+{% if k3s_enabled %}
+
+  links:
+    # Activate the sysext: /etc/extensions/<name>.raw -> the fetched image.
+    # systemd-sysext merges it at boot; systemd-sysupdate re-points this symlink
+    # to a newer .raw when a patch release lands.
+    - path: /etc/extensions/k3s.raw
+      target: /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw
+      hard: false
+    # Enable k3s.service explicitly. The k3s sysext ships the unit but NO
+    # auto-enable drop-in, and the unit file lives inside the sysext (absent at
+    # Ignition-provision time), so we can't use systemd.units[].enabled (it would
+    # try to enable a not-yet-existing unit). A wants/ symlink is provision-safe.
+    - path: /etc/systemd/system/multi-user.target.wants/k3s.service
+      target: /usr/local/lib/systemd/system/k3s.service
+      hard: false
+{% endif %}
+{% if k3s_enabled %}
+
+systemd:
+  units:
+    # Merge sysext images (incl. k3s) into the filesystem at boot.
+    - name: systemd-sysext.service
+      enabled: true
+    # Periodic update check for the pinned k3s minor (patch releases only).
+    - name: systemd-sysupdate.timer
+      enabled: true
+    # The base systemd-sysupdate.service only updates the OS. This drop-in makes
+    # each run also pull the k3s feature (-C k3s-{{ k3s_minor }}) and, if the
+    # active .raw changed, flag a reboot — the new k3s binary is applied on the
+    # next boot rather than hot-swapped under the running service. Mirrors the
+    # sysext-bakery's published drop-in. (Actual pull-through is the §7-item-5
+    # PoC; this wires the machinery.)
+    - name: systemd-sysupdate.service
+      dropins:
+        - name: k3s.conf
+          contents: |
+            [Service]
+            ExecStartPre=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/k3s.raw > /tmp/k3s-sysext-old"
+            ExecStartPre=/usr/lib/systemd/systemd-sysupdate -C k3s-{{ k3s_minor }} update
+            ExecStartPost=/usr/bin/sh -c "readlink --canonicalize /etc/extensions/k3s.raw > /tmp/k3s-sysext-new"
+            ExecStartPost=/usr/bin/sh -c "if ! cmp --silent /tmp/k3s-sysext-old /tmp/k3s-sysext-new; then touch /run/reboot-required; fi"
+    # Order k3s after the sysext is merged (its binary must exist) AND the data
+    # disk is mounted (data-dir lives there, else the datastore lands on the OS
+    # disk). Enablement is via the wants/ symlink above, not `enabled:` here —
+    # the unit is absent at provision time.
+    - name: k3s.service
+      dropins:
+        - name: 10-after-sysext-and-data.conf
+          contents: |
+            [Unit]
+            After=systemd-sysext.service
+            RequiresMountsFor={{ data_mount_point }}
+{% endif %}

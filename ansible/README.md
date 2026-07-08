@@ -213,3 +213,31 @@ After boot, over SSH to the node's DMZ IP (`<dmz_subnet_base>.<n>`):
 - `df -h` / `mount` — data disk mounted at `/var/lib/data`
 - `sudo reboot` with no console → comes back identical
 - delete the VM, re-run the play → identical MAC/IP/hostname (real rebuild test)
+
+### k3s (nodes with a k3s `role`, e.g. `all-in-one`)
+
+The k3s server is baked into Ignition via the Flatcar k3s sysext — it comes up
+on first boot with no post-boot steps. The node is **NotReady until Calico**
+(its CNI arrives later via Flux); that's expected here, not a failure. Over SSH
+to the DMZ IP:
+
+- `systemd-sysext status` lists **k3s**; `/usr/local/bin/k3s --version` matches
+  the `k3s_version` pin
+- `systemctl is-active k3s` → **active**; `journalctl -u k3s` clean
+- `sudo k3s kubectl get nodes -o wide` → the node present, version = pin,
+  **`STATUS NotReady` (expected — no CNI)**, `INTERNAL-IP` = the eth0/DMZ IP
+  (never eth1)
+- `ls /var/lib/data/rancher/k3s/server /var/lib/data/rancher/k3s/agent` — the
+  datastore + embedded containerd live on the **data disk** (vdb), not the OS
+  disk; `/var/lib/rancher` is absent or tiny
+- `sudo k3s secrets-encrypt status` → **Enabled**, aescbc (on from boot 1)
+- `sudo k3s kubectl get pods -A` → **no** traefik/servicelb/local-path; coredns
+  + metrics-server present but **Pending** (no CNI yet)
+- node `.spec.podCIDR` inside `10.42.0.0/16`; the API cert carries the tls-san
+  entries (`echo | openssl s_client -connect <dmz-ip>:6443 2>/dev/null |
+  openssl x509 -noout -text | grep -A1 'Subject Alternative'`)
+- `systemctl list-timers systemd-sysupdate.timer` — active; `systemd-sysupdate
+  -C k3s-<minor> list` tracks the `k3s-<minor>.@v` pattern (actual patch
+  pull-through is a separate PoC — `ansible/CLAUDE.md` §7 item 5)
+- delete the VM, re-run the play → k3s comes up **identically** from Ignition
+  (the real rebuild test, same as the shell above)
