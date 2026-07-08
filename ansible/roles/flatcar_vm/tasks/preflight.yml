@@ -29,6 +29,17 @@
   changed_when: false
   run_once: true
 
+# k3s roles: all-in-one / server / control-plane -> a k3s *server*; agent /
+# worker -> a k3s *agent*. A node with no `role` is a bare VM shell (§1) and
+# gets no k3s config at all. Only the server path is built today; the agent
+# branch is derived here but wired in the §6 multi-node step.
+- name: "{{ hostname }} — assert role is a known value (if set)"
+  ansible.builtin.assert:
+    that:
+      - node.role is not defined or node.role in ['all-in-one', 'server', 'control-plane', 'agent', 'worker']
+    fail_msg: "node '{{ hostname }}' has role '{{ node.role | default('') }}'; expected one of all-in-one/server/control-plane/agent/worker (or none)"
+    quiet: true
+
 - name: "{{ hostname }} — derive network + VM facts from node_number"
   ansible.builtin.set_fact:
     node_number: "{{ node.node_number | int }}"
@@ -38,3 +49,19 @@
     eth0_mac: "{{ mac_oui }}:00:{{ '%02X' | format(node.node_number | int) }}:00"
     eth1_mac: "{{ mac_oui }}:00:{{ '%02X' | format(node.node_number | int) }}:01"
     eth0_gateway: "{{ dmz_network.gateway }}"
+    # k3s facts. k3s_enabled gates the whole k3s block in butane.yaml.j2.
+    k3s_enabled: "{{ node.role is defined and node.role in ['all-in-one', 'server', 'control-plane', 'agent', 'worker'] }}"
+    k3s_role: "{{ 'agent' if (node.role | default('')) in ['agent', 'worker'] else 'server' }}"
+    # Taint control-plane-only nodes; an all-in-one stays schedulable (the CP
+    # taint is added when dedicated workers arrive — ansible/CLAUDE.md §6.1).
+    k3s_taint: "{{ (node.role | default('')) in ['server', 'control-plane'] }}"
+
+# The join token is required for any k3s node — fail fast if the vault is
+# missing it rather than baking a tokenless (insecure/broken) server config.
+- name: "{{ hostname }} — assert k3s join token is present when k3s is enabled"
+  ansible.builtin.assert:
+    that:
+      - vault_k3s_token is defined and (vault_k3s_token | string | length) > 0
+    fail_msg: "node '{{ hostname }}' is a k3s node but vault_k3s_token is unset — add it to the encrypted vault (see vault.example.yml)"
+    quiet: true
+  when: k3s_enabled

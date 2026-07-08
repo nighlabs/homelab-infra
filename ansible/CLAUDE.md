@@ -128,9 +128,10 @@ whole point of moving to this link:
   `storage.disks` stanzas (Butane `storage` section), not a manual `mkfs`
   after boot — the goal is a disk that comes back correctly formatted and
   mounted on a from-scratch rebuild without manual steps.
-- Pick a stable mount point now (e.g. `/var/lib/data` or similar) so nothing
-  downstream (k3s local paths, container data, etc.) has to be re-pointed
-  later.
+- Mount point is **`/var/lib/rancher`** — deliberately k3s's default data-dir
+  root, so k3s runs stock (no `data-dir` override) with its state on vdb. See §2:
+  overriding `data-dir` to a custom path broke `k3s secrets-encrypt`/tooling that
+  assume the default; mounting the disk *at* the default is the fix.
 
 ### 1.3 SSH access
 
@@ -171,13 +172,90 @@ whole point of moving to this link:
 
 ---
 
-## 2. Next task (not now) — install k3s
+## 2. IN PROGRESS — install k3s (all-in-one server) 🚧
 
-Once the VM shell above is solid, the next task is installing k3s on it
-(single all-in-one node first, then expanding to 1 CP + 3 workers). That
-plan is kept in §6 below for continuity — don't start on it until §1's
-definition of done is met, since the Ignition/network/disk plumbing here is
-exactly what the k3s config will build on top of.
+The `flatcar_vm` role now bakes k3s into a node's Ignition when its node-map
+`role` is a k3s role (`all-in-one`/`server`/`control-plane` → server;
+`agent`/`worker` → agent — **only the server path is built so far**). k3s is
+delivered via the Flatcar **k3s sysext** (design §3.1), not a binary drop. A
+from-scratch rebuild comes up as a running k3s server with no manual steps —
+same immutable-provisioning property §1 proved — though the ~50 MB sysext image
+is pulled once on **first boot** (see the initramfs finding below), so k3s is up
+~30–60 s after boot rather than instantly. Scope of this step: server up, API
+serving, node registered, secrets-encryption on, datastore on the data disk,
+auto-update machinery wired. The node stays **NotReady** until Calico (its CNI)
+arrives — that's a later milestone (§6), not this one.
+
+**What was added (all in `roles/flatcar_vm/` + `group_vars`):**
+- `group_vars/all/vars.yml`: `k3s_version` (seed asset, Renovate marker),
+  `k3s_minor` (sysupdate feature/MatchPattern pin), `k3s_cluster_cidr`/
+  `k3s_service_cidr` (pinned, guardrail §8), `k3s_token`/`k3s_tls_sans`
+  (vaulted). `vault.example.yml` gains `vault_k3s_token`/`vault_k3s_tls_sans`.
+- `preflight.yml`: derives `k3s_enabled`/`k3s_role`/`k3s_taint`, asserts the
+  role is known and the join token is present when enabled. All-in-one gets
+  **no** CP taint (added when workers arrive, §6.1).
+- `templates/k3s-config.yaml.j2` (server `/etc/rancher/k3s/config.yaml`) and
+  `templates/k3s-sysupdate.conf.j2` (minor-pinned transfer config), rendered to
+  `files/` by a `k3s_enabled`-gated task in `main.yml`, pulled into
+  `butane.yaml.j2` via `contents.local:` (the same pattern as the networkd
+  units). `butane.yaml.j2` gained its first `{% if %}` block + `storage.links`
+  and `systemd` sections.
+
+**Findings baked into the implementation (were unknowns — design §7 item 5):**
+- **Ignition can't fetch the sysext in this env — the image is downloaded on
+  first boot instead.** The first attempt used `storage.files` with
+  `contents.source:` (a remote fetch), which **boot-looped**: Ignition's files
+  stage runs in the **initramfs**, which has **no network** here — no DHCP (hard
+  guardrail) and the static `eth0` config only activates *after* the pivot. So
+  the remote fetch hangs pre-pivot, Ignition never completes, and Flatcar
+  reboots into it forever (symptom: console dead-ends in the initramfs disk
+  stage, no shell, never reaches `Welcome to Flatcar`). Fix: a
+  `k3s-sysext-download.service` oneshot (`After=network-online.target`) pulls the
+  `.raw` from the **real root** (network up — proven), symlinks it into
+  `/etc/extensions/`, re-merges systemd-sysext, then starts k3s. It's
+  `Condition`-guarded on the `.raw` path so it runs only on first boot / rebuild;
+  later boots merge the cached image early and start k3s via the wants/ symlink.
+  **Rule for this repo: never put a remote `contents.source:` in Ignition — the
+  initramfs has no network. Fetch post-pivot from a systemd unit instead.** We
+  also do **not** let Ignition create `/etc/extensions/k3s.raw` (a dangling
+  symlink at the early sysext merge could break the docker/containerd sysexts);
+  the download unit owns that symlink.
+- **The k3s sysext ships NO auto-enable drop-in** (unlike `kubernetes.sysext`).
+  The `k3s.service` unit lives *inside* the sysext, so it's absent at
+  Ignition-provision time → we enable it with a **`storage.links` wants/ symlink**
+  (`…/multi-user.target.wants/k3s.service`), NOT `systemd.units[].enabled`
+  (which would try to enable a not-yet-existing unit and fail).
+- **sysupdate feature name embeds the minor** (`k3s-<minor>`): the transfer conf
+  lives in `/etc/sysupdate.k3s-<minor>.d/`, `MatchPattern=k3s-<minor>.@v-%a.raw`,
+  and the update is driven by `systemd-sysupdate -C k3s-<minor> update`. The name
+  must match across all three. A minor bump = change `k3s_minor`/`k3s_version`
+  (Kubernetes has no unattended minor upgrades). Mirrors the sysext-bakery.
+- **Auto-update needs an explicit trigger**: the base
+  `systemd-sysupdate.service` only updates the OS, so a drop-in runs the
+  `-C k3s-<minor> update` as `ExecStartPre` and flags `/run/reboot-required` if
+  the active `.raw` changed (the new k3s binary applies on next boot, not
+  hot-swapped under the running service). Actual patch pull-through is still the
+  §7-item-5 PoC to verify live; this only wires the machinery.
+- **k3s datastore on the data disk — via the default path, NOT a `data-dir`
+  override.** vdb is mounted at **`/var/lib/rancher`** (k3s's default data-dir
+  root), so the kine/SQLite datastore + embedded containerd + image cache (the
+  disk-eaters) live on vdb, off the OS disk, while k3s runs stock. `k3s.service`
+  gets an `After=systemd-sysext.service` + `RequiresMountsFor=/var/lib/rancher`
+  drop-in so the binary exists and the disk is mounted before it starts. **Why
+  not `data-dir: <custom>`:** the first cut did that (`/var/lib/data/rancher/k3s`)
+  and `k3s secrets-encrypt` (+ `etcd-snapshot`, the uninstall script, community
+  tooling) broke — they assume the default path and need `--data-dir` under an
+  override. Mounting the disk *at* the default sidesteps all of it. (kubeconfig
+  is unrelated — always at `/etc/rancher/k3s/k3s.yaml`.)
+
+**DoD for this step:** see `ansible/README.md` → "Verify (definition of done)"
+(the k3s section). The node must come up identically from a destroy+re-run, same
+as the §1 shell rebuild.
+
+**Not in this step (later milestones):** CP taint (§6.1), agent/worker join
+config (§6.2), Flux bootstrap + Calico (§6.4–5, see §6 note below), full-disk
+encryption (design §3.6), moving kubelet's ephemeral root to vdb, backing up the
+aescbc key off-cluster.
 
 ---
 
@@ -196,12 +274,35 @@ from zero):
    process into a role, loop over the node map, generalize to 1 CP + 3
    workers. Template build (Flatcar image → import → convert) is its own
    idempotent Ansible role.
-4. **Bootstrap Flux** as the final step of the same Ansible run (Flux
-   Operator + `FluxInstance` pointed at the Git repo — see `gitops/`).
-5. **From Git, in dependency order**: Calico → MetalLB (BGP) → NGINX Gateway
-   Fabric + cert-manager (DNS-01 wildcard) → ceph-csi-operator + StorageClasses
-   → External Secrets Operator + Bitwarden SDK Server → Postgres + Redis →
-   LiteLLM → confirm a chat completion round-trips to the Mac.
+4. **Install Calico from Ansible, then hand it to Flux** (see the "Calico
+   bootstrap" note below) and **bootstrap Flux** as the final steps of the same
+   Ansible run (Flux Operator + `FluxInstance` pointed at the Git repo — see
+   `gitops/`).
+5. **From Git, in dependency order** (Calico already primed in step 4): MetalLB
+   (BGP) → NGINX Gateway Fabric + cert-manager (DNS-01 wildcard) →
+   ceph-csi-operator + StorageClasses → External Secrets Operator + Bitwarden
+   SDK Server → Postgres + Redis → LiteLLM → confirm a chat completion
+   round-trips to the Mac.
+
+> **Calico bootstrap — Ansible installs once, Flux adopts (decided 2026-07-08).**
+> The chicken-and-egg is real: Flux's own pods need a CNI, but Calico (the CNI)
+> is meant to be Flux-managed. Resolve it by having **Ansible install Calico once**
+> during bootstrap, then letting **Flux adopt** the same release — *not* by baking
+> a k3s autoload manifest (`/var/lib/rancher/k3s/server/manifests/`). Why not
+> autoload: k3s's AddonManager continuously re-applies autoloaded manifests, so
+> Flux would fight it over the same objects, and deleting the manifest to "stop"
+> autoload makes AddonManager *prune* (tear Calico down) — clean only if k3s owns
+> the CNI forever. A one-shot Ansible install leaves no lingering reconciler, so
+> the handoff to Flux is a quiet takeover. Mechanism: keep **one** pinned Calico
+> definition in Git (`gitops/`, as the Flux HelmRelease/Kustomization); Ansible
+> primes that **same** release name+namespace/manifests once (e.g. `helm install`
+> or `kubectl apply --server-side`) so Flux's first reconcile matches desired
+> state (no diff war). Fixed order: k3s up → install Calico → wait node Ready →
+> Flux Operator + `FluxInstance` + secret-zero. Shared prerequisite (also needed
+> for the Flux bootstrap): fetch `/etc/rancher/k3s/k3s.yaml` over SSH and rewrite
+> its `server:` URL to the DMZ IP so the Ansible control node has cluster access
+> right after k3s comes up. The current §2 k3s step is already forward-compatible
+> (it bakes **no** autoload manifest and keeps `flannel-backend: none`).
 6. **Then**: Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 7. **Then**: split DNS + external access (internal resolver, Tailscale split
    DNS, Cloudflare Tunnel), source-IP preservation checks on both paths.

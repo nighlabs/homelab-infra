@@ -1,0 +1,23 @@
+# systemd-sysupdate transfer config for the k3s sysext — written to
+# /etc/sysupdate.k3s-{{ k3s_minor }}.d/ and driven by `systemd-sysupdate -C
+# k3s-{{ k3s_minor }} update` (the drop-in on systemd-sysupdate.service in the
+# Butane config). The feature name k3s-{{ k3s_minor }} MUST match that directory
+# suffix and the -C argument.
+#
+# Minor-pinned on purpose: @v matches only the patch part within {{ k3s_minor }},
+# so patch releases auto-apply but a minor bump is a deliberate change to
+# k3s_minor / k3s_version in group_vars (Kubernetes doesn't support unattended
+# minor upgrades). Mirrors the sysext-bakery's per-minor k3s-<minor>.conf.
+[Transfer]
+Verify=false
+
+[Source]
+Type=url-file
+Path=https://extensions.flatcar.org/extensions/
+MatchPattern=k3s-{{ k3s_minor }}.@v-%a.raw
+
+[Target]
+Type=regular-file
+Path=/opt/extensions/k3s/
+CurrentSymlink=/etc/extensions/k3s.raw
+InstancesMax=3
