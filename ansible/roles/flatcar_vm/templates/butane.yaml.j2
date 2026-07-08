@@ -62,14 +62,13 @@ storage:
           {{ node_user }} ALL=(ALL) NOPASSWD: ALL
 {% if k3s_enabled %}
 
-    # --- k3s (baked in via the Flatcar k3s sysext) -------------------------
-    # The sysext .raw, fetched by Ignition at provision time. The symlink in
-    # storage.links (/etc/extensions/k3s.raw) activates it; systemd-sysext
-    # merges it at boot, providing /usr/local/bin/k3s + the k3s.service unit.
-    - path: /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw
-      mode: 0644
-      contents:
-        source: https://extensions.flatcar.org/extensions/k3s-{{ k3s_version }}-x86-64.raw
+    # --- k3s (installed via the Flatcar k3s sysext) -----------------------
+    # NOTE: the sysext .raw is deliberately NOT fetched here. Ignition's files
+    # stage runs in the initramfs, which has NO network in this no-DHCP setup
+    # (static addressing only activates after the pivot) — a remote `source:`
+    # fetch there hangs and boot-loops. Instead k3s-sysext-download.service (see
+    # the systemd section) pulls the image on first boot from the real root,
+    # where the network is up, then merges the sysext and starts k3s.
     # k3s server config (server-only flags) — rendered from k3s-config.yaml.j2.
     - path: /etc/rancher/k3s/config.yaml
       mode: 0600
@@ -103,16 +102,19 @@ storage:
 {% if k3s_enabled %}
 
   links:
-    # Activate the sysext: /etc/extensions/<name>.raw -> the fetched image.
-    # systemd-sysext merges it at boot; systemd-sysupdate re-points this symlink
-    # to a newer .raw when a patch release lands.
-    - path: /etc/extensions/k3s.raw
-      target: /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw
-      hard: false
     # Enable k3s.service explicitly. The k3s sysext ships the unit but NO
     # auto-enable drop-in, and the unit file lives inside the sysext (absent at
-    # Ignition-provision time), so we can't use systemd.units[].enabled (it would
-    # try to enable a not-yet-existing unit). A wants/ symlink is provision-safe.
+    # Ignition-provision time), so we can't use systemd.units[].enabled. A wants/
+    # symlink is provision-safe: it's a dangling ref on first boot (a harmless
+    # "unit not found" warning) until k3s-sysext-download.service merges the
+    # sysext and starts k3s; on later boots the cached sysext merges early and
+    # this starts k3s normally.
+    #
+    # We deliberately do NOT create /etc/extensions/k3s.raw here: on first boot
+    # its target doesn't exist yet, and a dangling symlink at the early
+    # systemd-sysext merge risks breaking the docker/containerd sysexts. The
+    # download unit creates that symlink after the image lands (and
+    # systemd-sysupdate re-points it on later patch updates).
     - path: /etc/systemd/system/multi-user.target.wants/k3s.service
       target: /usr/local/lib/systemd/system/k3s.service
       hard: false
@@ -121,9 +123,36 @@ storage:
 
 systemd:
   units:
-    # Merge sysext images (incl. k3s) into the filesystem at boot.
+    # Merge sysext images (docker/containerd always; k3s once downloaded) at boot.
     - name: systemd-sysext.service
       enabled: true
+    # First-boot (and post-rebuild) download of the k3s sysext from the REAL
+    # ROOT, where the static network is up — Ignition can't fetch it in the
+    # initramfs (no DHCP). Idempotent: the Condition skips it once the .raw is
+    # present, so reboots merge the cached image early and start k3s via the
+    # wants/ symlink. On first boot it downloads, symlinks it into
+    # /etc/extensions/, re-merges sysext, then starts k3s.
+    - name: k3s-sysext-download.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Download and activate the k3s sysext on first boot
+        Wants=network-online.target
+        After=network-online.target
+        # Skip once the image exists (every boot after a successful first boot).
+        ConditionPathExists=!/opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStartPre=/usr/bin/mkdir -p /opt/extensions/k3s
+        ExecStart=/usr/bin/curl -fsSL --retry 20 --retry-delay 3 --retry-connrefused -o /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw.part https://extensions.flatcar.org/extensions/k3s-{{ k3s_version }}-x86-64.raw
+        ExecStart=/usr/bin/mv /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw.part /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw
+        ExecStart=/usr/bin/ln -sf /opt/extensions/k3s/k3s-{{ k3s_version }}-x86-64.raw /etc/extensions/k3s.raw
+        ExecStart=/usr/bin/systemctl restart systemd-sysext.service
+        ExecStart=/usr/bin/systemctl daemon-reload
+        ExecStart=/usr/bin/systemctl --no-block start k3s.service
+        [Install]
+        WantedBy=multi-user.target
     # Periodic update check for the pinned k3s minor (patch releases only).
     - name: systemd-sysupdate.timer
       enabled: true
@@ -151,6 +180,6 @@ systemd:
         - name: 10-after-sysext-and-data.conf
           contents: |
             [Unit]
-            After=systemd-sysext.service
+            After=systemd-sysext.service k3s-sysext-download.service
             RequiresMountsFor={{ data_mount_point }}
 {% endif %}

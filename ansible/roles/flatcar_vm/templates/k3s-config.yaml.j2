@@ -4,11 +4,11 @@
 # token, k3s-agent.service) is the §6 multi-node step — this template is invoked
 # for k3s_role == 'server' nodes (all-in-one / control-plane).
 
-# Keep the datastore, embedded containerd, and pulled images on the decoupled
-# data disk (vdb) — that is what grows — so k3s can't fill the OS disk and its
-# state is independent of an OS-disk rebuild. k3s.service is ordered after this
-# mount (butane drop-in) so the dir exists before k3s writes to it.
-data-dir: {{ data_mount_point }}/rancher/k3s
+# NB: no `data-dir` override on purpose. The data disk (vdb) is mounted at
+# k3s's DEFAULT data-dir root ({{ data_mount_point }}), so the datastore +
+# embedded containerd + image cache (the disk-eaters) land on vdb — off the OS
+# disk — while k3s runs stock and every `k3s` CLI subcommand works with no
+# --data-dir flag. k3s.service is ordered after that mount (butane drop-in).
 
 # CNI + NetworkPolicy are Calico's, installed later via Ansible→Flux (§6). Until
 # then the node is NotReady — expected. disable-network-policy only turns off

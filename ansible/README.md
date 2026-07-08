@@ -210,27 +210,34 @@ After boot, over SSH to the node's DMZ IP (`<dmz_subnet_base>.<n>`):
 - `ip route show dev eth1` — only the connected subnet, **no default route**
 - `resolvectl status` / `getent hosts <name>` — DNS via the vaulted resolver
 - `hostnamectl` — matches the node map key
-- `df -h` / `mount` — data disk mounted at `/var/lib/data`
+- `df -h` / `mount` — data disk (vdb) mounted at `/var/lib/rancher` (k3s's
+  default data-dir root; k3s state lands here, off the OS disk)
 - `sudo reboot` with no console → comes back identical
 - delete the VM, re-run the play → identical MAC/IP/hostname (real rebuild test)
 
 ### k3s (nodes with a k3s `role`, e.g. `all-in-one`)
 
-The k3s server is baked into Ignition via the Flatcar k3s sysext — it comes up
-on first boot with no post-boot steps. The node is **NotReady until Calico**
-(its CNI arrives later via Flux); that's expected here, not a failure. Over SSH
-to the DMZ IP:
+The k3s server is baked into Ignition via the Flatcar k3s sysext — no manual
+post-boot steps. The ~50 MB sysext image is **downloaded on first boot** by
+`k3s-sysext-download.service` (Ignition can't fetch it in the initramfs — no
+DHCP; see `ansible/CLAUDE.md` §2), so k3s is up **~30–60 s after boot**, not
+instantly. The node is **NotReady until Calico** (its CNI arrives later via
+Flux); that's expected here, not a failure. Over SSH to the DMZ IP:
 
+- `systemctl status k3s-sysext-download.service` → **active (exited)** on first
+  boot (skipped/`condition` on later boots, once the `.raw` is cached)
 - `systemd-sysext status` lists **k3s**; `/usr/local/bin/k3s --version` matches
   the `k3s_version` pin
 - `systemctl is-active k3s` → **active**; `journalctl -u k3s` clean
 - `sudo k3s kubectl get nodes -o wide` → the node present, version = pin,
   **`STATUS NotReady` (expected — no CNI)**, `INTERNAL-IP` = the eth0/DMZ IP
   (never eth1)
-- `ls /var/lib/data/rancher/k3s/server /var/lib/data/rancher/k3s/agent` — the
-  datastore + embedded containerd live on the **data disk** (vdb), not the OS
-  disk; `/var/lib/rancher` is absent or tiny
-- `sudo k3s secrets-encrypt status` → **Enabled**, aescbc (on from boot 1)
+- `mount | grep /var/lib/rancher` — vdb is mounted at `/var/lib/rancher`, so the
+  datastore + embedded containerd (`/var/lib/rancher/k3s/{server,agent}`) live on
+  the **data disk**, not the OS disk — with k3s using its stock default data-dir
+- `sudo k3s secrets-encrypt status` → **Enabled**, aescbc (on from boot 1). No
+  `--data-dir` needed — the datastore is at the default path (that's the point of
+  mounting vdb at `/var/lib/rancher` rather than overriding `data-dir`).
 - `sudo k3s kubectl get pods -A` → **no** traefik/servicelb/local-path; coredns
   + metrics-server present but **Pending** (no CNI yet)
 - node `.spec.podCIDR` inside `10.42.0.0/16`; the API cert carries the tls-san

@@ -128,9 +128,10 @@ whole point of moving to this link:
   `storage.disks` stanzas (Butane `storage` section), not a manual `mkfs`
   after boot — the goal is a disk that comes back correctly formatted and
   mounted on a from-scratch rebuild without manual steps.
-- Pick a stable mount point now (e.g. `/var/lib/data` or similar) so nothing
-  downstream (k3s local paths, container data, etc.) has to be re-pointed
-  later.
+- Mount point is **`/var/lib/rancher`** — deliberately k3s's default data-dir
+  root, so k3s runs stock (no `data-dir` override) with its state on vdb. See §2:
+  overriding `data-dir` to a custom path broke `k3s secrets-encrypt`/tooling that
+  assume the default; mounting the disk *at* the default is the fix.
 
 ### 1.3 SSH access
 
@@ -176,9 +177,11 @@ whole point of moving to this link:
 The `flatcar_vm` role now bakes k3s into a node's Ignition when its node-map
 `role` is a k3s role (`all-in-one`/`server`/`control-plane` → server;
 `agent`/`worker` → agent — **only the server path is built so far**). k3s is
-delivered via the Flatcar **k3s sysext** (design §3.1), not a binary drop, so a
-from-scratch rebuild boots straight into a running k3s server — same
-immutable-provisioning property §1 proved. Scope of this step: server up, API
+delivered via the Flatcar **k3s sysext** (design §3.1), not a binary drop. A
+from-scratch rebuild comes up as a running k3s server with no manual steps —
+same immutable-provisioning property §1 proved — though the ~50 MB sysext image
+is pulled once on **first boot** (see the initramfs finding below), so k3s is up
+~30–60 s after boot rather than instantly. Scope of this step: server up, API
 serving, node registered, secrets-encryption on, datastore on the data disk,
 auto-update machinery wired. The node stays **NotReady** until Calico (its CNI)
 arrives — that's a later milestone (§6), not this one.
@@ -199,6 +202,24 @@ arrives — that's a later milestone (§6), not this one.
   and `systemd` sections.
 
 **Findings baked into the implementation (were unknowns — design §7 item 5):**
+- **Ignition can't fetch the sysext in this env — the image is downloaded on
+  first boot instead.** The first attempt used `storage.files` with
+  `contents.source:` (a remote fetch), which **boot-looped**: Ignition's files
+  stage runs in the **initramfs**, which has **no network** here — no DHCP (hard
+  guardrail) and the static `eth0` config only activates *after* the pivot. So
+  the remote fetch hangs pre-pivot, Ignition never completes, and Flatcar
+  reboots into it forever (symptom: console dead-ends in the initramfs disk
+  stage, no shell, never reaches `Welcome to Flatcar`). Fix: a
+  `k3s-sysext-download.service` oneshot (`After=network-online.target`) pulls the
+  `.raw` from the **real root** (network up — proven), symlinks it into
+  `/etc/extensions/`, re-merges systemd-sysext, then starts k3s. It's
+  `Condition`-guarded on the `.raw` path so it runs only on first boot / rebuild;
+  later boots merge the cached image early and start k3s via the wants/ symlink.
+  **Rule for this repo: never put a remote `contents.source:` in Ignition — the
+  initramfs has no network. Fetch post-pivot from a systemd unit instead.** We
+  also do **not** let Ignition create `/etc/extensions/k3s.raw` (a dangling
+  symlink at the early sysext merge could break the docker/containerd sysexts);
+  the download unit owns that symlink.
 - **The k3s sysext ships NO auto-enable drop-in** (unlike `kubernetes.sysext`).
   The `k3s.service` unit lives *inside* the sysext, so it's absent at
   Ignition-provision time → we enable it with a **`storage.links` wants/ symlink**
@@ -215,11 +236,17 @@ arrives — that's a later milestone (§6), not this one.
   the active `.raw` changed (the new k3s binary applies on next boot, not
   hot-swapped under the running service). Actual patch pull-through is still the
   §7-item-5 PoC to verify live; this only wires the machinery.
-- **k3s datastore on the data disk**: `data-dir: /var/lib/data/rancher/k3s` so
-  the kine/SQLite datastore + embedded containerd + images (the disk-eaters)
-  live on vdb, not the OS disk. `k3s.service` gets an `After=systemd-sysext.service`
-  + `RequiresMountsFor=/var/lib/data` drop-in so the binary exists and the disk
-  is mounted before it starts.
+- **k3s datastore on the data disk — via the default path, NOT a `data-dir`
+  override.** vdb is mounted at **`/var/lib/rancher`** (k3s's default data-dir
+  root), so the kine/SQLite datastore + embedded containerd + image cache (the
+  disk-eaters) live on vdb, off the OS disk, while k3s runs stock. `k3s.service`
+  gets an `After=systemd-sysext.service` + `RequiresMountsFor=/var/lib/rancher`
+  drop-in so the binary exists and the disk is mounted before it starts. **Why
+  not `data-dir: <custom>`:** the first cut did that (`/var/lib/data/rancher/k3s`)
+  and `k3s secrets-encrypt` (+ `etcd-snapshot`, the uninstall script, community
+  tooling) broke — they assume the default path and need `--data-dir` under an
+  override. Mounting the disk *at* the default sidesteps all of it. (kubeconfig
+  is unrelated — always at `/etc/rancher/k3s/k3s.yaml`.)
 
 **DoD for this step:** see `ansible/README.md` → "Verify (definition of done)"
 (the k3s section). The node must come up identically from a destroy+re-run, same
