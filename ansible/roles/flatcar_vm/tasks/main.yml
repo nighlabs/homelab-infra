@@ -89,7 +89,7 @@
     timeout: 300
   register: clone_result
 
-- name: "{{ hostname }} — configure CPU/RAM/NICs (MACs pinned, eth1 jumbo)"
+- name: "{{ hostname }} — configure CPU/RAM (NICs set separately via qm, see below)"
   community.proxmox.proxmox_kvm:
     node: "{{ proxmox_node }}"
     vmid: "{{ vmid }}"
@@ -100,9 +100,36 @@
     scsihw: virtio-scsi-single
     agent: "enabled=1"
     onboot: true
-    net:
-      net0: "virtio={{ eth0_mac }},bridge={{ dmz_network.bridge }},tag={{ dmz_network.vlan }}"
-      net1: "virtio={{ eth1_mac }},bridge={{ ceph_public_network.bridge }},tag={{ ceph_public_network.vlan }},mtu={{ ceph_public_network.mtu }}"
+
+# proxmox_kvm's `update: true` raises KeyError('net1') when it has to ADD a NIC
+# the cloned VM doesn't have yet (the template ships net0 only, so net1 is new;
+# the module's diff looks up the not-yet-existing 'net1' and blows up). The
+# purpose-built proxmox_nic module manages one interface at a time over the API
+# (no SSH, scoped token, inherits api_* from module_defaults), sidestepping that
+# bug — it overwrites net0 (re-pinning the MAC + DMZ tag onto the cloned NIC)
+# and adds net1 with the Ceph-public tag + jumbo MTU. Needs VM.Config.Network +
+# SDN.Use (both on the Provisioning role).
+- name: "{{ hostname }} — set NICs via proxmox_nic (MACs pinned, eth1 tagged + jumbo)"
+  community.proxmox.proxmox_nic:
+    vmid: "{{ vmid }}"
+    interface: "{{ item.interface }}"
+    bridge: "{{ item.bridge }}"
+    mac: "{{ item.mac }}"
+    tag: "{{ item.tag }}"
+    mtu: "{{ item.mtu | default(omit) }}"
+    state: present
+  loop:
+    - interface: net0            # DMZ / cluster-facing — default MTU (1500)
+      bridge: "{{ dmz_network.bridge }}"
+      mac: "{{ eth0_mac }}"
+      tag: "{{ dmz_network.vlan }}"
+    - interface: net1            # Ceph public — tagged VLAN + jumbo frames
+      bridge: "{{ ceph_public_network.bridge }}"
+      mac: "{{ eth1_mac }}"
+      tag: "{{ ceph_public_network.vlan }}"
+      mtu: "{{ ceph_public_network.mtu }}"
+  loop_control:
+    label: "{{ item.interface }}"
 
 - name: "{{ hostname }} — attach data disk (virtio1 -> /dev/vdb)"
   community.proxmox.proxmox_disk:
@@ -113,16 +140,18 @@
     backup: false
     create: regular
 
-# proxmox_kvm doesn't expose cicustom on the pinned version, so set it via a
-# delegated `qm set` on the PVE host — settable by a scoped token, no root@pam
-# (design doc §3.4 / Appendix A). Requires a cloud-init drive on the template.
-- name: "{{ hostname }} — attach Ignition via cicustom"
-  ansible.builtin.command:
-    cmd: >-
-      {{ proxmox_qm }} set {{ vmid }}
-      --cicustom "user={{ proxmox_snippet_storage }}:snippets/{{ hostname }}.ign"
-  delegate_to: "{{ proxmox_ssh_host }}"
-  changed_when: true
+# The installed community.proxmox.proxmox_kvm DOES expose cicustom (unlike the
+# older version the design doc assumed), so set it over the API — scoped token,
+# no SSH, no root@pam (design doc §3.4 / Appendix A). Requires a cloud-init drive
+# on the template (present) and the snippet already uploaded (above). FALLBACK:
+# if a PVE build ever rejects cicustom-over-API for a non-root token, revert this
+# to a delegated `{{ proxmox_qm }} set {{ vmid }} --cicustom ...` over SSH.
+- name: "{{ hostname }} — attach Ignition via cicustom (proxmox_kvm/API)"
+  community.proxmox.proxmox_kvm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ vmid }}"
+    update: true
+    cicustom: "user={{ proxmox_snippet_storage }}:snippets/{{ hostname }}.ign"
 
 # --- 4. Boot -----------------------------------------------------------------
 - name: "{{ hostname }} — ensure VM is running"

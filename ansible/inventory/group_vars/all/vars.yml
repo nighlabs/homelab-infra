@@ -57,6 +57,13 @@ proxmox_api_user: "{{ vault_proxmox_api_user }}"
 proxmox_api_token_id: "{{ vault_proxmox_api_token_id }}"
 proxmox_api_token_secret: "{{ vault_proxmox_api_token_secret }}"
 
+# PVE ships a self-signed API cert (port 8006) and the control node has no CA to
+# verify it against, so the proxmox_* API modules fail with CERTIFICATE_VERIFY_
+# FAILED. Default false for the stock self-signed setup; flip to true only if
+# you've installed a cert on the PVE API that the control node actually trusts.
+# (The template-build role is unaffected — it uses `qm` over SSH, not the API.)
+proxmox_validate_certs: false
+
 # Proxmox cluster node NAME (as PVE knows it) to create the VM on — vaulted.
 proxmox_node: "{{ vault_proxmox_node }}"
 # Inventory host alias we SSH into for snippet upload + `qm` fallbacks. This is
