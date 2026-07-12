@@ -1,6 +1,8 @@
 ---
 # Install with: ansible-galaxy collection install -r requirements.yml
-# Also required on the control node (PATH): `butane` (Flatcar Butane transpiler).
+# This file covers ONLY the Ansible collections. Control-node binaries (butane,
+# helm, …) and Python deps live elsewhere — see "Control-node prerequisites" in
+# README.md for the full, authoritative list.
 #
 # We use exactly two modules — proxmox_kvm and proxmox_disk — so we pull the
 # dedicated `community.proxmox` collection rather than the ~800-module
@@ -12,3 +14,15 @@ collections:
   # into ansible/.ansible (collections_path in ansible.cfg), not shared ~/.ansible.
   - name: community.proxmox
     version: ">=2.0.0,<3.0.0"
+
+  # Cluster bootstrap (playbooks/bootstrap-cluster.yml): the `helm` module primes
+  # Calico and `k8s_info` waits for the node to go Ready. Needs the `kubernetes`
+  # Python lib (pyproject.toml) AND the `helm` CLI on PATH (README one-time setup).
+  #
+  # 6.x is required for Helm 4: the 5.x line hard-fails on any helm >=4.0.0
+  # ("Helm version must be >=3.0.0,<4.0.0"). 6.4.0/6.5.0 added Helm v4 support and
+  # replaced that ceiling with a minimum-only check. 6.0.0's breaking changes don't
+  # affect us (removed the `k8s` inventory plugin — our inventory is static; dropped
+  # ansible-core<2.16 — we're on 2.21). Cap the major so a breaking 7.x can't float in.
+  - name: kubernetes.core
+    version: ">=6.5.0,<7.0.0"

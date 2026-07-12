@@ -11,12 +11,16 @@ When in doubt about *why* a choice was made, check that doc's Appendix A
 decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
-> **Current task:** Install k3s on the finished VM shell (§2 → §6) —
-> all-in-one server first, then 1 CP + 3 workers. **§1 is COMPLETE** (done
-> 2026-07-07): `snoop-a2o` was built and passed the full §1.4 DoD live,
-> including an unattended reboot and a from-scratch rebuild. §1 below is kept
-> as the reference for how the VM/network/disk/user plumbing k3s builds on was
-> shaped and verified.
+> **Current task:** Bring the all-in-one node to **Ready** — wait for k3s to
+> boot, then prime Calico (§6 step 4, first half). **§1 (VM shell) and §2 (k3s
+> all-in-one server) are COMPLETE and verified live** on `snoop-a2o` (§1 done
+> 2026-07-07: full §1.4 DoD incl. unattended reboot + from-scratch rebuild; §2:
+> k3s server up, API serving, secrets-encryption on, datastore on vdb). **Now
+> IMPLEMENTED (pending live run):** `playbooks/bootstrap-cluster.yml` waits for
+> k3s + primes Calico via the tigera-operator Helm chart, and `gitops/` holds the
+> pinned Calico HelmRelease Flux will adopt. **Next:** Flux bootstrap (Flux
+> Operator + `FluxInstance` + secret-zero) — the second half of §6 step 4. §§1–2
+> below are kept as the reference for the plumbing the rest builds on.
 
 ---
 
@@ -66,11 +70,18 @@ whole point of moving to this link:
   specifically); defining static addresses in Ignition's own
   `systemd-networkd` units sidesteps that path entirely rather than
   triggering it.
-- **Source of truth: `inventory/nodes.yml`** — one entry per node with at
-  minimum: `hostname`, `eth0_mac`, `eth0_ip`, `eth1_mac`, `eth1_ip`. This is
-  the same node map that already drives VM creation, so network identity
-  lives right alongside CPU/RAM/role — one place to look, one place to
-  change.
+- **Source of truth: `inventory/nodes.yml`** — nodes grouped under the k3s
+  **cluster** they belong to (`clusters: {<name>: {nodes: {...}}}`); only
+  `node_number` is required per node, everything host-shaped derives from it.
+  The cluster key IS the cluster's name: it names the kubeconfig
+  cluster/user/context and the per-cluster kubeconfig file
+  (`ansible/.kube/<cluster>.config`). This is the same node map that drives VM
+  creation, so network identity lives right alongside CPU/RAM/role — one place
+  to look, one place to change. `playbooks/tasks/load-node-map.yml` flattens
+  `clusters` → a cluster-annotated `nodes` map (VMs are provisioned identically
+  regardless of cluster) and asserts **global** hostname/`node_number`
+  uniqueness — clusters share the DMZ/Ceph subnets and the vmid space, so the
+  uniqueness can't be per-cluster.
 - **Pin the MAC addresses at VM-creation time** via the `proxmox_kvm`
   module's `net0`/`net1` `macaddr` option, using the same values from the
   node map. This makes Ignition's `[Match] MACAddress=` stanza fully
@@ -278,8 +289,41 @@ from zero):
    bootstrap" note below) and **bootstrap Flux** as the final steps of the same
    Ansible run (Flux Operator + `FluxInstance` pointed at the Git repo — see
    `gitops/`).
+   - **The Calico-prime half is IMPLEMENTED** (pending live run) in
+     `playbooks/bootstrap-cluster.yml` (wired into `site.yml` after
+     `provision-nodes.yml`): it waits for SSH, polls the k3s API `/readyz`,
+     fetches `/etc/rancher/k3s/k3s.yaml` and rewrites it — `server:` → the DMZ IP,
+     and the entries renamed off k3s's `default` to the cluster key from the node
+     map (k3s names cluster+user+context ALL `default`, so two clusters would
+     silently clobber each other on any merge) — landing at
+     `ansible/.kube/<cluster>.config` (git-ignored) and *merged* (not overwritten)
+     into `~/.kube/config` via `kubernetes.core.kubeconfig` when
+     `kubeconfig_merge_user`. The play is **per-cluster**: it elects one bootstrap
+     primary per cluster in the node map (in-memory group `k3s_primaries`) and
+     primes each cluster's Calico against that cluster's own kubeconfig — only one
+     cluster exists today, so that path is structural, not hardware-tested. Then
+     `helm`-installs the
+     `tigera-operator` chart from `gitops/infrastructure/calico/values.yaml`
+     (`calico_version` pin) and waits for the node to go Ready. The **Flux
+     bootstrap half** (Flux Operator + `FluxInstance` + secret-zero, which then
+     *adopts* that release) is still TODO — the next milestone.
+   - **Flatcar gotcha (baked in): the node has NO Python**, so the tasks that run
+     *on* it (poll `/readyz`, read the kubeconfig) use **`raw`** (straight over
+     SSH, no interpreter), with `sudo` embedded in the command — NOT
+     `command`/`slurp`, which need a target Python and would fail with "python
+     not found". The Helm/`k8s_info` tasks avoid this entirely by running in a
+     `hosts: localhost` play against the cluster via kubeconfig — nothing k8s is
+     installed on the node. **Rule for any future Ansible-on-node work** (agent
+     joins, Flux-over-SSH): use `raw`, or the play won't run on Flatcar.
+   - The pinned Calico definition Flux adopts lives at
+     `gitops/infrastructure/calico/` (HelmRelease + HelmRepository +
+     `values.yaml`, the single values source Ansible also primes from). See
+     `gitops/CLAUDE.md` for the adoption mechanics and the repo's 3-tier layout
+     (`deployment/` entrypoints + `infrastructure/` + `apps/`).
 5. **From Git, in dependency order** (Calico already primed in step 4): MetalLB
-   (BGP) → NGINX Gateway Fabric + cert-manager (DNS-01 wildcard) →
+   (BGP) — *but see §7 item 13: whether Calico BGP should absorb MetalLB is an
+   open question; we ship MetalLB first and revisit* → NGINX Gateway Fabric +
+   cert-manager (DNS-01 wildcard) →
    ceph-csi-operator + StorageClasses → External Secrets Operator + Bitwarden
    SDK Server → Postgres + Redis → LiteLLM → confirm a chat completion
    round-trips to the Mac.
@@ -419,6 +463,52 @@ apply once k3s work starts.
     end-to-end testing later ("confirm a chat completion routes end-to-end")
     fails intermittently, check this before assuming it's a cluster-side
     bug.
+
+13. **Calico BGP as a MetalLB replacement — OPEN, needs more discussion
+    (raised 2026-07-12).** We're currently shipping the simple combo: Calico
+    **VXLAN + `bgp: Disabled`** (see `gitops/infrastructure/calico/values.yaml`)
+    with **MetalLB** owning LoadBalancer IPs in BGP mode (§6 step 5). But since
+    we're already paying to peer BGP with FRR for the LB range, and Calico is
+    already the CNI, **Calico's own BGP could advertise LoadBalancer IPs
+    directly** — attractive because it would: (a) **drop MetalLB** (one fewer
+    tool + one fewer FRR peer to manage); (b) if we also move the dataplane to
+    BGP, **remove VXLAN encapsulation** → less per-packet CPU and **no ~50-byte
+    encap tax** cutting pod-path MTU below 1500 (an MTU class of bug we
+    otherwise invite). **Costs / why not yet:** couples pod networking to the
+    pfSense BGP fabric (bigger blast radius on the base CNI layer, the one you
+    least want to churn), and leans on Calico's **newer LoadBalancer IPAM**
+    (less battle-tested than MetalLB's allocation — verify its maturity at the
+    pinned `calico_version`). **Crawl-before-walk plan:** start simple as above,
+    revisit consolidation once the real upstream question is decided — *do we
+    want the pod dataplane on BGP/no-encap?* If VXLAN stays → keep MetalLB. If
+    we go native-routed → then MetalLB is redundant and folding LB advertisement
+    into Calico removes a component. **PoC before switching:** stand up Calico
+    BGP peering to FRR and confirm a LoadBalancer IP is both *allocated* (Calico
+    IPAM) and *reachable* over BGP, next to (not replacing) MetalLB, before
+    committing. Related: item 8 (FRR "Disable eBGP Require Policy" applies to
+    Calico's session too) and design-doc Appendix A "Load balancer" entry.
+
+14. **Cluster-admin kubeconfig persists on the control node — OPEN, decide WITH
+    the Flux milestone (raised 2026-07-12).** `bootstrap-cluster.yml` fetches k3s's
+    admin kubeconfig to `ansible/.kube/<cluster>.config` (0600, git-ignored) and
+    merges the context into `~/.kube/config`. That admin cert then just *sits*
+    there: it's cluster-admin, long-lived, and every play reads it — including the
+    Flux bootstrap that's next. **The two questions, which are really one:** should
+    Flux get a **scoped ServiceAccount kubeconfig** rather than reusing the admin
+    one, and should the admin file be **shredded after bootstrap** once nothing
+    needs it? **Why not just delete it in the happy path today** (the obvious move,
+    and wrong): (a) later plays run *standalone* — a `flux-bootstrap.yml` on its own
+    would find no kubeconfig, working only inside a full `site.yml` that re-fetched
+    it first, a coupling that bites exactly once and confusingly; (b) with
+    `kubeconfig_merge_user: false` (the CI case) deleting the repo file leaves **no
+    kubeconfig anywhere** — a footgun that fires only for whoever opted out of the
+    home-dir write. Cheap to defer: the file is regenerated from the node on every
+    `bootstrap-cluster.yml` run, so nothing is lost by keeping it until Flux's
+    access model is settled. Options if we do act: an opt-in
+    `kubeconfig_cleanup_local` flag (guarded on `kubeconfig_merge_user`), or a
+    deliberate `playbooks/clean-kubeconfig.yml` teardown (the `kubernetes.core.
+    kubeconfig` module's `behavior: remove` can pull the merged contexts back out
+    of `~/.kube/config` too) — never as a silent step in the provisioning path.
 
 ---
 

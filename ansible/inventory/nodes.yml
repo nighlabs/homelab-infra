@@ -1,6 +1,14 @@
 ---
 # Flatcar node map — the single source of truth for node identity and
-# addressing (ansible/CLAUDE.md §1.1). One entry per node.
+# addressing (ansible/CLAUDE.md §1.1). Nodes are grouped under the k3s cluster
+# they belong to; the cluster key IS the cluster's name.
+#
+# That key names more than the grouping: it becomes the kubeconfig's
+# cluster/user/context name (`<cluster>` / `<cluster>-admin` / `<cluster>`, see
+# playbooks/bootstrap-cluster.yml) and the per-cluster kubeconfig filename
+# (`ansible/.kube/<cluster>.config`). k3s names all three `default`, so without
+# that rename two clusters collide on every entry and silently clobber each
+# other. Pick a key you're happy typing after `kubectl --context`.
 #
 # Only `node_number` is required per node; everything host-shaped is derived
 # from it deterministically (see roles/flatcar_vm/tasks/preflight.yml), so
@@ -15,13 +23,21 @@
 # MACs are pinned at VM-creation time so Ignition's [Match] MACAddress= binds
 # each NIC deterministically regardless of guest interface naming.
 #
-# node_number must be unique and in 1..254 (it's the final IP octet); a
-# preflight assert enforces uniqueness before anything is created.
+# node_number must be unique and in 1..254 (it's the final IP octet), and that
+# uniqueness is GLOBAL — across every cluster, not just within one. All clusters
+# share the same DMZ/Ceph subnets and the same Proxmox vmid space (1000 + n), so
+# reusing a number in a second cluster collides on both an IP and a vmid. Node
+# hostnames must likewise be globally unique. Both are asserted (see
+# playbooks/tasks/load-node-map.yml) before anything is created.
 
-nodes:
-  snoop-a2o:                 # "all to one" — single all-in-one node (no k3s yet)
-    node_number: 50          # final octet -> DMZ + Ceph-public IPs (bases vaulted)
-    role: all-in-one
-    cores: 4
-    memory_mb: 8192
-    data_disk_gb: 100
+clusters:
+  # The single cluster today. A second one = another key here with its own nodes
+  # and non-overlapping node_numbers — nothing else in the repo changes.
+  homelab:
+    nodes:
+      snoop-a2o:                 # "all to one" — single all-in-one node
+        node_number: 50          # final octet -> DMZ + Ceph-public IPs (bases vaulted)
+        role: all-in-one
+        cores: 4
+        memory_mb: 8192
+        data_disk_gb: 100

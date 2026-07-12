@@ -1,9 +1,10 @@
 ---
 # Role-private defaults. Shared/topology config (networks, Proxmox connection,
 # template name) lives in group_vars/all/vars.yml.
-
-# Dedicated low-privilege admin user created on the node (not `core`).
-node_user: "admin"
+#
+# NOTE: `node_user` (the node's admin login) now lives in group_vars/all/vars.yml
+# — the bootstrap play (playbooks/bootstrap-cluster.yml) needs it to SSH in, so
+# it's a shared fact, not role-private. One definition, used by both.
 
 # Where the local data disk (vdb) gets mounted. Deliberately k3s's DEFAULT
 # data-dir root — so k3s runs stock (no `data-dir` override) while its datastore

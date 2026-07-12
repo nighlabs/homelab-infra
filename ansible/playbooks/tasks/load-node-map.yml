@@ -1,0 +1,48 @@
+---
+# Flatten inventory/nodes.yml's `clusters:` → a single `nodes` map, each entry
+# annotated with the `cluster` it came from. Included by provision-nodes.yml and
+# bootstrap-cluster.yml (both of which vars_files the node map first).
+#
+# Why flatten at all: node identity is cluster-scoped, but node *allocation* is
+# global — all clusters share the DMZ/Ceph subnets and the Proxmox vmid space, so
+# node_number and hostname uniqueness must hold ACROSS clusters, and the
+# flatcar_vm role provisions a VM the same way regardless of which cluster it
+# joins. One flat map gives both, without every consumer walking two levels.
+#
+#   clusters: {homelab: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
+#     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: homelab}}
+
+- name: Flatten clusters → a cluster-annotated node map
+  ansible.builtin.set_fact:
+    nodes: >-
+      {{ nodes | default({}) | combine(
+           dict(
+             (item.value.nodes | default({})).keys() | list
+             | zip(
+                 (item.value.nodes | default({})).values()
+                 | map('combine', {'cluster': item.key}) | list
+               )
+           )
+         ) }}
+  loop: "{{ clusters | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# A duplicate hostname across two clusters would be silently swallowed by the
+# combine above (last one wins) — so compare the flattened count against the
+# declared count rather than trusting it. node_number uniqueness is global for
+# the same reason: it's both an IP octet and (1000 + n) a vmid.
+- name: Assert node hostnames and node_numbers are unique across ALL clusters
+  vars:
+    numbers: "{{ nodes | dict2items | map(attribute='value.node_number') | list }}"
+    declared: "{{ clusters | dict2items | map(attribute='value.nodes') | map('length') | sum }}"
+  ansible.builtin.assert:
+    that:
+      - (nodes | length) == (declared | int)
+      - (numbers | length) == (numbers | unique | length)
+    fail_msg: >-
+      inventory/nodes.yml: node hostnames and node_numbers must be unique across
+      every cluster (all clusters share the DMZ/Ceph subnets and the vmid space).
+      Declared {{ declared }} node(s), {{ nodes | length }} unique hostname(s);
+      node_numbers {{ numbers }}.
+    quiet: true

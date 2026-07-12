@@ -1,9 +1,11 @@
 # ansible/ — Flatcar VM provisioning
 
-Current scope: create a correctly-shaped, reachable, **rebuildable** Flatcar VM
-shell — two NICs, a separate data disk, key-only SSH — via Ignition delivered
-through Proxmox's config-drive (`cicustom`). **No k3s yet** (see
-`ansible/CLAUDE.md` §1 for the definition of done).
+Current scope: build a **rebuildable** Flatcar VM shell — two NICs, a separate
+data disk, key-only SSH — via Ignition delivered through Proxmox's config-drive
+(`cicustom`); bake **k3s** in via the Flatcar k3s sysext; then wait for k3s to
+boot and prime **Calico** so the node goes Ready. Flux bootstrap (which adopts
+the primed Calico) is the next milestone. See `ansible/CLAUDE.md` (§1 shell, §2
+k3s, §6 Calico/Flux) for the definitions of done.
 
 ## Layout
 
@@ -27,18 +29,51 @@ playbooks/
 site.yml                 # both, in order
 ```
 
+## Control-node prerequisites
+
+Everything the control node needs, in one place (the single source of truth —
+`pyproject.toml`, `requirements.yml`, and the setup steps below just point here).
+
+**External binaries** — install yourself; not managed by uv or ansible-galaxy:
+
+| Binary | Used by | Required? |
+|---|---|---|
+| `uv` | bootstraps the Python venv below | **yes** — install first |
+| `butane` | `flatcar_vm` role — Butane→Ignition transpile (+ a `butane --version` preflight) | **yes** (provisioning) |
+| `helm` | `bootstrap-cluster.yml` — Calico prime via `kubernetes.core.helm` | **yes** (bootstrap) |
+| `kubectl` | the "Verify" steps only — **no play invokes it** (the `k3s kubectl` readyz check runs on the *node*) | recommended |
+| `ssh`, `git` | ansible transport / cloning this repo | baseline |
+
+Get the Go binaries from their upstream releases. **Note the Helm version:**
+`kubernetes.core` shells out to `helm` and parses its output, so it gates on the
+major — **Helm 4 needs `kubernetes.core` >= 6.4** (the 5.x line hard-fails with
+"Helm version must be >=3.0.0,<4.0.0"). `requirements.yml` pins 6.x for exactly
+this. If a future Helm major breaks the Calico prime, `helm_binary` in
+`group_vars/all/vars.yml` pins a specific binary (see that file).
+
+**Python packages** — pulled by `uv sync` from `pyproject.toml`/`uv.lock`:
+`ansible-core` (provides `ansible-playbook` / `-galaxy` / `-vault`), `proxmoxer`,
+`requests`, `kubernetes`.
+
+**Ansible collections** — pulled by `ansible-galaxy … -r requirements.yml` into
+the in-repo `.ansible/`: `community.proxmox`, `kubernetes.core`.
+
+*Not* needed on the control node: `qm` / `qemu-img` / image tooling (those run on
+the PVE host or inside Ignition), and anything k8s-side on the Flatcar nodes.
+
 ## One-time setup
 
-The control-node Python toolchain (ansible-core, proxmoxer, requests) is managed
-with [uv] — it owns the interpreter, the venv, and the lockfile. Run these from
-the **repo root** (where `pyproject.toml`/`uv.lock` live); the rest from `ansible/`.
+The control-node Python toolchain is managed with [uv] — it owns the interpreter,
+the venv, and the lockfile (contents listed under **Control-node prerequisites**
+above). Run these from the **repo root** (where `pyproject.toml`/`uv.lock` live);
+the rest from `ansible/`.
 
 1. `uv sync` — creates `.venv` with the exact pinned deps from `uv.lock`
    (installs Python 3.12 automatically if you don't have it).
 2. `uv run ansible-galaxy collection install -r requirements.yml` — installs
    `community.proxmox` into the in-repo `.ansible/` path (isolated, like the venv).
-3. Install `butane` on the control node — it's a **Go binary, not pip/uv**: grab
-   the upstream release binary (or `brew install butane` once Homebrew is set up).
+3. Install the **external binaries** from **Control-node prerequisites** above
+   (`butane`, `helm`; `kubectl` recommended) — they're not pip/uv-managed.
 4. `cp inventory/group_vars/vault.example.yml inventory/group_vars/all/vault.yml`
    and fill in the real values — the Proxmox API credential (create it per
    **[Proxmox API token & user](#proxmox-api-token--user-one-time-on-a-pve-node)**
@@ -187,19 +222,79 @@ Prefix ansible commands with `uv run` so they use the pinned venv (or activate i
 once with `source .venv/bin/activate` and drop the prefix):
 
 ```bash
-uv run ansible-playbook site.yml --ask-vault-pass              # template + all nodes
+uv run ansible-playbook site.yml --ask-vault-pass              # template + nodes + Calico
 uv run ansible-playbook playbooks/provision-nodes.yml \
-    -e node_filter=snoop-a2o --ask-vault-pass                  # just one node
+    -e node_filter=snoop-a2o --ask-vault-pass                  # just provision one node
+uv run ansible-playbook playbooks/bootstrap-cluster.yml \
+    --ask-vault-pass                                           # wait for k3s + prime Calico
 ```
+
+`site.yml` runs all three in order: build the template → provision the node
+shells (k3s bakes in via Ignition) → `bootstrap-cluster.yml` waits for k3s to
+boot, fetches the kubeconfig to `ansible/.kube/<cluster>.config` (git-ignored),
+and primes **Calico** so the node goes Ready. Flux then *adopts* that same Calico
+release — the pinned definition lives in `../gitops/infrastructure/calico/` (Flux
+bootstrap itself is the next milestone; see `CLAUDE.md` §6).
+
+`bootstrap-cluster.yml` is **per-cluster**: it elects one bootstrap primary per
+cluster in `inventory/nodes.yml` and primes each cluster's Calico against that
+cluster's own kubeconfig. Only one cluster exists today, so the multi-cluster path
+is structurally in place but untested against real hardware.
+
+### Kubeconfig handling
+
+k3s emits a kubeconfig whose cluster, user, **and** context are all named
+`default`, pointing at `127.0.0.1`. Two clusters built this way collide on every
+entry name and silently overwrite each other, so `bootstrap-cluster.yml` rewrites
+it on fetch, keyed off the **cluster name — which is the cluster key in
+`inventory/nodes.yml`**, not a separate setting:
+
+- entries renamed → cluster `homelab`, user `homelab-admin`, context `homelab`;
+- `server:` repointed from `127.0.0.1` to the node's **DMZ IP** so the control
+  node (and, next milestone, Flux) can reach the API;
+- written `0600` to **`ansible/.kube/<cluster>.config`** — one file per cluster
+  (a shared path would have each bootstrap clobber the last). These are the
+  canonical files the plays themselves use.
+
+Each cluster is then **merged** into your personal `~/.kube/config`
+(`kubeconfig_merge_user: true`) via `kubernetes.core.kubeconfig`, so plain
+`kubectl --context homelab` works with no `KUBECONFIG` juggling. It's a merge of
+that cluster's three named entries, never a whole-file overwrite — every other
+context is left untouched (including your other clusters'), and re-running is
+idempotent. Knobs, all in `group_vars/all/vars.yml`:
+
+| Var | Default | Effect |
+|---|---|---|
+| `kubeconfig_merge_user` | `true` | Merge into `~/.kube/config`. Set `false` on CI/shared control nodes. |
+| `kubeconfig_user_path` | `$HOME/.kube/config` | Which file to merge into. |
+| `kubeconfig_set_current_context` | `true` | Whether the merge also makes the cluster kubectl's *active* context. Set `false` once a second cluster exists — otherwise they each claim it in turn and the last one bootstrapped wins. |
+
+To rename the context, rename the cluster key in `inventory/nodes.yml`. Doing it
+*after* a bootstrap leaves the old entries behind in `~/.kube/config` and an
+orphaned `ansible/.kube/<old>.config` — both are yours to delete.
 
 [uv]: https://docs.astral.sh/uv/
 
 ## Adding a node
 
-Add one entry to `inventory/nodes.yml` with a unique `node_number` (1..254);
-the DMZ IP (`<dmz_subnet_base>.<n>`), Ceph-public IP (`<ceph_subnet_base>.<n>`),
-MACs, and `vmid` (1000+n) are all derived from it (subnet bases come from the
-vault). A preflight assert enforces `node_number` uniqueness.
+Add one entry under the cluster's `nodes:` in `inventory/nodes.yml` with a unique
+`node_number` (1..254); the DMZ IP (`<dmz_subnet_base>.<n>`), Ceph-public IP
+(`<ceph_subnet_base>.<n>`), MACs, and `vmid` (1000+n) are all derived from it
+(subnet bases come from the vault).
+
+`node_number` and hostname uniqueness is **global — across every cluster**, not
+per-cluster: all clusters share the DMZ/Ceph subnets and the Proxmox vmid space,
+so reusing a number in a second cluster collides on both an IP and a vmid. Both
+are asserted (`playbooks/tasks/load-node-map.yml`) before anything is created.
+
+## Adding a cluster
+
+Add another key under `clusters:` in `inventory/nodes.yml` with its own `nodes:`
+and non-overlapping `node_number`s. Nothing else in the repo changes: the cluster
+key becomes its kubeconfig context and `ansible/.kube/<cluster>.config`, and
+`bootstrap-cluster.yml` elects that cluster its own bootstrap primary and primes
+its own Calico. Set `kubeconfig_set_current_context: false` at that point (see
+above). Untested against real hardware — only one cluster exists today.
 
 ## Verify (definition of done)
 
@@ -248,3 +343,58 @@ Flux); that's expected here, not a failure. Over SSH to the DMZ IP:
   pull-through is a separate PoC — `ansible/CLAUDE.md` §7 item 5)
 - delete the VM, re-run the play → k3s comes up **identically** from Ignition
   (the real rebuild test, same as the shell above)
+
+### Calico / cluster bootstrap (`bootstrap-cluster.yml`)
+
+After `bootstrap-cluster.yml` (or the full `site.yml`) runs, the node should flip
+from NotReady to **Ready**. From the control node, using the fetched kubeconfig:
+
+- `ansible/.kube/homelab.config` exists (mode 0600) — named for the cluster key in
+  `inventory/nodes.yml` — its `server:` is the node's **DMZ IP**, not
+  `127.0.0.1`, and its cluster/user/context are named `homelab` / `homelab-admin`
+  / `homelab`, **not** k3s's `default`
+  (`grep -E 'server:|name:' ansible/.kube/homelab.config`)
+- `kubectl config get-contexts` → the `homelab` context present in
+  `~/.kube/config`, alongside any contexts you already had (the merge preserves
+  them). Skip this one if you set `kubeconfig_merge_user: false`.
+- `kubectl --context homelab get nodes -o wide` → **Ready**, `INTERNAL-IP` = the
+  eth0/DMZ IP
+- `kubectl get installation default -o jsonpath='{.spec.calicoNetwork.ipPools[0].cidr}'`
+  → `10.42.0.0/16` (matches `k3s_cluster_cidr`)
+- `kubectl get pods -n tigera-operator` and `-n calico-system` → all **Running**
+- `kubectl get pods -A` → coredns + metrics-server now **Running** (were Pending
+  pre-CNI)
+- `helm -n tigera-operator list` → release `tigera-operator`, chart version =
+  `calico_version` — this is the release Flux adopts next milestone
+- **Idempotency:** re-run `bootstrap-cluster.yml` → no changes (release present,
+  node already Ready)
+
+## Troubleshooting
+
+**API/`proxmox_kvm` tasks fail with `No route to host` (`EHOSTUNREACH`) on port
+8006, yet the SSH-delegated tasks (snippet upload) on the *same* host succeed.**
+The `proxmox_*` modules reach the API from the control node's **Python**; SSH
+tasks use the `ssh` binary — so this is the control node's Python being unable to
+reach the Proxmox LAN, not a config bug. Two known causes, same symptom — tell
+them apart with this test (public reachable, local not):
+
+```
+uv run python -c "import socket; socket.create_connection(('1.1.1.1',443),5); print('public OK')"
+uv run python -c "import socket; socket.create_connection(('<pve-ip>',8006),5); print('local OK')"
+```
+
+- **Public OK, local FAILS → macOS Local Network Privacy** (macOS 15+/26). The
+  terminal app you launched Ansible from lacks **Local Network** access, so its
+  child `python` is blocked from the LAN (Apple's `curl`/`nc` are exempt, which
+  is why they mislead you into thinking the network is fine). **Fix:** System
+  Settings → Privacy & Security → **Local Network** → enable your terminal app
+  (Terminal / iTerm / **Zed** / VS Code / …), then **fully quit and relaunch it**
+  (TCC caches the denial for the running process). Re-run the public/local test
+  above — the local one should now print `local OK`.
+- **Both work in a plain shell but Ansible still fails intermittently → a VPN
+  default route.** A Tailscale/WireGuard **exit node** installs `default → utunN`;
+  when the LAN host-route/ARP expires, a fresh API connection falls through the
+  tunnel, which can't route the RFC1918 Proxmox IP. **Fix:** turn off the exit
+  node (Tailscale → Exit Node → None) — a control node directly on the pve subnet
+  doesn't need it. Confirm `route -n get <pve-ip>` shows `interface: en0`, not
+  `utunN`.

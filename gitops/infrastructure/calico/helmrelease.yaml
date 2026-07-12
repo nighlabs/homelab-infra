@@ -1,0 +1,36 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: tigera-operator
+  namespace: tigera-operator
+spec:
+  interval: 1h
+  # releaseName + namespace MUST match what Ansible primed
+  # (`helm install tigera-operator -n tigera-operator`) so helm-controller ADOPTS
+  # the existing release instead of colliding with it (ansible/CLAUDE.md §6).
+  releaseName: tigera-operator
+  chart:
+    spec:
+      chart: tigera-operator
+      # Keep in lockstep with calico_version in group_vars/all/vars.yml — the
+      # Ansible prime and this must install the same chart version (Renovate
+      # tracks both). A mismatch would make Flux's first reconcile a diff.
+      version: "v3.29.1"
+      sourceRef:
+        kind: HelmRepository
+        name: tigera-operator
+        namespace: tigera-operator
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  # Values come from the calico-values ConfigMap, which kustomize generates from
+  # values.yaml (the same file Ansible feeds to helm) — one source, no drift.
+  valuesFrom:
+    - kind: ConfigMap
+      name: calico-values
+      valuesKey: values.yaml

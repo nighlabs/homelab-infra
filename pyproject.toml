@@ -7,9 +7,10 @@
 # Bootstrap:  uv sync
 # Run:        uv run ansible-playbook ansible/site.yml --ask-vault-pass
 #
-# NOT pip-managed, installed separately (see ansible/README.md):
-#   - butane            : Go binary (Flatcar transpiler), not a Python package
-#   - community.proxmox : an Ansible collection, via `ansible-galaxy` not pip
+# This covers ONLY the Python deps. The external binaries (butane, helm, …) and
+# Ansible collections (community.proxmox, kubernetes.core) are installed
+# separately — see "Control-node prerequisites" in ansible/README.md for the
+# full, authoritative list.
 [project]
 name = "homelab-infra"
 version = "0"
@@ -24,6 +25,10 @@ dependencies = [
     # (proxmox_kvm / proxmox_disk); they import these at runtime, not parse time.
     "proxmoxer>=2.0",
     "requests>=2.31",
+    # Required by the kubernetes.core modules (helm / k8s_info) used in
+    # playbooks/bootstrap-cluster.yml to prime Calico and wait for node Ready.
+    # (The `helm` CLI is a separate Go binary — see the header note.)
+    "kubernetes>=30.1",
 ]
 
 # Keep uv from trying to build/install this repo itself as a package — it's a
