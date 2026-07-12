@@ -44,6 +44,11 @@ ceph_public_network:
 mac_oui: "BC:24:11"
 
 # --- SSH access ------------------------------------------------------------
+# Dedicated low-privilege admin user created on each node (not `core`). Shared
+# because the bootstrap play (playbooks/bootstrap-cluster.yml) SSHes in as this
+# user, and the flatcar_vm role bakes it into Ignition — one definition for both.
+node_user: "admin"
+
 # Public key(s) authorized for the node's admin user (key-only; no passwords).
 # A public key isn't a secret, but it's identity-revealing, so it's vaulted too.
 ssh_authorized_keys: "{{ vault_ssh_authorized_keys }}"
@@ -114,3 +119,53 @@ k3s_token: "{{ vault_k3s_token }}"
 # Extra API-cert SANs (e.g. a stable API DNS name) beyond the node IP + hostname
 # the server config always includes. Optional; defaults to none.
 k3s_tls_sans: "{{ vault_k3s_tls_sans | default([]) }}"
+
+# --- Cluster bootstrap (playbooks/bootstrap-cluster.yml) -------------------
+# NOTE: `cluster_name` is NOT set here — it comes from the cluster key in
+# inventory/nodes.yml (the node map is the source of truth for which cluster a
+# node belongs to, so the name lives there too). bootstrap-cluster.yml sets it as
+# a per-host fact on each k3s server, which is what makes `kubeconfig_local`
+# below resolve per-cluster.
+#
+# Where the fetched+rewritten kubeconfigs land on the control node — ONE PER
+# CLUSTER, named for it (`.kube/homelab.config`), because a single shared path
+# would have each cluster's bootstrap clobber the last one's. Server URL is
+# rewritten from 127.0.0.1 to the node's DMZ IP and the entries renamed off k3s's
+# `default` (k3s names cluster+user+context all `default`, so two clusters would
+# otherwise collide on every entry). Git-ignored (ansible/.gitignore) — they carry
+# cluster-admin certs. These are the canonical files the plays themselves use; the
+# Flux bootstrap step (next milestone) reuses them for cluster access.
+kubeconfig_dir: "{{ playbook_dir }}/../.kube"
+kubeconfig_local: "{{ kubeconfig_dir }}/{{ cluster_name }}.config"
+
+# Also merge each cluster into your personal kubeconfig, so plain `kubectl` works
+# with no KUBECONFIG juggling. This is a MERGE of that cluster's three named
+# entries (via kubernetes.core.kubeconfig), never a whole-file overwrite — every
+# other context in the file is left untouched, including the OTHER clusters' (so
+# `kubectl --context <cluster>` reaches any of them). Set false on CI/shared
+# control nodes, where writing to a user's home dir isn't wanted.
+kubeconfig_merge_user: true
+kubeconfig_user_path: "{{ lookup('ansible.builtin.env', 'HOME') }}/.kube/config"
+# Whether that merge also makes the cluster your *active* context. Fine while
+# there's one cluster. With several, they'd each claim it in turn and the last one
+# bootstrapped would win — so once a second cluster exists, set this false and
+# switch deliberately (`kubectl config use-context <cluster>`). Also set it false
+# if you don't want a provisioning run yanking current-context away mid-task.
+kubeconfig_set_current_context: true
+
+# Optional override for which `helm` binary the kubernetes.core.helm task uses
+# (maps to the module's binary_path). Leave UNSET to find `helm` on PATH — the
+# normal case. The module shells out to helm and parses its output, so a helm
+# major bump is the prime suspect if the Calico prime errors oddly; Helm 4 needs
+# kubernetes.core >=6.4 (requirements.yml pins it). Set this to pin a specific
+# helm binary without editing the play.
+# helm_binary: "/usr/local/bin/helm3"
+
+# Calico (CNI) — installed once by Ansible via the tigera-operator Helm chart,
+# then adopted by the Flux HelmRelease in gitops/infrastructure/calico (design
+# §4.2; the "Ansible installs, Flux adopts" decision in ansible/CLAUDE.md §6).
+# Pinned (Renovate marker); MUST match the chart version in the HelmRelease so
+# the primed release and the Git definition are identical (clean adoption). The
+# pod-CIDR the operator uses lives in gitops/infrastructure/calico/values.yaml
+# (the single values source shared by both) and is asserted == k3s_cluster_cidr.
+calico_version: "v3.29.1"

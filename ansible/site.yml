@@ -1,4 +1,6 @@
 ---
-# Full bring-up: build the template, then provision all node shells.
+# Full bring-up: build the template, provision the node shells (k3s bakes in via
+# Ignition), then wait for k3s to boot and prime Calico so the node goes Ready.
 - ansible.builtin.import_playbook: playbooks/build-template.yml
 - ansible.builtin.import_playbook: playbooks/provision-nodes.yml
+- ansible.builtin.import_playbook: playbooks/bootstrap-cluster.yml

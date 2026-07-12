@@ -10,6 +10,11 @@ inventory/group_vars/**/vault.yml
 # Transpiled artifacts / build scratch
 *.ign
 
+# Fetched cluster kubeconfig (playbooks/bootstrap-cluster.yml writes it here with
+# the server URL rewritten to the DMZ IP). Holds cluster-admin client certs —
+# NEVER commit. Regenerated on demand from the running node's /etc/rancher/k3s.
+.kube/
+
 # In-repo Ansible collections path (collections_path in ansible.cfg). Restored
 # from requirements.yml via `uv run ansible-galaxy collection install`, like the
 # uv venv is from uv.lock — the pinned input is requirements.yml, not this tree.

@@ -1,0 +1,315 @@
+---
+# Post-provision cluster bootstrap: wait for the k3s server(s) to finish booting,
+# fetch + rewrite the kubeconfig, then prime Calico (the CNI) so the node goes
+# Ready. This is ansible/CLAUDE.md §6 step 4's first half — "k3s up → fetch
+# kubeconfig → install Calico → wait node Ready". Flux bootstrap (Flux Operator +
+# FluxInstance, which then ADOPTS this same Calico release) is the next step, not
+# here. Safe to re-run: the SSH/k3s waits are idempotent and the Helm prime
+# converges to the pinned release.
+#
+# Run:  uv run ansible-playbook playbooks/bootstrap-cluster.yml --ask-vault-pass
+#
+# Prereqs on the control node (see README "One-time setup"): the `helm` CLI on
+# PATH, the kubernetes.core collection (requirements.yml), and the `kubernetes`
+# Python lib (pyproject.toml). Reaches the node over the DMZ, same as SSH does.
+
+# --- Play A: wait for SSH, build the in-memory bootstrap inventory -----------
+- name: Wait for k3s server nodes to boot
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../inventory/nodes.yml
+  vars:
+    # Roles that run a k3s *server* (kubeconfig source + Calico target). Agents
+    # never hold the kubeconfig, so they're excluded here.
+    server_roles: ["all-in-one", "server", "control-plane"]
+  tasks:
+    # clusters: → a flat `nodes` map, each node annotated with its `cluster`.
+    - name: Load the node map
+      ansible.builtin.include_tasks: tasks/load-node-map.yml
+
+    - name: Select the k3s server nodes from the node map
+      ansible.builtin.set_fact:
+        k3s_servers: >-
+          {{ nodes | dict2items
+             | selectattr('value.role', 'defined')
+             | selectattr('value.role', 'in', server_roles)
+             | list }}
+
+    - name: Assert every cluster has at least one k3s server node
+      ansible.builtin.assert:
+        that:
+          - k3s_servers | selectattr('value.cluster', 'equalto', item) | list | length > 0
+        fail_msg: >-
+          Cluster '{{ item }}' (inventory/nodes.yml) has no node with a server role
+          ({{ server_roles | join('/') }}) — nothing to fetch a kubeconfig from.
+        quiet: true
+      loop: "{{ clusters.keys() | list }}"
+
+    # One bootstrap primary PER CLUSTER: the server whose kubeconfig we fetch and
+    # through which the control node talks to that cluster. Each cluster gets its
+    # own kubeconfig, context, and Calico prime, so this can't be a single global
+    # "first server" anymore.
+    - name: Pick the bootstrap primary for each cluster
+      ansible.builtin.set_fact:
+        bootstrap_primaries: >-
+          {{ bootstrap_primaries | default({}) | combine({
+               item: (k3s_servers
+                      | selectattr('value.cluster', 'equalto', item)
+                      | map(attribute='key') | first)
+             }) }}
+      loop: "{{ clusters.keys() | list }}"
+
+    # eth0/DMZ IP is derived the same way preflight.yml does — no facts survive a
+    # standalone run of this playbook, so re-derive from the node map + vault.
+    - name: Wait for SSH (port 22) on each server's DMZ IP
+      ansible.builtin.wait_for:
+        host: "{{ dmz_network.subnet_base }}.{{ item.value.node_number }}"
+        port: 22
+        state: started
+        timeout: 300
+      loop: "{{ k3s_servers }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Add each server to the in-memory bootstrap groups
+      ansible.builtin.add_host:
+        name: "{{ item.key }}"
+        # Every server lands in k3s_bootstrap (Play B polls /readyz on all of
+        # them); the per-cluster primaries ALSO land in k3s_primaries, which is
+        # what Play C loops over — one Calico prime per cluster, not per node.
+        groups: "{{ ['k3s_bootstrap'] + (['k3s_primaries'] if item.key == bootstrap_primaries[item.value.cluster] else []) }}"
+        ansible_host: "{{ dmz_network.subnet_base }}.{{ item.value.node_number }}"
+        ansible_user: "{{ node_user }}"
+        node_eth0_ip: "{{ dmz_network.subnet_base }}.{{ item.value.node_number }}"
+        # The cluster this node belongs to (nodes.yml's cluster key). Names the
+        # kubeconfig entries/context and the kubeconfig file (see vars.yml's
+        # kubeconfig_local, which templates it per host).
+        cluster_name: "{{ item.value.cluster }}"
+        # A rebuilt node reuses the SAME DMZ IP with a NEW host key, so a stale
+        # known_hosts entry would break SSH even with host_key_checking=False
+        # (StrictHostKeyChecking=no auto-accepts new hosts but still REFUSES a
+        # CHANGED key). These nodes are cattle — don't persist their key at all.
+        # Scoped to the k3s_bootstrap group only; the PVE host (inventory/hosts.yml)
+        # keeps normal verification.
+        ansible_ssh_common_args: "-o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+        is_bootstrap_primary: "{{ item.key == bootstrap_primaries[item.value.cluster] }}"
+      loop: "{{ k3s_servers }}"
+      loop_control:
+        label: "{{ item.key }} ({{ item.value.cluster }})"
+      changed_when: false
+
+# --- Play B: wait for the k3s API, fetch + rewrite the kubeconfig ------------
+# These tasks target the Flatcar node, which ships NO Python (immutable, no
+# package manager — root CLAUDE.md). So they use `raw` (runs straight over SSH,
+# no interpreter) NOT command/slurp, which would fail with "python not found".
+# sudo is embedded in each raw command (the admin user has NOPASSWD sudo via
+# Ignition; k3s.yaml is root:root 0640) — no play-level `become`, so the two
+# localhost `delegate_to` writes run cleanly as the local user.
+- name: Wait for k3s and fetch the kubeconfig
+  hosts: k3s_bootstrap
+  gather_facts: false
+  tasks:
+    # k3s isn't up the instant SSH is: on first boot the ~50 MB sysext downloads,
+    # merges, then k3s starts (ansible/CLAUDE.md §2). Poll /readyz until the API
+    # reports healthy. `until` retries suppress the non-zero rc while it comes up.
+    - name: Wait for the k3s API to report readyz=ok
+      ansible.builtin.raw: sudo /usr/local/bin/k3s kubectl get --raw=/readyz
+      register: k3s_readyz
+      until: k3s_readyz.rc == 0 and (k3s_readyz.stdout | trim) == "ok"
+      retries: 40
+      delay: 15
+      changed_when: false
+
+    - name: Read the kubeconfig from the bootstrap primary
+      ansible.builtin.raw: sudo cat /etc/rancher/k3s/k3s.yaml
+      register: k3s_kubeconfig_raw
+      changed_when: false
+      when: is_bootstrap_primary | bool
+
+    # k3s emits exactly one cluster/user/context, ALL named `default` — so two
+    # clusters' kubeconfigs collide on every entry name and clobber each other on
+    # merge. Everything below rewrites that: entries renamed per `cluster_name`,
+    # and the loopback server URL pointed at the node's DMZ IP so the control node
+    # (and, next milestone, Flux) can actually reach the API. The single-entry
+    # assumption is asserted rather than assumed — if k3s ever emits more, the
+    # [0] indexing below would silently drop the extras.
+    - name: Rename the kubeconfig entries and repoint the server URL
+      vars:
+        kc: "{{ k3s_kubeconfig_raw.stdout | from_yaml }}"
+      when: is_bootstrap_primary | bool
+      block:
+        - name: Assert the k3s kubeconfig has exactly one cluster/user/context
+          ansible.builtin.assert:
+            that:
+              - kc.clusters | length == 1
+              - kc.users | length == 1
+              - kc.contexts | length == 1
+            fail_msg: >-
+              /etc/rancher/k3s/k3s.yaml has more than one cluster/user/context —
+              the rename below only handles k3s's single-entry output.
+            quiet: true
+
+        - name: Build the renamed kubeconfig
+          ansible.builtin.set_fact:
+            kubeconfig_doc: >-
+              {{ kc | combine({
+                   'clusters': [ kc.clusters[0] | combine({
+                       'name': cluster_name,
+                       'cluster': kc.clusters[0].cluster | combine({
+                           'server': 'https://' ~ node_eth0_ip ~ ':6443',
+                       }),
+                     }) ],
+                   'users': [ kc.users[0] | combine({'name': cluster_name ~ '-admin'}) ],
+                   'contexts': [ {
+                       'name': cluster_name,
+                       'context': {'cluster': cluster_name, 'user': cluster_name ~ '-admin'},
+                     } ],
+                   'current-context': cluster_name,
+                 }) }}
+
+    - name: Ensure the local kubeconfig directory exists
+      ansible.builtin.file:
+        path: "{{ kubeconfig_local | dirname }}"
+        state: directory
+        mode: "0700"
+      delegate_to: localhost
+      when: is_bootstrap_primary | bool
+
+    # 0600 — it holds cluster-admin client certs (git-ignored via ansible/.gitignore).
+    - name: Write the rewritten kubeconfig to the control node
+      ansible.builtin.copy:
+        content: "{{ kubeconfig_doc | to_nice_yaml(indent=2) }}"
+        dest: "{{ kubeconfig_local }}"
+        mode: "0600"
+      delegate_to: localhost
+      when: is_bootstrap_primary | bool
+
+    # Merge into the user's personal kubeconfig so plain `kubectl` works with no
+    # KUBECONFIG juggling. A MERGE of our three named entries, not a file
+    # overwrite: kubernetes.core.kubeconfig loads the existing file and leaves
+    # every other cluster/user/context in it untouched. Re-running is idempotent
+    # (same names, same values → no change). Opt out with kubeconfig_merge_user.
+    - name: Merge this cluster into the user's kubeconfig
+      when:
+        - is_bootstrap_primary | bool
+        - kubeconfig_merge_user | bool
+      delegate_to: localhost
+      block:
+        - name: Ensure the user's kubeconfig directory exists
+          ansible.builtin.file:
+            path: "{{ kubeconfig_user_path | dirname }}"
+            state: directory
+            mode: "0700"
+
+        - name: Merge the cluster/user/context entries into the user's kubeconfig
+          kubernetes.core.kubeconfig:
+            path: "{{ kubeconfig_user_path }}"
+            dest: "{{ kubeconfig_user_path }}"
+            clusters:
+              - name: "{{ cluster_name }}"
+                cluster:
+                  server: "https://{{ node_eth0_ip }}:6443"
+                  certificate-authority-data: "{{ kubeconfig_doc.clusters[0].cluster['certificate-authority-data'] }}"
+            users:
+              - name: "{{ cluster_name }}-admin"
+                user:
+                  client-certificate-data: "{{ kubeconfig_doc.users[0].user['client-certificate-data'] }}"
+                  client-key-data: "{{ kubeconfig_doc.users[0].user['client-key-data'] }}"
+            contexts:
+              - name: "{{ cluster_name }}"
+                context:
+                  cluster: "{{ cluster_name }}"
+                  user: "{{ cluster_name }}-admin"
+            # Only steals kubectl's active context when explicitly allowed.
+            current_context: "{{ cluster_name if kubeconfig_set_current_context | bool else omit }}"
+
+        # The module doesn't take a mode; enforce it here — the file now carries
+        # cluster-admin client certs.
+        - name: Enforce 0600 on the user's kubeconfig
+          ansible.builtin.file:
+            path: "{{ kubeconfig_user_path }}"
+            mode: "0600"
+
+# --- Play C: prime Calico (Ansible installs once; Flux adopts later) ---------
+# Runs over k3s_primaries — ONE host per cluster — so each cluster gets its own
+# Calico prime against its own kubeconfig. Every task delegates to localhost:
+# helm/k8s run on the control node (nothing k8s-side is installed on Flatcar), and
+# the primary is only here to carry the per-cluster facts (cluster_name →
+# kubeconfig_local, node_eth0_ip).
+- name: Install Calico via the tigera-operator Helm chart
+  hosts: k3s_primaries
+  gather_facts: false
+  vars:
+    # The ONE Calico values source, shared with the Flux HelmRelease (which reads
+    # it via a generated ConfigMap). Priming from the same file guarantees the
+    # Git definition and the live release match, so Flux adopts without a diff.
+    calico_values_file: "{{ playbook_dir }}/../../gitops/infrastructure/calico/values.yaml"
+  tasks:
+    - name: Assert the committed Calico pod CIDR matches k3s_cluster_cidr
+      vars:
+        calico_values: "{{ lookup('ansible.builtin.file', calico_values_file) | from_yaml }}"
+      ansible.builtin.assert:
+        that:
+          - calico_values.installation.calicoNetwork.ipPools[0].cidr == k3s_cluster_cidr
+        fail_msg: >-
+          gitops/infrastructure/calico/values.yaml pod CIDR
+          ({{ calico_values.installation.calicoNetwork.ipPools[0].cidr }})
+          != k3s_cluster_cidr ({{ k3s_cluster_cidr }}) — Calico's IPPool must
+          match k3s cluster-cidr (design §4.1, guardrail §8).
+        quiet: true
+      delegate_to: localhost
+      run_once: true
+
+    - name: Install/prime the tigera-operator (Calico) release
+      delegate_to: localhost
+      kubernetes.core.helm:
+        name: tigera-operator
+        chart_ref: tigera-operator
+        chart_repo_url: https://docs.tigera.io/calico/charts
+        chart_version: "{{ calico_version }}"
+        release_namespace: tigera-operator
+        create_namespace: true
+        values_files:
+          - "{{ calico_values_file }}"
+        kubeconfig: "{{ kubeconfig_local }}"
+        # Escape hatch: the module shells out to helm and parses its output, so a
+        # helm major bump is the prime suspect if this task errors oddly. Helm 4
+        # needs kubernetes.core >=6.4 (the 5.x line hard-fails on helm >=4.0.0);
+        # requirements.yml pins that. Defaults to omit (find helm on PATH, no
+        # behavior change); set `helm_binary` (group_vars/all/vars.yml) to pin a
+        # specific helm binary without editing this play.
+        binary_path: "{{ helm_binary | default(omit) }}"
+        wait: true
+        timeout: 10m0s
+
+    # Node only reports Ready once the CNI (calico-node) is up on it — so this is
+    # the real signal Calico took. Count Ready=True conditions across all nodes.
+    - name: Wait for the node(s) to report Ready
+      delegate_to: localhost
+      kubernetes.core.k8s_info:
+        kind: Node
+        kubeconfig: "{{ kubeconfig_local }}"
+      register: node_info
+      until: >-
+        node_info.resources | length > 0 and
+        (node_info.resources | map(attribute='status.conditions', default=[]) | flatten
+         | selectattr('type', 'equalto', 'Ready')
+         | selectattr('status', 'equalto', 'True') | list | length)
+        == (node_info.resources | length)
+      retries: 30
+      delay: 10
+
+    - name: Report the bootstrapped node(s)
+      delegate_to: localhost
+      ansible.builtin.debug:
+        msg: >-
+          Cluster `{{ cluster_name }}`: Calico primed;
+          {{ node_info.resources | length }} node(s) Ready.
+          {% if kubeconfig_merge_user | bool %}
+          Merged into {{ kubeconfig_user_path }} as context `{{ cluster_name }}`
+          (kubectl --context {{ cluster_name }} get nodes).
+          {% else %}
+          kubeconfig: {{ kubeconfig_local }} (KUBECONFIG={{ kubeconfig_local }} kubectl get nodes).
+          {% endif %}
+          Next milestone: Flux bootstrap (adopts the tigera-operator release).

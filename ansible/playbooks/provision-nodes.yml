@@ -20,6 +20,12 @@
       api_token_secret: "{{ proxmox_api_token_secret }}"
       validate_certs: "{{ proxmox_validate_certs }}"
   tasks:
+    # clusters: → a flat, cluster-annotated `nodes` map (+ the global uniqueness
+    # asserts). A VM is provisioned identically regardless of which cluster it
+    # joins, so the loop below doesn't care about the grouping.
+    - name: Load the node map
+      ansible.builtin.include_tasks: tasks/load-node-map.yml
+
     - name: Provision each node in the node map
       ansible.builtin.include_role:
         name: flatcar_vm

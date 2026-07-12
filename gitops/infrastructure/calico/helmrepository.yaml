@@ -1,0 +1,10 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: tigera-operator
+  namespace: tigera-operator
+spec:
+  interval: 1h
+  # Same repo Ansible primes from (repo_url in bootstrap-cluster.yml). The chart
+  # is the Tigera operator; it deploys the operator + the Installation CR.
+  url: https://docs.tigera.io/calico/charts

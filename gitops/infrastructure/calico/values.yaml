@@ -1,0 +1,32 @@
+# Calico (tigera-operator chart) values — THE single source of truth for how
+# Calico is configured. Consumed two ways, deliberately from this one file so the
+# Ansible-primed release and the Flux-managed release are byte-identical (clean
+# adoption, no diff war — see ansible/CLAUDE.md §6 "Ansible installs, Flux adopts"):
+#   1. Ansible (playbooks/bootstrap-cluster.yml) → kubernetes.core.helm
+#      `values_files: [ this file ]` when it primes the release.
+#   2. Flux → kustomization.yaml's configMapGenerator turns this into the
+#      `calico-values` ConfigMap, which helmrelease.yaml reads via valuesFrom.
+#
+# The chart maps `installation:` straight onto the operator's Installation CR.
+installation:
+  cni:
+    type: Calico
+  calicoNetwork:
+    # Pure-VXLAN dataplane — no Calico BGP. (MetalLB does its own BGP later for
+    # LoadBalancer IPs; that's independent of pod networking.) With VXLAN pools,
+    # BGP must be explicitly Disabled or the operator flags a config conflict.
+    bgp: Disabled
+    ipPools:
+      # cidr MUST equal k3s_cluster_cidr (group_vars/all/vars.yml) — Calico's pool
+      # has to match k3s's cluster-cidr (design §4.1, guardrail §8). bootstrap-
+      # cluster.yml asserts this equality before priming, so the two can't drift.
+      - cidr: 10.42.0.0/16
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+    # Pin Calico to the node's InternalIP — which k3s already advertises as the
+    # eth0/DMZ address (node-ip in k3s-config.yaml.j2). This keeps the real DMZ
+    # subnet OUT of Git (honors the vaulted-topology guardrail) AND guarantees
+    # Calico never autodetects the Ceph NIC (eth1).
+    nodeAddressAutodetectionV4:
+      kubernetes: NodeInternalIP

@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Force every resource into tigera-operator (also stamps the generated ConfigMap
+# so it's co-located with the HelmRelease that reads it). Harmless on the
+# cluster-scoped Namespace resource.
+namespace: tigera-operator
+resources:
+  - namespace.yaml
+  - helmrepository.yaml
+  - helmrelease.yaml
+# Generate the calico-values ConfigMap from the canonical values.yaml so the
+# HelmRelease's valuesFrom has a stable target. disableNameSuffixHash is REQUIRED
+# — without it kustomize appends a content hash to the name and the valuesFrom
+# reference (a fixed name) would never resolve.
+configMapGenerator:
+  - name: calico-values
+    files:
+      - values.yaml
+generatorOptions:
+  disableNameSuffixHash: true
