@@ -45,6 +45,11 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > configured, plus the LB `/24`, FRR peer address and the two ASNs (§7 items 6 +
 > 8) — these are now the only real blockers, and they're facts from the network
 > rather than decisions. Also §7 item 14 (scoped kubeconfig for Flux).
+>
+> **Do the pfSense/FRR side first** — it's the only genuine unknown, it produces
+> the values the manifests consume, and it can be staged and parked before the
+> cluster exists. Runbook: `docs/pfsense-frr-bgp-setup.md`. BWS unblocks nothing
+> (`vault.yml` already works), so it follows rather than leads.
 
 ---
 
@@ -460,11 +465,21 @@ single-node milestone.
 
 **Networking prep is no longer parallel — it's on the critical path.** Once the
 dataplane moves to BGP, the pfSense/FRR side (LB `/24`, the two private ASNs
-from 64512–65534, the peering itself, and "Disable eBGP Require Policy" — item
-8) gates the Calico migration rather than sitting alongside it. Note FRR must
-accept the **pod CIDR** too if nodes ever span subnets; on the same-subnet
-design above it only needs the LB range, and the `BGPFilter` guarantees that's
-all it's offered.
+from 64512–65534, the peering itself, and the eBGP policy config — item 8) gates
+the Calico migration rather than sitting alongside it. **Runbook:
+`docs/pfsense-frr-bgp-setup.md`** — full GUI procedure for pfSense CE 2.8.1,
+written to be staged *before* the cluster side exists (a parked config sits in
+`Active`/`Connect` with no session; that's success, not a fault).
+
+Note FRR must accept the **pod CIDR** too if nodes ever span subnets; on the
+same-subnet design above it only needs the LB range, and the `BGPFilter`
+guarantees that's all it's offered.
+
+⚠ **No dynamic neighbors.** `bgp listen range` is not exposed in the pfSense FRR
+GUI, and the Raw Config tab is not a workaround — saving it stops the GUI config
+from being applied *at all*. So each node needs an explicit neighbor entry on
+pfSense (a `k3s-nodes` peer group carries the shared settings) alongside its
+Calico-side `BGPPeer`. Budget for that on every node add. See the runbook §5/§8.
 
 **Migration ordering — the risk window is node 2, not today.** With one node the
 mesh has no peers to form, so flipping to no-encap is trivially safe and nothing
@@ -575,22 +590,55 @@ apply once k3s work starts.
    the cluster via the Ansible-seeded `cluster-topology` Secret, never as
    literals in Git.
 
+   **The pfSense side can be built and parked before any of the cluster work** —
+   see `docs/pfsense-frr-bgp-setup.md` §1 for the four values and the exact vault
+   variable names (`vault_lb_range`, `vault_bgp_peer_ip`, `vault_bgp_peer_asn`,
+   `vault_calico_asn`), plus §10 for blast radius. Doing pfSense first means the
+   vault gets populated once with the complete set, rather than being edited
+   again after BWS is stood up.
+
 7. **Internal DNS resolver approach — TBD, three options undecided:**
    pfSense Unbound host overrides vs. a single wildcard `*.apps.<domain>` +
    HTTPRoute host routing vs. a second external-dns instance. Pick one and
    test split-DNS behavior (including the Unbound rebinding-protection
    whitelist) before relying on it for the "internal view."
 
-8. **FRR "Disable eBGP Require Policy" gotcha — now applies to *Calico's*
-   session (updated 2026-08-02, was written for MetalLB).** On current FRR this
-   must be set (or a route-map/prefix-list added) or the advertised routes get
-   **silently refused**. **Test:** confirm one Calico-assigned LoadBalancer IP is
-   actually reachable over BGP before assuming the LB layer works — a silent
-   refusal looks like "everything's fine" until you try to reach a Service
-   externally. **Raised stakes since item 13:** with the dataplane on BGP too,
-   this is no longer only an LB-reachability bug. You'll be writing FRR policy
-   here anyway, so add the inbound prefix-list rejecting the pod CIDR at the same
-   time (§6 step 5) — belt-and-braces against the `BGPFilter` export rules.
+8. **FRR eBGP policy requirement (RFC 8212) — ✅ DECIDED 2026-08-02: configure
+   real policy, do NOT disable the requirement.** (Originally written for
+   MetalLB; now applies to *Calico's* session.)
+
+   FRR 7.4+ implements RFC 8212: an eBGP session with **no** inbound/outbound
+   policy discards all routes **in both directions**. The session still reports
+   `Established` and no prefixes move — the most common silent failure in this
+   setup. Two ways to satisfy it:
+
+   - ~~**Option A** — check **Services > FRR BGP > Advanced > "Disable eBGP
+     Require Policy"**.~~ One click, and what most MetalLB-era guides say.
+     **Rejected as the standing config.** Use only as a temporary bisect step
+     when isolating a bring-up fault, then revert.
+   - **Option B — apply actual prefix lists (CHOSEN).** Leave "Disable eBGP
+     Require Policy" **unchecked**; the requirement is satisfied *because policy
+     exists*. Inbound permits only the LB range; outbound denies everything.
+
+   **Why B, given A is one checkbox:** we want the inbound prefix-list
+   regardless, as defense-in-depth. The Calico-side `BGPFilter` is the primary
+   control keeping the pod CIDR off pfSense — but it's enforced by the very
+   device we're guarding against misconfiguring. A pfSense-side prefix list is an
+   *independent* check. Once it exists, disabling the requirement buys nothing
+   and throws away a safety net. Both directions must be populated: an inbound
+   filter alone still gets outbound routes discarded.
+
+   **Raised stakes since item 13:** with the dataplane on BGP too, a silent
+   refusal is no longer only an LB-reachability bug.
+
+   **Test:** confirm one Calico-assigned LoadBalancer IP is actually reachable
+   over BGP before assuming the LB layer works — a silent refusal looks like
+   "everything's fine" until you try to reach a Service externally. Then assert
+   the pod CIDR is absent from `vtysh -c 'show ip bgp'`; if `10.42.0.0/16`
+   appears, *both* the `BGPFilter` and the prefix list failed.
+
+   **Full GUI procedure, exact field labels, and verification commands:
+   `docs/pfsense-frr-bgp-setup.md`** (§4 and §6).
 
 9. **ceph-csi version vs. Proxmox Ceph release, and RBD/CephFS image
    features vs. the Flatcar kernel.** **Test:** provision one test PVC (RBD)
