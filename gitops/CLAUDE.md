@@ -125,6 +125,11 @@ through `valuesFrom`.
 - `BGPFilter` (via `BGPPeer.spec.filters`) exports **only the LB range** and
   explicitly rejects the rest, so pfSense never learns the pod CIDR. Filters
   attach to `BGPPeer`s and the mesh isn't one, so the dataplane is unaffected.
+  - **Not the only control.** pfSense carries an independent inbound prefix list
+    permitting just the LB range (`ansible/CLAUDE.md` §7 item 8,
+    `docs/pfsense-frr-bgp-setup.md` §6). The `BGPFilter` is enforced by the side
+    we'd be guarding against misconfiguring, so it isn't trusted alone. If the
+    pod CIDR ever shows up in `vtysh -c 'show ip bgp'`, **both** failed.
 - **`BGPPeer` is Ansible-primed then Flux-adopted**, like Calico itself — the
   dataplane depends on it, so it can't wait for Flux.
 - **`kube-controllers-ipamconfigs-rbac.yaml`** — the #12890 workaround. Also
