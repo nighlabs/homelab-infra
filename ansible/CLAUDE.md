@@ -11,16 +11,23 @@ When in doubt about *why* a choice was made, check that doc's Appendix A
 decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
-> **Current task:** Bring the all-in-one node to **Ready** — wait for k3s to
-> boot, then prime Calico (§6 step 4, first half). **§1 (VM shell) and §2 (k3s
-> all-in-one server) are COMPLETE and verified live** on `snoop-a2o` (§1 done
+> **Current task:** **Flux bootstrap** (Flux Operator + `FluxInstance` +
+> secret-zero) — the second half of §6 step 4. Everything before it is done:
+> **§1 (VM shell), §2 (k3s all-in-one server), and the Calico prime (§6 step 4,
+> first half) are all COMPLETE and verified live** on `snoop-a2o` (§1 done
 > 2026-07-07: full §1.4 DoD incl. unattended reboot + from-scratch rebuild; §2:
-> k3s server up, API serving, secrets-encryption on, datastore on vdb). **Now
-> IMPLEMENTED (pending live run):** `playbooks/bootstrap-cluster.yml` waits for
-> k3s + primes Calico via the tigera-operator Helm chart, and `gitops/` holds the
-> pinned Calico HelmRelease Flux will adopt. **Next:** Flux bootstrap (Flux
-> Operator + `FluxInstance` + secret-zero) — the second half of §6 step 4. §§1–2
-> below are kept as the reference for the plumbing the rest builds on.
+> k3s server up, API serving, secrets-encryption on, datastore on vdb; Calico
+> primed 2026-07-12, re-verified 2026-08-01 — node **Ready**, all
+> calico-system/calico-apiserver/tigera-operator pods Running, `tigera-operator`
+> helm release still at **revision 1** and the live `Installation` CR matching
+> `values.yaml` exactly, which is the clean state Flux needs to adopt without a
+> diff war). §§1–2 below are kept as the reference for the plumbing the rest
+> builds on.
+>
+> **Before writing any Flux/BGP config, settle the decisions in §7 items 13
+> (Calico BGP vs MetalLB) and 14 (scoped kubeconfig for Flux)** — and note the
+> secrets-ordering trap in §6 step 5: MetalLB lands *four steps before* ESO
+> exists, so its BGP peer password cannot come from an `ExternalSecret`.
 
 ---
 
@@ -183,7 +190,7 @@ whole point of moving to this link:
 
 ---
 
-## 2. IN PROGRESS — install k3s (all-in-one server) 🚧
+## 2. DONE — install k3s (all-in-one server) ✅
 
 The `flatcar_vm` role now bakes k3s into a node's Ignition when its node-map
 `role` is a k3s role (`all-in-one`/`server`/`control-plane` → server;
@@ -245,8 +252,13 @@ arrives — that's a later milestone (§6), not this one.
   `systemd-sysupdate.service` only updates the OS, so a drop-in runs the
   `-C k3s-<minor> update` as `ExecStartPre` and flags `/run/reboot-required` if
   the active `.raw` changed (the new k3s binary applies on next boot, not
-  hot-swapped under the running service). Actual patch pull-through is still the
-  §7-item-5 PoC to verify live; this only wires the machinery.
+  hot-swapped under the running service). **Patch pull-through is now PROVEN
+  live** (2026-08-01, closing §7 item 5) — see that item for the evidence.
+  Practical consequence: `k3s_version` in `group_vars` is only the **seed**
+  asset for a fresh node, not what a long-running node runs. `snoop-a2o` was
+  seeded at `v1.32.2+k3s1` and now runs `v1.32.3+k3s1`, so expect a
+  provisioned-vs-running delta and don't treat it as drift. Bump the seed pin
+  periodically anyway, purely to shrink the first-boot catch-up download.
 - **k3s datastore on the data disk — via the default path, NOT a `data-dir`
   override.** vdb is mounted at **`/var/lib/rancher`** (k3s's default data-dir
   root), so the kine/SQLite datastore + embedded containerd + image cache (the
@@ -270,7 +282,7 @@ aescbc key off-cluster.
 
 ---
 
-## 6. Future k3s / multi-node plan (kept for continuity — not started)
+## 6. k3s / multi-node plan (step 4's Calico half DONE; steps 1–3, 5–7 open)
 
 Once Phase 1 is solid, expand in this order (mirrors the project doc's
 bring-up order, but starting from an already-running single node instead of
@@ -289,7 +301,8 @@ from zero):
    bootstrap" note below) and **bootstrap Flux** as the final steps of the same
    Ansible run (Flux Operator + `FluxInstance` pointed at the Git repo — see
    `gitops/`).
-   - **The Calico-prime half is IMPLEMENTED** (pending live run) in
+   - **The Calico-prime half is DONE and verified live** (primed 2026-07-12,
+     re-verified 2026-08-01) in
      `playbooks/bootstrap-cluster.yml` (wired into `site.yml` after
      `provision-nodes.yml`): it waits for SSH, polls the k3s API `/readyz`,
      fetches `/etc/rancher/k3s/k3s.yaml` and rewrites it — `server:` → the DMZ IP,
@@ -304,9 +317,16 @@ from zero):
      cluster exists today, so that path is structural, not hardware-tested. Then
      `helm`-installs the
      `tigera-operator` chart from `gitops/infrastructure/calico/values.yaml`
-     (`calico_version` pin) and waits for the node to go Ready. The **Flux
-     bootstrap half** (Flux Operator + `FluxInstance` + secret-zero, which then
-     *adopts* that release) is still TODO — the next milestone.
+     (`calico_version` pin) and waits for the node to go Ready. **Verified
+     2026-08-01:** node Ready, all calico pods Running, helm release at
+     **revision 1** (primed once, never re-applied) and the live `Installation`
+     CR matching `values.yaml` — `bgp: Disabled`, `cidr: 10.42.0.0/16`,
+     `VXLANCrossSubnet`, `nodeAddressAutodetectionV4.kubernetes: NodeInternalIP`.
+     That revision-1-with-no-diff state is precisely what makes the Flux
+     adoption a quiet takeover, so **re-check it if the prime is ever re-run
+     before Flux lands**. The **Flux bootstrap half** (Flux Operator +
+     `FluxInstance` + secret-zero, which then *adopts* that release) is still
+     TODO — the next milestone.
    - **Flatcar gotcha (baked in): the node has NO Python**, so the tasks that run
      *on* it (poll `/readyz`, read the kubeconfig) use **`raw`** (straight over
      SSH, no interpreter), with `sudo` embedded in the command — NOT
@@ -327,6 +347,20 @@ from zero):
    ceph-csi-operator + StorageClasses → External Secrets Operator + Bitwarden
    SDK Server → Postgres + Redis → LiteLLM → confirm a chat completion
    round-trips to the Mac.
+   - **⚠ Secrets-ordering trap — MetalLB needs a secret four steps before ESO
+     exists.** MetalLB's BGP session wants a **peer password** (`BGPPeer.spec.
+     password`, a `Secret` ref), and the peer IPs/ASNs are topology, which this
+     repo vaults by convention. But ESO — the answer to "where do secrets come
+     from" — is *fourth* in the very chain above, and it can't be pulled earlier:
+     the Bitwarden SDK Server needs a cert-manager cert, cert-manager's issuance
+     path wants a Gateway, and the Gateway needs a LoadBalancer IP from MetalLB.
+     The cycle is real, so **MetalLB's BGP credential must come from outside the
+     ESO path** — the live options being an Ansible-primed `Secret` from the
+     vault (consistent with how Calico was primed) or a secret-zero-style
+     `Secret` created during Flux bootstrap. **Decide this before writing the
+     MetalLB HelmRelease**, not when it fails to reconcile. Related: §7 item 13
+     — if Calico BGP absorbs MetalLB, this trap moves onto Calico's `BGPPeer`
+     rather than disappearing.
 
 > **Calico bootstrap — Ansible installs once, Flux adopts (decided 2026-07-08).**
 > The chicken-and-egg is real: Flux's own pods need a CNI, but Calico (the CNI)
@@ -418,10 +452,31 @@ apply once k3s work starts.
    `uri`/API fallback and the delegated `qm set --cicustom` fallback both
    written and tested, not just theorized.
 
-5. **k3s sysext + Flatcar interaction is less documented than a standard
-   binary install.** **PoC:** confirm the sysext installs, updates via
-   systemd-sysupdate, and k3s actually starts cleanly on first boot before
-   assuming the happy path.
+5. **RESOLVED 2026-08-01 — k3s sysext + Flatcar works end-to-end, including
+   unattended patch updates.** (Was: "less documented than a standard binary
+   install; confirm it installs, updates via systemd-sysupdate, and starts
+   cleanly on first boot.") All three legs are now proven on `snoop-a2o`:
+   - *Install + clean first boot:* proven at §2 (after the initramfs-network
+     fix — see §2's findings; that failure mode is the lasting lesson here).
+   - *Unattended patch update:* the node was **seeded at `v1.32.2+k3s1` and now
+     runs `v1.32.3+k3s1`**, entirely on its own. `journalctl -u systemd-sysupdate`
+     shows `systemd-sysupdate` selecting update `3+k3s1`, pulling
+     `k3s-v1.32.3+k3s1-x86-64.raw` from `extensions.flatcar.org`, and installing
+     it — 2026-07-12 18:14, ~3h after the 15:33 seed download. Both `.raw`s are
+     retained in `/opt/extensions/k3s/` (under `InstancesMax=3`) and the
+     `CurrentSymlink` `/etc/extensions/k3s.raw` was re-pointed to `.3`.
+     `k3s --version` confirms the new binary took on the next boot.
+   - *Minor pin holds:* it moved within `v1.32` only, never across a minor —
+     which is the whole point of the `k3s-<minor>` feature name / `MatchPattern`.
+   - **Cosmetic, worth a cleanup:** each run logs
+     `Target specification lacks MatchPattern= expression. Assuming same value as
+     in source specification.` Harmless (the assumption it makes is the one we
+     want), but adding an explicit `MatchPattern=` to `[Target]` in
+     `k3s-sysupdate.conf.j2` would silence it and remove the reliance on a
+     default.
+   - **How to re-verify** after any change here: `ls -la /opt/extensions/k3s/`
+     (instances) + `ls -la /etc/extensions/` (where `k3s.raw` points) +
+     `sudo journalctl -u systemd-sysupdate | grep k3s`.
 
 6. **Node VLAN subnet — TBD.** Blocks finalizing the MetalLB `/24` and FRR
    BGP peer addresses. Needs to be decided before k3s expansion step 5
