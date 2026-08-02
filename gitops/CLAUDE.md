@@ -13,8 +13,9 @@ deployment/<cluster>/     # Flux entrypoints: the per-cluster Kustomization CRs
   infrastructure.yaml       #   -> ../../infrastructure  (controllers)
   apps.yaml                 #   -> ../../apps  (dependsOn infrastructure)
 infrastructure/           # controllers, in dependency order (design §6):
-  calico/                   #   calico (CNI) -> metallb -> cert-manager ->
+  calico/                   #   calico (CNI + BGP) -> cert-manager ->
   kustomization.yaml        #   ceph-csi-operator -> ESO + Bitwarden SDK -> ...
+                          #   (no metallb — Calico BGP owns LB, see below)
 apps/                     # workloads only: litellm, qdrant, open-webui, ...
                           #   (empty until the infra layer is up)
 ```
@@ -56,6 +57,81 @@ decided in `ansible/CLAUDE.md §6` (2026-07-08):
   `version:` in `helmrelease.yaml`) must stay in lockstep; both are
   Renovate-tracked.
 
+## Topology blinding — `${var}` placeholders, not SOPS (decided 2026-08-02)
+
+Calico dodged this with `nodeAddressAutodetectionV4` (see above), but the BGP
+CRs can't: a **peer IP and ASN have no autodetection equivalent**. The answer is
+Flux post-build substitution, so nothing encrypted is ever committed:
+
+```yaml
+# infrastructure/calico/bgppeer.yaml — committed exactly like this
+spec:
+  peerIP: ${bgp_peer_ip}
+  asNumber: ${bgp_peer_asn}
+```
+```yaml
+# the deployment/ Kustomization that reconciles it
+spec:
+  postBuild:
+    substituteFrom:
+      - kind: Secret
+        name: cluster-topology
+```
+
+`cluster-topology` is **Ansible-seeded at bootstrap** from the vault (it's
+needed before ESO exists — see root `CLAUDE.md`). Values then rotate without a
+commit, and diffs stay fully readable.
+
+- **⚠ Undefined variables become the empty string and reconcile SUCCESSFULLY.**
+  Per the docs: *"All the undefined variables in the format `${var}` will be
+  substituted with an empty string unless a default value is provided."* A typo
+  gives you `peerIP: ""`, applied and reported healthy. **Enable the
+  kustomize-controller feature gate
+  `--feature-gates=StrictPostBuildSubstitutions=true`.** `flux envsubst --strict`
+  checks it locally / in pre-commit.
+- `$${var}` escapes a literal; `$var` is untouched; substitution into a Secret
+  needs `.stringData`. Disable per-resource with the annotation
+  `kustomize.toolkit.fluxcd.io/substitute: disabled`.
+- **Keep substituted resources out of kustomize `Components`** —
+  [kustomize-controller#1506](https://github.com/fluxcd/kustomize-controller/issues/1506)
+  reports flaky `substituteFrom` behavior there. (Components are the same blind
+  spot for SOPS decryption, so the rule is just: plain `resources:` entries.)
+- **When Ansible applies one of these, it must use `flux build kustomization
+  --strict-substitute`, never `kustomize build`.** `postBuild` is a
+  *kustomize-controller* feature; plain kustomize emits the literal `${var}`,
+  which applies cleanly into a string field and silently breaks. Note `--dry-run`
+  **skips** Secret/ConfigMap substitutions, so the Secret must exist and the
+  build must have cluster access.
+- **SOPS/age is the fallback, not the default** — reach for it only where
+  substitution can't go (whole blocks/lists, or values needed at kustomize-*build*
+  time). If it's ever needed: kustomize-controller decrypts non-Secret kinds too
+  (the docs note `encrypted_regex` users "may wish to add other fields if you are
+  encrypting other types of Objects"), but `apiVersion`/`kind`/`metadata` can
+  never be encrypted. The age key arrives as Secret `sops-age` in `flux-system`,
+  key file `age.agekey`, Ansible-seeded from BWS.
+
+## Calico BGP — CRs, not Helm values
+
+`values.yaml` stays the shared Helm values source. `BGPConfiguration`,
+`BGPPeer`, and `BGPFilter` are **Calico CRs**, so they're plain manifests in
+`infrastructure/calico/` referenced by its `kustomization.yaml` — they can't go
+through `valuesFrom`.
+
+- `values.yaml` moves to `bgp: Enabled` + **no encapsulation** (from
+  `VXLANCrossSubnet`). Calico's VXLAN path uses no BGP at all, so this makes BGP
+  load-bearing for pod routing — see `ansible/CLAUDE.md` §6 step 5 and §7 item 13.
+- All nodes share one subnet, so the default **node-to-node mesh** distributes
+  pod CIDRs with no `BGPPeer`. The pfSense peer is for LB advertisement only.
+- `BGPFilter` (via `BGPPeer.spec.filters`) exports **only the LB range** and
+  explicitly rejects the rest, so pfSense never learns the pod CIDR. Filters
+  attach to `BGPPeer`s and the mesh isn't one, so the dataplane is unaffected.
+- **`BGPPeer` is Ansible-primed then Flux-adopted**, like Calico itself — the
+  dataplane depends on it, so it can't wait for Flux.
+- **`kube-controllers-ipamconfigs-rbac.yaml`** — the #12890 workaround. Also
+  Ansible-primed, because LB allocation gates the Gateway → cert-manager → ESO
+  chain, so a gap here stalls the bootstrap. Carries an explicit `REMOVE when
+  fixed` comment; re-check on every Calico bump.
+
 ## Conventions
 
 - Chart versions are pinned literally (Renovate bumps them); never `*`/floating.
@@ -67,8 +143,11 @@ decided in `ansible/CLAUDE.md §6` (2026-07-08):
 
 ## Not here yet
 
-- **Flux itself** (`FluxInstance`, secret-zero) — next milestone; the
-  `deployment/` entrypoints activate then.
+- **Flux itself** (`FluxInstance`, secret-zero) — the `deployment/` entrypoints
+  activate then. **Now sequenced *after* the Calico BGP migration** (see
+  `ansible/CLAUDE.md` current-task banner). What Ansible seeds at that point:
+  secret-zero, the `cluster-topology` Secret (post-build substitution), and —
+  only if SOPS turns out to be needed — `sops-age`.
 - **TODO at Flux bootstrap — source is OCI, not Git.** The `deployment/`
   entrypoints currently point at a `GitRepository` named `flux-system` as a
   placeholder. When Flux is wired up, **rewrite them to an `OCIRepository`**
@@ -85,7 +164,14 @@ decided in `ansible/CLAUDE.md §6` (2026-07-08):
     applied to the cluster. Update the `FluxInstance` bootstrap (Ansible) to
     provision the registry pull creds + the cosign trust config alongside
     secret-zero.
-- Everything downstream of Calico: MetalLB, NGINX Gateway Fabric + cert-manager,
-  ceph-csi-operator + StorageClasses, ESO + Bitwarden SDK Server, then the apps
-  (Postgres/Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel). Order per
-  `ansible/CLAUDE.md` §6 / design doc §6.
+- Everything downstream of Calico: **Calico BGP** (no MetalLB), NGINX Gateway
+  Fabric + cert-manager, ceph-csi-operator + StorageClasses, ESO + Bitwarden SDK
+  Server, then the apps (Postgres/Redis → LiteLLM → Qdrant → RAG → Open WebUI →
+  OTel). Order per `ansible/CLAUDE.md` §6 / design doc §6.
+  - **Version:** the BGP work needs **`v3.32.1`** (v3.29.1 can't allocate
+    LoadBalancer IPs at all). Bump `calico_version` and `helmrelease.yaml`'s
+    `version:` together. **`kube-controllers-ipamconfigs-rbac.yaml` must ship
+    alongside it** — 3.32's LB-IPAM RBAC grant is broken upstream
+    ([#12890](https://github.com/projectcalico/calico/issues/12890)) and unfixed
+    in 3.32.1. It's a temporary workaround with removal criteria: see
+    `ansible/CLAUDE.md` §7 item 15.

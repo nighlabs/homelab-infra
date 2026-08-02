@@ -46,10 +46,49 @@ by role only here:
   (Real values for all of the above: see the vault vars — `dmz_network`,
   `ceph_public_network`, and the `proxmox_*` set.)
 
+**Secrets, credentials, and topology blinding (decided 2026-08-02).**
+Three tiers, one root of trust. **Bitwarden Secrets Manager (cloud-hosted)** is
+the durable store for everything; the split is about *who reads it when*:
+
+| Tier | Example | Mechanism |
+|---|---|---|
+| **Credentials** | Proxmox API token, k3s join token | BWS → `vault.yml` (a materialized *cache*, git-ignored) |
+| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from the vault |
+| **Runtime app secrets** | app passwords, API keys | ESO + Bitwarden SDK Server, per design §6 |
+| **Topology (blinding only)** | BGP peer IP/ASN, LB range | Flux `postBuild.substituteFrom` a `Secret` — *placeholders* in Git |
+
+- **Never commit a credential in any form, including ciphertext.** Encrypted
+  secrets in Git are permanent, unrotatable without a commit, and unauditable.
+  BWS gives rotation, revocation, and audit; use it. `vault.yml` is
+  reproducible *from* BWS, so it's a cache, not the original.
+- **Topology is blinded with `${var}` placeholders + post-build substitution**,
+  not SOPS. Nothing encrypted is committed, values change without a commit, and
+  diffs stay readable. Reach for **SOPS/age only** where substitution can't go
+  (whole blocks/lists, or values needed at kustomize-*build* time) — the age
+  private key is then just another BWS secret, Ansible-seeded as `sops-age`.
+- **ESO cannot be pulled earlier in the chain** — the Bitwarden SDK Server needs
+  a cert-manager cert, which needs a Gateway, which needs a LoadBalancer IP.
+  That cycle is real, so anything needed before ESO exists is Ansible-seeded.
+  Don't try to solve it by moving ESO up.
+
 **Standing guardrails (repo-wide, not phase-specific):**
 - **No Terraform.** Provisioning is Ansible-only — a deliberate reversal
   (state-file secret handling was the dealbreaker). See Appendix A in the
   design doc before reintroducing it.
+- **No MetalLB.** Calico BGP owns *both* LoadBalancer IP advertisement and the
+  pod dataplane (decided 2026-08-02, settling `ansible/CLAUDE.md` §7 item 13).
+- **Calico `v3.32.1` + k3s `v1.36.x`** — both current stable, version-matched.
+  **Calico 3.32 ships a broken LoadBalancer-IPAM RBAC grant
+  ([#12890](https://github.com/projectcalico/calico/issues/12890), open,
+  unfixed in 3.32.1), so a workaround ClusterRole MUST be applied.** It is not
+  optional and it is not reactive — without it, LoadBalancer IPs sit `pending`
+  forever *while BGP advertises the routes normally*, so the failure gives no
+  hint on the BGP side. Manifest, rationale, and removal criteria:
+  `ansible/CLAUDE.md` §7 item 15.
+- **Keep k3s on a supported Kubernetes minor.** Upstream maintains only the
+  latest three; we drifted to an EOL 1.32 without noticing. Bump via
+  `k3s_minor`/`k3s_version` + re-provision (never sequential in-place upgrades
+  while the cluster is disposable). See `ansible/CLAUDE.md` §7 item 16.
 - **No DHCP anywhere in cluster networking.** All node addressing is
   static, defined in Ignition, sourced from the Ansible inventory node map.
 - **No second Ceph in-cluster.** Always the existing external Proxmox Ceph

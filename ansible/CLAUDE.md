@@ -24,10 +24,27 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > diff war). §§1–2 below are kept as the reference for the plumbing the rest
 > builds on.
 >
-> **Before writing any Flux/BGP config, settle the decisions in §7 items 13
-> (Calico BGP vs MetalLB) and 14 (scoped kubeconfig for Flux)** — and note the
-> secrets-ordering trap in §6 step 5: MetalLB lands *four steps before* ESO
-> exists, so its BGP peer password cannot come from an `ExternalSecret`.
+> **Sequencing changed 2026-08-02: the Calico BGP migration now comes BEFORE
+> the Flux bootstrap.** Rationale: BGP is not a late-tier LB feature here — it
+> becomes the *dataplane* (§7 item 13 is now RESOLVED: Calico BGP owns both LB
+> advertisement and pod routing, no MetalLB). Calico's VXLAN implementation uses
+> **no BGP at all**, so going no-encap takes BGP from "not running" to
+> "load-bearing for pod networking." Churning the CNI is at its **cheapest right
+> now** — one node, no workloads, nothing in `apps/`, no PVCs, and Calico is
+> still *Ansible*-managed (helm revision 1), so re-priming is an Ansible re-run
+> rather than a fight with Flux. Every week that gets worse.
+>
+> **Versions settled 2026-08-02: Calico `v3.32.1` + k3s `v1.36.x`** (§7 items 15
+> + 16 — decided together, both land in the same re-provision as the
+> encapsulation change). **⚠ The Calico bump is not just a pin change** — 3.32
+> ships a broken LoadBalancer-IPAM RBAC grant and the workaround ClusterRole
+> **must** be applied with it (item 15). The old "MetalLB secrets-ordering trap"
+> is **resolved** — see §6 step 5.
+>
+> **Still open before writing config:** whether pfSense/FRR is actually
+> configured, plus the LB `/24`, FRR peer address and the two ASNs (§7 items 6 +
+> 8) — these are now the only real blockers, and they're facts from the network
+> rather than decisions. Also §7 item 14 (scoped kubeconfig for Flux).
 
 ---
 
@@ -340,27 +357,80 @@ from zero):
      `values.yaml`, the single values source Ansible also primes from). See
      `gitops/CLAUDE.md` for the adoption mechanics and the repo's 3-tier layout
      (`deployment/` entrypoints + `infrastructure/` + `apps/`).
-5. **From Git, in dependency order** (Calico already primed in step 4): MetalLB
-   (BGP) — *but see §7 item 13: whether Calico BGP should absorb MetalLB is an
-   open question; we ship MetalLB first and revisit* → NGINX Gateway Fabric +
-   cert-manager (DNS-01 wildcard) →
+5. **From Git, in dependency order** (Calico already primed in step 4):
+   **Calico BGP** (replaces MetalLB entirely — §7 item 13, decided 2026-08-02)
+   → NGINX Gateway Fabric + cert-manager (DNS-01 wildcard) →
    ceph-csi-operator + StorageClasses → External Secrets Operator + Bitwarden
    SDK Server → Postgres + Redis → LiteLLM → confirm a chat completion
    round-trips to the Mac.
-   - **⚠ Secrets-ordering trap — MetalLB needs a secret four steps before ESO
-     exists.** MetalLB's BGP session wants a **peer password** (`BGPPeer.spec.
-     password`, a `Secret` ref), and the peer IPs/ASNs are topology, which this
-     repo vaults by convention. But ESO — the answer to "where do secrets come
-     from" — is *fourth* in the very chain above, and it can't be pulled earlier:
-     the Bitwarden SDK Server needs a cert-manager cert, cert-manager's issuance
-     path wants a Gateway, and the Gateway needs a LoadBalancer IP from MetalLB.
-     The cycle is real, so **MetalLB's BGP credential must come from outside the
-     ESO path** — the live options being an Ansible-primed `Secret` from the
-     vault (consistent with how Calico was primed) or a secret-zero-style
-     `Secret` created during Flux bootstrap. **Decide this before writing the
-     MetalLB HelmRelease**, not when it fails to reconcile. Related: §7 item 13
-     — if Calico BGP absorbs MetalLB, this trap moves onto Calico's `BGPPeer`
-     rather than disappearing.
+
+   **Calico BGP — what actually gets applied, and by whom.** Three CRs, none of
+   which are Helm chart values, so they do **not** go in
+   `gitops/infrastructure/calico/values.yaml` (that file stays the shared Helm
+   values source). They live as plain manifests alongside it:
+   - `BGPConfiguration` — `serviceLoadBalancerIPs` (advertisement) + ASN.
+   - `BGPPeer` — the pfSense/FRR peer. **Bootstrap-tier: Ansible primes it**,
+     Flux adopts, same pattern as Calico itself.
+   - `BGPFilter` — attached via `BGPPeer.spec.filters`. Exports **only the LB
+     range** and explicitly `Reject`s everything else, so **pfSense never learns
+     the pod CIDR**. Write the terminal `Reject` explicitly rather than relying
+     on default behavior for unmatched routes.
+
+   **All k3s nodes are on the same DMZ subnet (decided 2026-08-02)**, which is
+   what makes this simple: Calico's **node-to-node mesh is on by default** and
+   auto-peers every node with every other node in the same L2, so **pod-to-pod
+   routing needs no `BGPPeer` at all**. The pfSense peer exists only for LB
+   advertisement and external reachability. Filters attach to `BGPPeer`
+   resources, and the mesh isn't one — so the export filter can't starve the
+   dataplane. *Confirm that live once peered* (nodes still learn each other's
+   pod CIDRs after the filter lands); the docs don't state it explicitly.
+
+   **Consequence of the filter:** `natOutgoing: Enabled` SNATs pod egress to the
+   node IP, so pods reach the LAN while the LAN has **no route back to pods** —
+   the asymmetry we want, for free. But this is *route hygiene, not enforcement*:
+   nodes still forward for pod IPs, so anything on the node subnet that adds a
+   static route reaches pods anyway. Real enforcement is Calico
+   `GlobalNetworkPolicy`, which a static route can't bypass. Don't confuse the
+   two. Cheap belt-and-braces: an inbound prefix-list on FRR rejecting the pod
+   CIDR — you're editing FRR policy anyway because of item 8.
+
+   - **✅ Secrets-ordering trap — RESOLVED 2026-08-02.** (Was: MetalLB's BGP peer
+     password is needed four steps before ESO exists, and the dependency cycle is
+     real — Bitwarden SDK Server → cert-manager cert → Gateway → LoadBalancer IP.)
+     The cycle still exists and **ESO still cannot be moved earlier**; what
+     changed is that we stopped trying. **Anything needed before ESO exists is an
+     Ansible-seeded `Secret`, sourced from the vault** — consistent with how
+     Calico was primed, and it keeps credential ciphertext out of Git entirely.
+     That covers the BGP peer password (if we even use one — it's optional, and
+     on a DMZ VLAN we control end-to-end it may not be worth it) *and* the
+     `cluster-topology` Secret that feeds post-build substitution. See the root
+     `CLAUDE.md` "Secrets, credentials, and topology blinding" table for the full
+     three-tier split.
+
+   - **Topology in `gitops/` uses `${var}` placeholders, not SOPS.** The BGP CRs
+     inherently need the peer IP + ASN, and there's no `NodeInternalIP`-style
+     autodetection dodge for a peer address. Solution: commit
+     `peerIP: ${bgp_peer_ip}` and let Flux substitute from the Ansible-seeded
+     `cluster-topology` Secret via `postBuild.substituteFrom`. Nothing encrypted
+     is committed. **Gotcha:** undefined variables substitute to the *empty
+     string* and reconcile **successfully** — a missing key gives you a broken-
+     but-applied `BGPPeer`. Turn on the kustomize-controller feature gate
+     `--feature-gates=StrictPostBuildSubstitutions=true`. See `gitops/CLAUDE.md`.
+
+   - **When Ansible must apply a substituted manifest, use `flux build
+     kustomization`, never `kustomize build`.** `postBuild` is a
+     *kustomize-controller* feature; plain kustomize doesn't know `${var}` and
+     will apply the literal string into the cluster (it's a valid string field,
+     so it *succeeds*). `flux build kustomization --strict-substitute` runs the
+     same implementation Flux uses. **Its trap:** per the docs, "variable
+     substitutions from Secrets and ConfigMaps are skipped in dry-run mode" — so
+     `--dry-run` silently drops exactly what you need. Order is: Ansible creates
+     the Secret → `flux build kustomization` (with cluster access) → apply. One
+     substitution source, two consumers, no reimplementation.
+
+   - **Keep the dual-applied set small.** It is: Calico's Helm values, the BGP
+     CRs, and the Flux bootstrap. Everything else should be Flux-only. `flux
+     build` is the tool when you need it, not the default posture.
 
 > **Calico bootstrap — Ansible installs once, Flux adopts (decided 2026-07-08).**
 > The chicken-and-egg is real: Flux's own pods need a CNI, but Calico (the CNI)
@@ -385,9 +455,26 @@ from zero):
 7. **Then**: split DNS + external access (internal resolver, Tailscale split
    DNS, Cloudflare Tunnel), source-IP preservation checks on both paths.
 
-Networking prep (pfSense VLAN, MetalLB `/24`, FRR ASNs, "Disable eBGP
-Require Policy") and the Ceph pool/client-user setup can happen in parallel
-with Phase 1 — they don't block the single-node milestone.
+The Ceph pool/client-user setup can happen in parallel — it doesn't block the
+single-node milestone.
+
+**Networking prep is no longer parallel — it's on the critical path.** Once the
+dataplane moves to BGP, the pfSense/FRR side (LB `/24`, the two private ASNs
+from 64512–65534, the peering itself, and "Disable eBGP Require Policy" — item
+8) gates the Calico migration rather than sitting alongside it. Note FRR must
+accept the **pod CIDR** too if nodes ever span subnets; on the same-subnet
+design above it only needs the LB range, and the `BGPFilter` guarantees that's
+all it's offered.
+
+**Migration ordering — the risk window is node 2, not today.** With one node the
+mesh has no peers to form, so flipping to no-encap is trivially safe and nothing
+can break. The first moment mesh routing carries real traffic is when node 2
+joins. So: flip encapsulation now, establish and verify pfSense peering with
+only one node at stake, and have **both proven before node 2 exists** — far
+better than debugging a peering fault and a join at the same time. Also note
+**changing an existing IPPool's encapsulation is not a clean in-place edit**
+under the Tigera operator; on an empty single-node cluster the honest path is to
+re-prime (or rebuild the node — §1 proved from-scratch rebuild works).
 
 ---
 
@@ -478,9 +565,15 @@ apply once k3s work starts.
      (instances) + `ls -la /etc/extensions/` (where `k3s.raw` points) +
      `sudo journalctl -u systemd-sysupdate | grep k3s`.
 
-6. **Node VLAN subnet — TBD.** Blocks finalizing the MetalLB `/24` and FRR
-   BGP peer addresses. Needs to be decided before k3s expansion step 5
-   (MetalLB) in §6.
+6. **LB `/24` + FRR peer address — TBD (partially closed 2026-08-02).** The
+   *node* VLAN half of this is **settled**: nodes live on the vaulted DMZ
+   network and `snoop-a2o` has been running there since 2026-07-07, and all k3s
+   nodes stay on that one subnet (§6 step 5). What's still open is the **LB
+   range** and the **FRR peer address + the two private ASNs** (64512–65534, one
+   for Calico, one for FRR). These now block the Calico BGP migration, which is
+   the *current* task — not a later step. Once chosen, they go into BWS and reach
+   the cluster via the Ansible-seeded `cluster-topology` Secret, never as
+   literals in Git.
 
 7. **Internal DNS resolver approach — TBD, three options undecided:**
    pfSense Unbound host overrides vs. a single wildcard `*.apps.<domain>` +
@@ -488,11 +581,16 @@ apply once k3s work starts.
    test split-DNS behavior (including the Unbound rebinding-protection
    whitelist) before relying on it for the "internal view."
 
-8. **FRR "Disable eBGP Require Policy" gotcha.** On current FRR this must be
-   set (or a route-map/prefix-list added) or MetalLB's routes get silently
-   refused. **Test:** confirm one MetalLB-assigned IP is actually reachable
-   over BGP before assuming the LB layer works — a silent refusal here looks
-   like "everything's fine" until you try to reach a Service externally.
+8. **FRR "Disable eBGP Require Policy" gotcha — now applies to *Calico's*
+   session (updated 2026-08-02, was written for MetalLB).** On current FRR this
+   must be set (or a route-map/prefix-list added) or the advertised routes get
+   **silently refused**. **Test:** confirm one Calico-assigned LoadBalancer IP is
+   actually reachable over BGP before assuming the LB layer works — a silent
+   refusal looks like "everything's fine" until you try to reach a Service
+   externally. **Raised stakes since item 13:** with the dataplane on BGP too,
+   this is no longer only an LB-reachability bug. You'll be writing FRR policy
+   here anyway, so add the inbound prefix-list rejecting the pod CIDR at the same
+   time (§6 step 5) — belt-and-braces against the `BGPFilter` export rules.
 
 9. **ceph-csi version vs. Proxmox Ceph release, and RBD/CephFS image
    features vs. the Flatcar kernel.** **Test:** provision one test PVC (RBD)
@@ -519,8 +617,26 @@ apply once k3s work starts.
     fails intermittently, check this before assuming it's a cluster-side
     bug.
 
-13. **Calico BGP as a MetalLB replacement — OPEN, needs more discussion
-    (raised 2026-07-12).** We're currently shipping the simple combo: Calico
+13. **RESOLVED 2026-08-02 — Calico BGP replaces MetalLB, for both LB
+    advertisement AND the pod dataplane.** The upstream question this item was
+    waiting on ("do we want the pod dataplane on BGP/no-encap?") was answered
+    **yes**. Consequences, all now tracked above: `values.yaml` moves to
+    `bgp: Enabled` + no encapsulation; MetalLB never gets written (§6 step 5);
+    BGP config becomes bootstrap-tier because the dataplane depends on it.
+    **Key fact that drove the sequencing change:** Calico's VXLAN implementation
+    uses **no BGP at all**, so this isn't "enable a feature alongside the
+    existing dataplane" — it takes BGP from *not running* to *sole mechanism for
+    pod routing*. Two mitigations found: all nodes on one subnet means the
+    default **node-to-node mesh** carries pod routes with no `BGPPeer` involved,
+    and the risk window is **node 2's join**, not today.
+    **⚠ This decision is blocked on a version bump — see item 15**, which is the
+    one part that did *not* resolve. Original analysis kept below for the
+    reasoning; the "crawl-before-walk / ship MetalLB first" plan in it is
+    **superseded**.
+
+    <details><summary>Original open question (2026-07-12)</summary>
+
+    We're currently shipping the simple combo: Calico
     **VXLAN + `bgp: Disabled`** (see `gitops/infrastructure/calico/values.yaml`)
     with **MetalLB** owning LoadBalancer IPs in BGP mode (§6 step 5). But since
     we're already paying to peer BGP with FRR for the LB range, and Calico is
@@ -543,6 +659,8 @@ apply once k3s work starts.
     committing. Related: item 8 (FRR "Disable eBGP Require Policy" applies to
     Calico's session too) and design-doc Appendix A "Load balancer" entry.
 
+    </details>
+
 14. **Cluster-admin kubeconfig persists on the control node — OPEN, decide WITH
     the Flux milestone (raised 2026-07-12).** `bootstrap-cluster.yml` fetches k3s's
     admin kubeconfig to `ansible/.kube/<cluster>.config` (0600, git-ignored) and
@@ -564,6 +682,223 @@ apply once k3s work starts.
     deliberate `playbooks/clean-kubeconfig.yml` teardown (the `kubernetes.core.
     kubeconfig` module's `behavior: remove` can pull the merged contexts back out
     of `~/.kube/config` too) — never as a silent step in the provisioning path.
+
+15. **`calico_version` → `v3.32.1`, with a mandatory RBAC workaround (raised and
+    DECIDED 2026-08-02).** Was a blocker on item 13's decision; now resolved —
+    see the DECIDED block below for the pin, the workaround manifest, and its
+    removal criteria. Background, verified against upstream docs:
+    - **Our pinned `v3.29.1` cannot allocate LoadBalancer IPs — only advertise
+      them.** The 3.29 docs say it verbatim: *"Service LoadBalancer address
+      allocation is outside the current scope of Calico, but can be implemented
+      with an external controller."* Their recommended 3.29 setup is to keep
+      **MetalLB's controller** (allocation) with the **speaker disabled**, and let
+      Calico advertise. So "drop MetalLB entirely" is simply not reachable at the
+      current pin.
+    - **LoadBalancer IPAM landed in OSS v3.30.** Needs an explicit `IPPool` with
+      `allowedUses: [LoadBalancer]` + `assignmentMode: Automatic`; the LB
+      controller is enabled by default in kube-controllers. **Watch the default
+      mode:** `AllServices` grabs *every* LoadBalancer Service in the cluster —
+      `RequestedServicesOnly` + `loadBalancerClass: calico` is the deliberate
+      posture.
+    - **Open, unresolved bug — bound to Calico 3.32, NOT to any k8s version.**
+      [projectcalico/calico#12890](https://github.com/projectcalico/calico/issues/12890)
+      (2026-06-02, still open). LB IPs stuck `pending` while BGP advertises the
+      routes fine, because `calico-kube-controllers` can't read `ipamconfigs`
+      (the ClusterRole grants `ipamconfigurations`). **Full thread read
+      2026-08-02 — the evidence is stronger than a single lab report:**
+      - **Three independent parties, two distros.** Reporter on k3s 1.36.1 +
+        Debian/Raspbian **arm64** + Mikrotik ROS (four real nodes — *not* kind,
+        despite how it may skim); a second reproduction on **rke2 v1.35.5**; a
+        third confirming the fix. So it's neither kind-specific, arch-specific,
+        nor k3s-specific.
+      - **The reporter bisected it.** Two days after filing: *"I have tried the
+        same exercise on k3s 1.35.5+k3s1 and calico 3.31. In this configuration
+        the LoadBalancer IP's are assigned successfully and routed correctly
+        outside of the cluster."* Same person, same hardware, same procedure —
+        **3.32 broken, 3.31 works.** Root cause later pinned to PR #11839
+        (milestone v3.32.0), which is simply not in 3.31.
+      - **Confirmed workaround exists** (extra ClusterRole granting `ipamconfigs`
+        to the `calico-kube-controllers` SA in `calico-system`), posted by the
+        second reporter and confirmed by the third. **This is what makes the
+        3.32.1 pin viable** — we pre-apply it rather than waiting to be bitten.
+        See the DECIDED block below for the manifest.
+      - **What's genuinely weak:** the reporter self-describes as unsure of the
+        root cause, and their own paste has an internal inconsistency (a
+        `jsonpath` showing SA `calico-kube-controller`, singular, vs the plural
+        in the error). Their repro also pre-installs the v1 CRD bundle by hand
+        (`kubectl create -f .../v1_crd_projectcalico_org.yaml`) and uses raw
+        manifests rather than the Helm chart we use — so our install path is not
+        identical. But the working RBAC fix makes the diagnosis solid regardless.
+      - **Zero maintainer engagement after 2 months.** All three commenters are
+        unaffiliated, no labels, no linked PR. Treat as unfixed and unattended —
+        that part of the original read stands.
+
+    **The two halves are separable, and the risk is lopsided** — this is the
+    useful framing for the decision:
+
+    | | Maturity | What it buys |
+    |---|---|---|
+    | Dataplane → BGP, no encap | Core Calico, mature for years | Kills the ~50-byte VXLAN tax + per-packet CPU. The real win. |
+    | LB IPAM → drop MetalLB | New in 3.30, open bug above | Removes one component. |
+
+    The dataplane half is the big, hard-to-reverse change and it's the **low**-risk
+    one; the MetalLB removal is cosmetic and carries the risk. **Recommendation:
+    bump to ≥3.30 and do the dataplane switch now** (it's free today and gets
+    expensive after node 2), and treat LB allocation as a separate call — either
+    Calico IPAM with MetalLB-controller-only as a known-good fallback, or take
+    the bet knowingly. Either path ends with no MetalLB *speaker* and a single
+    BGP session to FRR, which is most of the goal.
+
+    **✅ DECIDED 2026-08-02 — pin `v3.32.1` (latest stable) AND pre-apply the
+    #12890 RBAC workaround.** An earlier draft of this item recommended the
+    `v3.31.x` line; that is **superseded**. Release landscape at decision time:
+    **v3.32.1** (2026-06-26) is the latest *stable* release —
+    `repos/projectcalico/calico/releases/latest` returns it, and that endpoint
+    excludes prereleases by definition. `v3.33.0-0.dev` exists but **there is no
+    v3.33.0 and no RC**; Calico opens every line with a `-0.dev` tag.
+
+    **Why latest, with a known bug, rather than the safe line:**
+    - **The bug is fully understood, not a mystery.** PR
+      [#11839](https://github.com/projectcalico/calico/pull/11839) — *"Fix
+      ipamconfigs -> ipamconfigurations"*, milestone **Calico v3.32.0** — renamed
+      the ClusterRole to `ipamconfigurations` while the deployed CRD is still
+      `ipamconfigs`. That single PR explains the whole thing, including why 3.31
+      works: **the rename isn't in 3.31.** A half-finished CRD migration, not a
+      flake.
+    - **The failure is loud, immediate, and pre-empted.** With the workaround
+      applied up front we never hit it. If it somehow fires, the signature is
+      unmistakable (LB IPs `pending`, one specific `ipam.go` log line).
+    - **3.32 pairs with k8s 1.36**, which item 16 bumps to anyway — so this is
+      one rebuild instead of two, and the version-matching objection disappears.
+    - **⚠ `v3.32.1` does NOT contain a fix.** Confirmed: the only RBAC change on
+      `release-v3.32` since the report is an unrelated kubevirt grant (#12996).
+      Do not assume a patch release resolved it — the workaround is **required**,
+      not precautionary.
+
+    **The workaround — pre-applied, not reactive.** A `ClusterRole` +
+    `ClusterRoleBinding` granting the `calico-kube-controllers` SA access to
+    `ipamconfigs`, in **both** API groups (`projectcalico.org` and
+    `crd.projectcalico.org` — the error is on the latter, but the confirmed-working
+    version grants both):
+
+    ```yaml
+    # gitops/infrastructure/calico/kube-controllers-ipamconfigs-rbac.yaml
+    # WORKAROUND for projectcalico/calico#12890 — see §7 item 15. REMOVE when fixed.
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: calico-kube-controllers-ipamconfigs-workaround
+    rules:
+      - apiGroups: [projectcalico.org, crd.projectcalico.org]
+        resources: [ipamconfigs]
+        verbs: [get, list, create, update, delete, watch]
+    ---
+    apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: calico-kube-controllers-ipamconfigs-workaround
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: calico-kube-controllers-ipamconfigs-workaround
+    subjects:
+      - kind: ServiceAccount
+        name: calico-kube-controllers
+        namespace: calico-system
+    ```
+
+    - **Apply it with the Calico prime (Ansible), not just via Flux.** LB
+      allocation is needed early in the Flux chain (Gateway → cert-manager → ESO
+      all sit behind a LoadBalancer IP), so a gap here stalls the bootstrap.
+      Priming it alongside Calico closes the gap and is idempotent.
+    - **The verb list is broader than the observed failure requires** — the log
+      only shows a failed `get`. It's kept as posted because that's the
+      *confirmed-working* set, and inventing a narrower untested variant during a
+      CNI migration is the wrong time to economise. Tighten to `get,list,watch`
+      later if desired, as its own change.
+    - **🔁 REMOVAL CRITERIA — re-check on every Calico bump.** This is deliberate
+      cruft with an expiry. Drop it once either (a) the shipped
+      `calico-kube-controllers` ClusterRole grants `ipamconfigs`, or (b) the CRD
+      is actually renamed to `ipamconfigurations` so upstream's grant matches.
+      Check with the assertion below *after removing* — if it still says `yes`,
+      upstream fixed it and the workaround can go.
+    - **We are now walking through the one-way gate** we previously avoided: v3.32
+      requires migrating to **ClusterNetworkPolicy** (Admin/Baseline Admin Network
+      Policies are replaced). **Verified a no-op for us — no policies exist yet.**
+      Consequence for future work: the pod-isolation enforcement discussed in §6
+      step 5 should use Calico `GlobalNetworkPolicy` / `ClusterNetworkPolicy`,
+      never the deprecated AdminNetworkPolicy path.
+
+    **Verification — now an assertion, not a probe.** After the prime, this must
+    return `yes`:
+    ```
+    kubectl auth can-i get ipamconfigs \
+      --as=system:serviceaccount:calico-system:calico-kube-controllers
+    ```
+    A `no` means the workaround didn't land, and LB IPs will sit `pending` while
+    **BGP advertisement looks perfectly healthy** — routes *are* advertised, so
+    the BGP side gives no hint at all. Worth an explicit assert task in the
+    bootstrap play rather than a manual check. **Contingency if LB IPAM still
+    misbehaves for some other reason:** MetalLB's *controller* only (speaker
+    disabled), which Calico's own 3.29 docs recommend — the dataplane decision
+    stands regardless, and no MetalLB speaker ever ships.
+
+    **Mechanics when bumping:** `calico_version` in `group_vars/all/vars.yml` and
+    the `version:` in `gitops/infrastructure/calico/helmrelease.yaml` must move in
+    lockstep (both Renovate-tracked). **Renovate may track the 3.32 line**, but
+    every bump must re-run the removal check above — a fix landing upstream is the
+    good outcome and we should notice it. Also worth a
+    look before touching anything: [projectcalico#9457](https://github.com/projectcalico/calico/issues/9457),
+    titled "VXLanCrossSubnet issue on v3.29" — our exact current version *and*
+    mode. Title only; not yet read.
+
+16. **⚠ k3s is on an EOL Kubernetes — bump it with the Calico work (raised
+    2026-08-02).** We run **k3s v1.32.3**. Upstream Kubernetes maintains release
+    branches for **the most recent three minors only — currently 1.36, 1.35,
+    1.34** — so 1.32 is two minors below the oldest supported. This isn't
+    "would be nice to be newer"; we're on an unsupported Kubernetes.
+    - **1.36 is current stable** (released 2026-04-22), *not* pre-release.
+      **1.37 is due 2026-08-26** — three weeks out at time of writing. Don't
+      chase 1.37: Calico support for it won't land until ~3.33, and being ahead
+      of your CNI is worse than being one behind. Landing on 1.36 now means
+      being a normal, supported N-1 once 1.37 ships.
+    - **No provisioning gate.** The Flatcar sysext bakery publishes k3s transfer
+      configs for **v1.32 → v1.36** (verified 2026-08-02 via
+      `gh api repos/flatcar/sysext-bakery/releases/tags/k3s`). The `.raw` images
+      themselves resolve at download time through the `MatchPattern` in
+      `k3s-sysupdate.conf.j2`, so a minor bump is just `k3s_minor` +
+      `k3s_version` in `group_vars`.
+    - **The four-minor jump costs nothing here — do NOT plan sequential
+      upgrades.** Kubernetes only supports one-minor-at-a-time for *in-place*
+      upgrades, but this cluster is empty and §1 proved from-scratch rebuild
+      works. So we re-provision at the target minor rather than walking
+      1.32→1.33→1.34→1.35→1.36. This is exactly the payoff of the immutable
+      provisioning built in §1–2; it evaporates the moment there's real state.
+    - **Decision is coupled to item 15's Calico line, and the coupling is the
+      whole point.** Three candidate pairings:
+
+      | k3s | Calico | Verdict |
+      |---|---|---|
+      | **1.36** | **3.32.1** | **✅ CHOSEN.** Matched pair, both latest stable; #12890 pre-empted by the workaround in item 15. |
+      | 1.36 | 3.31 | Would need 3.31↔1.36 support confirmed; moot now. |
+      | 1.35 | 3.31 | Attested working in #12890's thread; the conservative option we passed on. |
+
+      **✅ DECIDED 2026-08-02 — k3s `v1.36.x` + Calico `v3.32.1`.** Both are
+      current stable and they're the version-matched pair (3.32 "corresponds with
+      Kubernetes v1.36"), so the pairing objection that drove the earlier 3.31
+      recommendation is gone. The #12890 risk is accepted knowingly and
+      **neutralised up front** by pre-applying the RBAC workaround — see item 15,
+      including its removal criteria.
+
+      Do this in the *same* rebuild as the Calico encapsulation change (§6 step
+      5); they're both re-provisions, so it's one disruption instead of two.
+      **Note 1.37 ships 2026-08-26** — do not chase it. Calico support won't land
+      until ~3.33, and being ahead of the CNI is worse than being one behind;
+      1.36 becomes a normal supported N-1 at that point.
+    - **Consequence for §2's seed-vs-running note:** bumping `k3s_minor` re-points
+      sysupdate at the new minor's transfer config. Expect the seeded version and
+      the running version to re-converge at rebuild, then drift again within the
+      new minor — same behavior as documented, new baseline.
 
 ---
 
