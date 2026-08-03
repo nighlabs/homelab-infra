@@ -125,27 +125,40 @@
         - "{{ proxmox_sudo }}/usr/bin/chmod {{ proxmox_snippet_mode }} {{ proxmox_snippet_dir }}"
       changed_when: true
 
+    # ⚠ NOT `register: snippet_dir` — see the assert below for why reusing the
+    # name breaks the case where nothing needs repairing.
     - name: "{{ hostname }} — re-stat the snippet dir after repair"
       ansible.builtin.stat:
         path: "{{ proxmox_snippet_dir }}"
-      register: snippet_dir
+      register: snippet_dir_repaired
 
 # Still asserted after the repair — if the repair didn't help (sudoers missing
 # on this PVE node, group absent, a genuinely different cause), fail here with
 # the manual fix rather than four tasks later inside `copy`.
+#
+# ⚠ A SKIPPED TASK STILL REGISTERS, as {changed, skipped, skip_reason} — with no
+# `stat` key. So the re-stat above must not reuse `snippet_dir`: on the happy
+# path (dir healthy, repair skipped) it would overwrite the good stat with a
+# skipped result, and this assert would fail with `exists=n/a` against a
+# perfectly fine directory — while passing whenever the dir was actually broken,
+# because then the repair really ran. That inversion is why it survived the
+# 2026-08-03 end-to-end check and only surfaced on the next clean run.
 - name: "{{ hostname }} — assert the snippet dir exists and is writable"
+  vars:
+    # The re-stat when the repair ran, the original stat otherwise.
+    snippet_stat: "{{ snippet_dir_repaired.stat | default(snippet_dir.stat) }}"
   ansible.builtin.assert:
     that:
-      - snippet_dir.stat.exists | default(false)
-      - snippet_dir.stat.isdir | default(false)
-      - snippet_dir.stat.writeable | default(false)
+      - snippet_stat.exists | default(false)
+      - snippet_stat.isdir | default(false)
+      - snippet_stat.writeable | default(false)
     quiet: true
     fail_msg: >-
       {{ proxmox_snippet_dir }} on the Proxmox host is not a directory writable
       by '{{ vault_proxmox_ssh_user }}'
-      (exists={{ snippet_dir.stat.exists | default('n/a') }},
-      isdir={{ snippet_dir.stat.isdir | default('n/a') }},
-      writeable={{ snippet_dir.stat.writeable | default('n/a') }}).
+      (exists={{ snippet_stat.exists | default('n/a') }},
+      isdir={{ snippet_stat.isdir | default('n/a') }},
+      writeable={{ snippet_stat.writeable | default('n/a') }}).
       The automatic repair either did not run or did not help — most likely this
       PVE node is missing the chgrp/chmod sudoers rules (they are per-node, and
       easy to add on one host and forget on the others), or the group doesn't

@@ -26,14 +26,99 @@
     - name: Load the node map
       ansible.builtin.include_tasks: tasks/load-node-map.yml
 
+    - name: Select the nodes this run provisions
+      vars:
+        all_nodes: "{{ nodes | dict2items }}"
+      ansible.builtin.set_fact:
+        target_nodes: >-
+          {{ all_nodes if node_filter == ''
+             else (all_nodes | selectattr('key', 'equalto', node_filter) | list) }}
+
+    - name: Assert node_filter matched a node in the map
+      ansible.builtin.assert:
+        that:
+          - target_nodes | length > 0
+        fail_msg: >-
+          node_filter='{{ node_filter }}' matched nothing in inventory/nodes.yml
+          (known nodes: {{ nodes.keys() | list | join(', ') }}).
+        quiet: true
+
     - name: Provision each node in the node map
       ansible.builtin.include_role:
         name: flatcar_vm
       vars:
         hostname: "{{ node_item.key }}"
         node: "{{ node_item.value }}"
-      loop: "{{ nodes | dict2items }}"
+      loop: "{{ target_nodes }}"
       loop_control:
         loop_var: node_item
         label: "{{ node_item.key }}"
-      when: node_filter == "" or node_item.key == node_filter
+
+    # --- Post-boot cleanup: destroy the Ignition snippets ----------------------
+    # The .ign holds the k3s join token and Ignition reads it exactly once, so
+    # once a node is up the file is a live credential with no purpose left on
+    # shared storage — delete it (ansible/CLAUDE.md §7 item 21; the ordering trap
+    # and the running-VM analysis are documented in the included task file).
+    #
+    # This lives here rather than in bootstrap-cluster.yml because cicustom is a
+    # Proxmox concern and this play already owns the VM lifecycle — and because
+    # it stays correct for a node that's provisioned but never bootstrapped.
+    #
+    # Set `destroy_ignition_snippet: false` to keep the snippets AND skip the
+    # up-check with them — e.g. while debugging a node that won't finish first
+    # boot, where you want the rendered config to inspect and don't want the play
+    # blocking for node_boot_timeout first.
+    - name: Destroy each node's Ignition snippet once it has booted
+      when: destroy_ignition_snippet | bool
+      block:
+        # THE up-check, and a real Ignition-completed signal rather than a proxy
+        # for one: the admin user and its authorized_keys come *from* Ignition,
+        # so port 22 answering means the config was consumed. (Same wait
+        # bootstrap-cluster.yml opens with.)
+        #
+        # failed_when: false so ONE node that never boots doesn't strand every
+        # other node's token on the storage — the run still fails, but after the
+        # nodes that did come up are cleaned. See the assert at the end.
+        - name: Wait for SSH (port 22) — proves Ignition ran on that node
+          ansible.builtin.wait_for:
+            host: "{{ dmz_network.subnet_base }}.{{ item.value.node_number }}"
+            port: 22
+            state: started
+            timeout: "{{ node_boot_timeout }}"
+          loop: "{{ target_nodes }}"
+          loop_control:
+            label: "{{ item.key }}"
+          register: node_up
+          failed_when: false
+
+        - name: Destroy the Ignition snippet of each node that came up
+          ansible.builtin.include_tasks: tasks/destroy-ignition-snippet.yml
+          vars:
+            cleanup_hostname: "{{ up_result.item.key }}"
+            cleanup_vmid: >-
+              {{ up_result.item.value.vmid
+                 | default(1000 + (up_result.item.value.node_number | int)) }}
+          loop: "{{ node_up.results }}"
+          loop_control:
+            loop_var: up_result
+            label: "{{ up_result.item.key }}"
+          when: not (up_result.failed | default(false))
+
+        - name: Fail if any node never came up (its snippet is still on the host)
+          vars:
+            nodes_down: >-
+              {{ node_up.results | selectattr('failed', 'defined')
+                 | selectattr('failed') | map(attribute='item.key') | list }}
+          ansible.builtin.assert:
+            that:
+              - nodes_down | length == 0
+            fail_msg: >-
+              No SSH on port 22 within {{ node_boot_timeout }}s for:
+              {{ nodes_down | join(', ') }}. Ignition either hasn't finished or
+              didn't apply, so their .ign — which carries the k3s join token — is
+              STILL on {{ proxmox_snippet_dir }} and was deliberately left there
+              (deleting it while cicustom still points at it would break the next
+              `qm start`). Watch the boot on the serial console
+              (`qm terminal <vmid>`), then re-run this play to finish the
+              cleanup. Every node that did come up has already been cleaned.
+            quiet: true

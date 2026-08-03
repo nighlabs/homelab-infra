@@ -72,11 +72,21 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > server-side applied — item 15), and the PVE **snippet-dir permissions reset**
 > on storage activation (now self-repairing — item 18).
 >
-> **🔜 Picked up next session: §7 item 21** — add up-checks to
-> `provision-nodes.yml`, then have it destroy the Ignition snippet, which holds
-> the k3s join token and is dead weight after first boot. ⚠ `cicustom` must come
-> off the VM config *before* the file is deleted, or the next **reboot** fails to
-> start.
+> **✅ DONE 2026-08-03 — §7 item 21: the Ignition snippet is destroyed after first
+> boot.** `provision-nodes.yml` now waits for SSH on every node it provisioned,
+> then detaches `cicustom` (API) and deletes the `.ign` (SSH) — so the k3s join
+> token no longer lives on shared snippet storage past the one boot that reads it.
+> Verified end-to-end on `snoop-a2o` **including a full `qm reboot`**, which is
+> the check that matters: the ordering failure mode surfaces at *next start*, not
+> at provision time. `ide2` deliberately stays (see the item — it's standard, it
+> comes back with every clone, and what PVE generates for it carries nothing
+> sensitive).
+>
+> **That work also uncovered a live bug in item 18's snippet-dir self-repair: it
+> only worked when a repair was NEEDED.** A skipped task still registers, so the
+> skipped re-stat wiped the good stat and the assert failed against a *healthy*
+> directory. Fixed. The general lesson is recorded in item 18 and worth carrying:
+> **a fix verified only on the failure it was written for is half-verified.**
 
 ---
 
@@ -1168,6 +1178,20 @@ apply once k3s work starts.
         resulting file is `-rw-rw---- provisioner pve-snippets`, which
         simultaneously confirms the `0660` join-token fix and that the setgid
         group inheritance works in practice.
+      - **⚠ …but that verification covered only the REPAIR path, and the HAPPY
+        path was broken (found + fixed 2026-08-03, during item 21).** The re-stat
+        reused `register: snippet_dir`, and **a skipped task still registers** —
+        as `{changed, skipped, skip_reason}`, with no `stat` key. So whenever the
+        dir needed *no* repair, the skipped re-stat overwrote the good stat and
+        the assert failed `exists=n/a` against a perfectly healthy directory.
+        **The polarity is what hid it: it passed exactly when the dir was broken
+        and failed exactly when it was fine**, so the end-to-end check above —
+        run on an occurrence — could only ever see the passing case. Fixed by
+        registering the re-stat as `snippet_dir_repaired` and having the assert
+        take `snippet_dir_repaired.stat | default(snippet_dir.stat)`. Now
+        verified on **both** paths. Lesson worth keeping: *a fix verified only on
+        the failure it was written for is half-verified* — the branch where the
+        problem is absent is a distinct path.
       - **The reset is cheaper to trigger than "a template rebuild" implies.**
         This occurrence followed merely deleting the snippet. The storage root's
         mtime changed a few minutes *before* the repair while `snippets/` changed
@@ -1250,8 +1274,8 @@ apply once k3s work starts.
       flight — the same attribution argument accepted for item 17's staging. It's
       also *cheaper* afterwards, with a known-good cluster to diff against.
 
-21. **🔜 NEXT SESSION — destroy the Ignition snippet after first boot; it holds
-    the k3s join token (raised 2026-08-03).** The `.ign` on the shared snippet
+21. **✅ DONE 2026-08-03 — destroy the Ignition snippet after first boot; it holds
+    the k3s join token (raised and closed the same day).** The `.ign` on the shared snippet
     storage embeds `token:` (`k3s-config.yaml.j2`), and **Ignition reads it
     exactly once** — the `ignition.firstboot` flag is cleared afterwards, so past
     first boot it's a live credential with no remaining purpose, sitting on
@@ -1270,28 +1294,84 @@ apply once k3s work starts.
       config was consumed. `bootstrap-cluster.yml` already does exactly this
       ("Wait for SSH (port 22) on each server's DMZ IP"); reuse it.
     - **⚠ ORDER IS LOAD-BEARING, and getting it wrong breaks the boot path.**
-      Remove `cicustom` from the VM config FIRST (`qm set <vmid> --delete
-      cicustom` — already covered by provisioner's existing scoped sudo), THEN
-      delete the snippet. **PVE rebuilds the cloud-init config drive on every VM
-      start**, and `read_cloudinit_snippets_file` ends in
+      Remove `cicustom` from the VM config FIRST, THEN delete the snippet. **PVE
+      rebuilds the cloud-init config drive on every VM start**, and
+      `read_cloudinit_snippets_file` ends in
       `PVE::Tools::file_get_contents($full_path, ...)` with **no error handling**
       (verified in `/usr/share/perl5/PVE/QemuServer/Cloudinit.pm`, 2026-08-03).
       Delete the file while `cicustom` still points at it and `qm start` dies —
       not at the next provision, but at **the next reboot**, which is the worst
       time to find out.
-    - **⚠ Backup/restore trap — document it with the change.** Restoring a VM
-      backup taken *before* the cleanup yields a config that still has `cicustom`
-      pointing at a snippet that no longer exists → the VM won't start. Recovery
-      is just re-running provisioning, but that's something to know during an
-      actual restore rather than derive at 2am.
-    - **Open, verify rather than assume:** the `ide2` cloud-init drive stays
-      attached, so with `cicustom` gone PVE generates a *default* cloud-init
-      config for it. Flatcar shouldn't re-read anything (firstboot cleared), but
-      confirm across a reboot before trusting it. Removing `ide2` as well is an
-      option and is more invasive.
-    - **Minor cost, accept knowingly:** the on-storage record of "what config did
+      - **Detach goes over the API (`proxmox_kvm` `delete: cicustom`), not `qm
+        set` over SSH** — the role already *attaches* it that way, so the pair is
+        symmetric and the scoped sudo stays untouched (root `CLAUDE.md`: prefer
+        the API, keep SSH to the snippet file itself). The file *delete* is a
+        filesystem op, so it stays on SSH like the upload — and needs no sudo:
+        unlinking needs write on the setgid dir, which is the same grant the
+        upload uses.
+      - **The `proxmox_vm_info` read before the detach is there for the
+        wrong-VM assert, first and foremost.** `flatcar_vm` sets `hostname`/
+        `vmid`/`eth0_ip` as *facts*, and **facts outrank task vars** — so a
+        cleanup task reusing those names would silently get the LAST provisioned
+        node's values and detach `cicustom` from someone else's VM. Every var in
+        `destroy-ignition-snippet.yml` is `cleanup_*`-prefixed for that reason,
+        and the assert (`exactly one VM, and its name == this node`) is the
+        backstop. Secondarily: `proxmox_kvm` hard-codes `changed=True` on
+        `delete`, so gating on `config.cicustom` keeps the task honest — though
+        in the normal flow the role re-attaches `cicustom` a few tasks earlier,
+        so it nearly always *does* have something to detach.
+      - **✅ Safe on a RUNNING VM — verified two ways in the PVE 9.2.3 source,
+        because "it lands in `[PENDING]`" would have made the ordering argument
+        above worthless.** (1) Every key of `$confdesc_cloudinit` — `cicustom`
+        included — is added to `$fast_plug_option` (`QemuServer.pm`), so
+        `vmconfig_hotplug_pending` applies the delete to the **live config
+        immediately** rather than deferring it. (2) Even if it *were* deferred,
+        `vm_start_nolock` applies pending changes **and reloads the config**
+        before calling `apply_cloudinit_config`, so the drive can never be
+        regenerated against a stale `cicustom`. Confirmed empirically too: after
+        the detach, `qm config --current 0` shows nothing pending.
+    - **⚠ Backup/restore trap — documented in `ansible/README.md`.** Restoring a
+      VM backup taken *before* the cleanup yields a config that still has
+      `cicustom` pointing at a snippet that no longer exists → the VM won't
+      start. Recovery is re-running provisioning for that node (or
+      `qm set <vmid> --delete cicustom` by hand), but that's something to know
+      during an actual restore rather than derive at 2am.
+    - **✅ `ide2` STAYS — verified inert across a reboot, not assumed.** Keeping
+      it is also the *correct* choice rather than merely the cheap one: a
+      cloud-init drive is standard on any PVE cloud-init VM, the template ships
+      `--ide2 <storage>:cloudinit` so every clone gets one back, and `cicustom`
+      needs it to land on at the next rebuild — removing it would be a hardware
+      change re-done on every rebuild, forever. What PVE generates for it with
+      `cicustom` gone carries nothing sensitive (`qm cloudinit dump 1050 user`:
+      `hostname`/`fqdn`/`users: default`/`package_upgrade` — no `sshkeys`, no
+      `cipassword`, because none are ever set on these VMs). The credential was
+      in the *snippet*, never in the drive.
+      - **Reboot evidence (`qm reboot 1050`, a full stop→start so PVE really
+        regenerates the drive — a guest-side `reboot` would not test this):**
+        `qm reboot` exits 0 (the ordering test itself — a stale `cicustom` dies
+        exactly here), SSH answers in ~10 s, node **Ready**, all pods
+        Running/Completed. Journal shows `ignition-subsequent.target — Subsequent
+        (Not Ignition) boot complete` and `ignition-delete-config.service ...
+        skipped (ConditionFirstBoot=true)` — Ignition provably did **not** re-run.
+        `sr0` shows up labelled `cidata` but **mounted nowhere**.
+      - **Afterburn was the one real candidate, and it's clean.**
+        `coreos-metadata-sshkeys@core.service` *does* run every boot and did
+        rewrite `/home/core/.ssh/authorized_keys` — but its only source is
+        `authorized_keys.d/ignition` (from the original Ignition run); no
+        `coreos-metadata` source file appeared, matching the empty `sshkeys` in
+        the dump. The `admin` user, whose keys we actually SSH with, is untouched.
+    - **Minor cost, accepted knowingly:** the on-storage record of "what config did
       this node actually get" goes away. It's reproducible from the vault + node
-      map, so this is a debugging convenience, not data.
+      map, so this is a debugging convenience, not data — and
+      `destroy_ignition_snippet: false` buys it back when debugging a first boot
+      (that flag also skips the up-check, so the play won't block on a node that
+      never comes up).
+    - **Also landed with it:** the play now asserts `node_filter` matched
+      something (a typo used to provision nothing, silently — worse now that the
+      same filter drives cleanup), and one node failing to boot no longer strands
+      the *other* nodes' tokens: cleanup runs for everything that came up, then
+      the play fails naming what didn't, leaving those `.ign`s deliberately in
+      place (deleting them with `cicustom` still attached is the trap above).
 
 ---
 

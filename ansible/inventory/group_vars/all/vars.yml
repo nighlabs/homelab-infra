@@ -123,10 +123,34 @@ k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
 
 # Cluster join token (server sets it, agents present it) — a secret, so vaulted.
+# ⚠ This is baked into each node's Ignition, which is why provision-nodes.yml
+# destroys the .ign once the node has booted (see destroy_ignition_snippet).
 k3s_token: "{{ vault_k3s_token }}"
 # Extra API-cert SANs (e.g. a stable API DNS name) beyond the node IP + hostname
 # the server config always includes. Optional; defaults to none.
 k3s_tls_sans: "{{ vault_k3s_tls_sans | default([]) }}"
+
+# --- Post-boot snippet cleanup (playbooks/provision-nodes.yml) -------------
+# After a node boots, provision-nodes.yml removes `cicustom` from its VM config
+# and deletes its `<hostname>.ign` from the Proxmox snippet storage. That file
+# embeds the k3s join token above, and Ignition consumes it EXACTLY ONCE
+# (`ignition.firstboot` is cleared on that boot) — so past first boot it's a live
+# credential with no purpose, on storage every hypervisor can reach.
+# Full rationale + the ordering trap: playbooks/tasks/destroy-ignition-snippet.yml
+# and ansible/CLAUDE.md §7 item 21.
+#
+# Set false to keep the snippets — the escape hatch for debugging a first boot
+# (it's also the on-storage record of what config a node actually got, which is
+# otherwise reproducible from the vault + node map, not data). Turning it off
+# ALSO skips the SSH up-check that gates it, so the play won't block on a node
+# that never comes up.
+destroy_ignition_snippet: true
+
+# How long to wait for a provisioned node's SSH before treating it as failed to
+# boot. First boot is slower than a reboot: Ignition applies the config, the node
+# reboots into it, and only then does sshd answer. Matches the wait
+# bootstrap-cluster.yml uses for the same nodes.
+node_boot_timeout: 300
 
 # --- Cluster bootstrap (playbooks/bootstrap-cluster.yml) -------------------
 # NOTE: `cluster_name` is NOT set here — it comes from the cluster key in
