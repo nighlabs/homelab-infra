@@ -1,0 +1,23 @@
+# ⚠ STAGE-1-ONLY — delete this file at stage 2, don't carry it forward.
+#
+# k3s EMBEDS kube-proxy (there is no kube-system/kube-proxy DaemonSet to scale
+# down — verified on snoop-a2o 2026-08-02), so the only way to remove it is
+# `--disable-kube-proxy` in the k3s config, which costs a re-provision. Stage 1
+# therefore runs Calico's eBPF dataplane ALONGSIDE kube-proxy, and this flag is
+# what stops them fighting: with cleanup enabled (the default), kube-proxy
+# writes its iptables rules and Felix deletes them, on repeat — iptables
+# flapping, and a genuinely confusing failure mode.
+#
+# AT STAGE 2 (`--disable-kube-proxy`, ansible/CLAUDE.md §7 item 17): remove this
+# file so the flag returns to its default `true`. There is nothing left to
+# coexist with, and leaving cleanup disabled ORPHANS kube-proxy's stale iptables
+# rules instead of letting Felix clean them up.
+#
+# Only the one field is set, so server-side apply gives us ownership of just
+# that field and the operator keeps the rest of the FelixConfiguration.
+apiVersion: crd.projectcalico.org/v1
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  bpfKubeProxyIptablesCleanupEnabled: false

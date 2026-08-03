@@ -6,6 +6,10 @@ kind: Kustomization
 namespace: tigera-operator
 resources:
   - namespace.yaml
+  # eBPF dataplane prerequisites — both must exist for linuxDataplane: BPF to
+  # work (see each file's header, and ansible/CLAUDE.md §7 item 17).
+  - kubernetes-services-endpoint.yaml
+  - felixconfiguration.yaml   # ⚠ stage-1 only; delete at stage 2
   - helmrepository.yaml
   - helmrelease.yaml
 # Generate the calico-values ConfigMap from the canonical values.yaml so the

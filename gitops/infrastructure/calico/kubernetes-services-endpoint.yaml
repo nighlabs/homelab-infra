@@ -1,0 +1,32 @@
+# Required by the eBPF dataplane (values.yaml -> linuxDataplane: BPF). In eBPF
+# mode Calico implements Service networking itself, so it must reach the API
+# server WITHOUT going through a ClusterIP — this ConfigMap is how it finds it.
+# Without it, calico-node cannot start the dataplane.
+#
+# ⚠ MUST be a real IP, never `localhost`. calico#9141 is exactly that mistake:
+# calico-kube-controllers resolved `localhost` to IPv6 and died with
+# `dial tcp [::1]:6443: connect: connection refused` while calico-node and typha
+# came up fine. It fails PARTIALLY, which is far harder to spot than a clean
+# failure.
+#
+# ${k3s_api_ip} is topology, so it stays a placeholder in Git (root CLAUDE.md
+# blinding rule). Two resolvers, deliberately the same value from the same
+# source — `{{ dmz_network.subnet_base }}.{{ node_number }}` in inventory:
+#   - Ansible primes it at bootstrap (bootstrap-cluster.yml substitutes
+#     node_eth0_ip), because the dataplane needs it before Flux exists.
+#   - Flux resolves it via postBuild.substituteFrom the cluster-topology Secret.
+# ⚠ Enable the kustomize-controller StrictPostBuildSubstitutions feature gate —
+# an unresolved ${var} becomes the EMPTY STRING and reconciles as healthy
+# (gitops/CLAUDE.md), which here would silently break the dataplane.
+#
+# NOTE: single-server assumption. With an HA control plane this should be a
+# stable VIP / API DNS name, not one node's address — revisit when a second
+# server node joins (ansible/CLAUDE.md §7 item 10).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-services-endpoint
+  namespace: tigera-operator
+data:
+  KUBERNETES_SERVICE_HOST: "${k3s_api_ip}"
+  KUBERNETES_SERVICE_PORT: "6443"
