@@ -12,6 +12,20 @@ installation:
   cni:
     type: Calico
   calicoNetwork:
+    # eBPF dataplane, replacing kube-proxy's service handling (ansible/CLAUDE.md
+    # §7 item 17; trial + verification in docs/calico-ebpf-single-node-trial.md).
+    # The reason is SOURCE IP, not throughput: under externalTrafficPolicy
+    # Cluster, kube-proxy SNATs externally-originated traffic to the node IP and
+    # the client address is gone before the pod sees it — unrecoverable at L7, so
+    # NGF would log node IPs as clients forever. Verified on snoop-a2o
+    # 2026-08-02: the pod's observed RemoteAddr went from the NODE's address to
+    # the real off-cluster client the moment the dataplane flipped.
+    #
+    # Left at the default bpfExternalServiceMode (Tunnel) — DSR is deliberately
+    # NOT enabled; it only optimises the return path and needs the fabric to let
+    # nodes emit packets sourced from each other's IPs. It's a runtime
+    # FelixConfiguration patch if we ever want it, so nothing here blocks that.
+    linuxDataplane: BPF
     # Pure-VXLAN dataplane — no Calico BGP. (MetalLB does its own BGP later for
     # LoadBalancer IPs; that's independent of pod networking.) With VXLAN pools,
     # BGP must be explicitly Disabled or the operator flags a config conflict.
