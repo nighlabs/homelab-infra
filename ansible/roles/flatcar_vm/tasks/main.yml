@@ -101,6 +101,38 @@
   register: snippet_dir
   delegate_to: "{{ proxmox_ssh_host }}"
 
+# Self-repair rather than just fail. Observed twice (2026-08-02 and -03): PVE
+# recreates storage content subdirectories as root:root 0755 on storage
+# activation — a template rebuild is enough to trigger it — silently undoing the
+# group + setgid this upload depends on. Detection alone would mean a manual
+# root `chgrp` after every such event, discovered only when a provision fails.
+#
+# Needs root, so it leans on two FIXED-ARGUMENT sudoers rules added alongside
+# the `qm` one (README step 4). sudo matches the whole command line, so these
+# cannot chmod another path or chgrp another group — which is also why the
+# command below must match the sudoers entry byte-for-byte.
+- name: "{{ hostname }} — repair the snippet dir if PVE reset its group/mode"
+  when:
+    - snippet_dir.stat.exists | default(false)
+    - not (snippet_dir.stat.writeable | default(false))
+  delegate_to: "{{ proxmox_ssh_host }}"
+  block:
+    - name: "{{ hostname }} — restore group + setgid on the snippet dir"
+      ansible.builtin.command:
+        cmd: "{{ item }}"
+      loop:
+        - "{{ proxmox_sudo }}/usr/bin/chgrp {{ proxmox_snippet_group }} {{ proxmox_snippet_dir }}"
+        - "{{ proxmox_sudo }}/usr/bin/chmod {{ proxmox_snippet_mode }} {{ proxmox_snippet_dir }}"
+      changed_when: true
+
+    - name: "{{ hostname }} — re-stat the snippet dir after repair"
+      ansible.builtin.stat:
+        path: "{{ proxmox_snippet_dir }}"
+      register: snippet_dir
+
+# Still asserted after the repair — if the repair didn't help (sudoers missing
+# on this PVE node, group absent, a genuinely different cause), fail here with
+# the manual fix rather than four tasks later inside `copy`.
 - name: "{{ hostname }} — assert the snippet dir exists and is writable"
   ansible.builtin.assert:
     that:
@@ -114,14 +146,17 @@
       (exists={{ snippet_dir.stat.exists | default('n/a') }},
       isdir={{ snippet_dir.stat.isdir | default('n/a') }},
       writeable={{ snippet_dir.stat.writeable | default('n/a') }}).
-      Fix ON THE PVE HOST AS ROOT — the provisioner's sudo is scoped to `qm`, so
-      `sudo chgrp` will be refused:
-      `groupadd -f pve-snippets;
-      usermod -aG pve-snippets {{ vault_proxmox_ssh_user }};
-      chgrp pve-snippets {{ proxmox_snippet_dir }};
-      chmod 2770 {{ proxmox_snippet_dir }}`
-      — then verify `ls -ld` shows `drwxrws--- root pve-snippets`. Group changes
-      apply on the next login. See ansible/README.md "Proxmox SSH access" step 4.
+      The automatic repair either did not run or did not help — most likely this
+      PVE node is missing the chgrp/chmod sudoers rules (they are per-node, and
+      easy to add on one host and forget on the others), or the group doesn't
+      exist here. Fix ON THE PVE HOST AS ROOT:
+      `groupadd -f {{ proxmox_snippet_group }};
+      usermod -aG {{ proxmox_snippet_group }} {{ vault_proxmox_ssh_user }};
+      chgrp {{ proxmox_snippet_group }} {{ proxmox_snippet_dir }};
+      chmod {{ proxmox_snippet_mode }} {{ proxmox_snippet_dir }}`
+      — then verify `ls -ld` shows
+      `drwxrws--- root {{ proxmox_snippet_group }}`. Group changes apply on the
+      next login. See ansible/README.md "Proxmox SSH access" step 4.
 
 # mode 0660, NOT 0644: this .ign embeds the k3s cluster join token
 # (k3s-config.yaml.j2 -> `token:`), and anyone holding it can register a node.

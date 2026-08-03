@@ -1087,16 +1087,38 @@ apply once k3s work starts.
       destination is `{{ proxmox_snippet_dir }}/{{ hostname }}.ign` — **every new
       node writes a new filename**, so the first worker would have hit this
       regardless. §1's "verified end-to-end" never actually covered it.
-    - **Why it can come back:** PVE recreates content subdirectories as
-      `root:root 0755` on storage activation. Treat step 4 as a **precondition to
-      verify**, not state that stays put. Repair needs **root** — provisioner's
-      sudo is scoped to `/usr/sbin/qm`, so `sudo chgrp` is refused.
-    - **Hardened in the role (2026-08-02):** `flatcar_vm` now `stat`s the dir and
-      **asserts `writeable`**, with the repair commands in the `fail_msg`, so this
-      fails fast and self-describing instead of four tasks later with a message
-      naming neither the group nor the README. The old `file: state=directory`
-      check passed happily against `root:root 0755` — *existence was never the
-      thing in doubt.*
+    - **⚠ It RECURS — this is not a one-off, and detection alone was not enough.**
+      **Observed twice, 2026-08-02 and 2026-08-03.** PVE recreates storage
+      content subdirectories as `root:root 0755` on **storage activation**, and
+      *a template rebuild is enough to trigger it* (`qm destroy` + image import
+      touch storage). The second occurrence was caught by the assert added after
+      the first — which proved the mechanism but also proved that asserting only
+      buys you a manual root `chgrp` every time it happens, discovered when a
+      provision fails. The giveaway that it's this and not something else: the
+      storage root and `snippets/` share an mtime, because both were recreated;
+      deleting a file inside would touch only the child.
+    - **✅ RESOLVED 2026-08-03 — the role now self-repairs.** `flatcar_vm` stats
+      the dir, repairs group+setgid when it isn't writable, re-stats, then still
+      asserts. Repair needs root, so **two fixed-argument sudoers rules** were
+      added alongside `qm` (README step 3), installed and verified on **all three
+      PVE nodes**: positive tests pass, and negative tests confirm the rules
+      can't chmod another path or chgrp another group. `pve-snippets` is **gid
+      1001 on all three** — worth having checked, since the dir lives on shared
+      CephFS which stores the numeric gid, so a mismatched group id on one node
+      would have failed only when Ansible happened to target that node.
+      - **The design premise changed, not just the config.** The README used to
+        argue `qm` was the *only* root command needed because the snippet write
+        was handled by owning the dir. Owning the dir turned out not to be
+        durable, so that rationale was rewritten rather than patched.
+      - **⚠ The sudoers rules are per-node and fixed-argument.** Adding them on
+        one host and forgetting the others fails only when provisioning targets
+        the missed node. Changing `vault_proxmox_snippet_dir`,
+        `proxmox_snippet_group`, or `proxmox_snippet_mode` means updating
+        `/etc/sudoers.d/provisioner` on **every** PVE node, or the repair is
+        silently refused.
+      - The assert stays as the backstop for exactly those cases. The original
+        `file: state=directory` check passed happily against `root:root 0755` —
+        *existence was never the thing in doubt.*
     - **Second fix, same class — security-relevant.** The upload was
       `mode: "0644"`, and that `.ign` **embeds the k3s cluster join token**
       (`k3s-config.yaml.j2` → `token:`), which per the root `CLAUDE.md` lets
