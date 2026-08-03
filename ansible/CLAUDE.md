@@ -71,6 +71,12 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > Calico bump: v3.32 **removed the CRDs from the chart** (new `gitops/crds/` tier,
 > server-side applied — item 15), and the PVE **snippet-dir permissions reset**
 > on storage activation (now self-repairing — item 18).
+>
+> **🔜 Picked up next session: §7 item 21** — add up-checks to
+> `provision-nodes.yml`, then have it destroy the Ignition snippet, which holds
+> the k3s join token and is dead weight after first boot. ⚠ `cicustom` must come
+> off the VM config *before* the file is deleted, or the next **reboot** fails to
+> start.
 
 ---
 
@@ -1243,6 +1249,49 @@ apply once k3s work starts.
       1.36/3.32.1 rebuild is unverified. Landing this on top puts two variables in
       flight — the same attribution argument accepted for item 17's staging. It's
       also *cheaper* afterwards, with a known-good cluster to diff against.
+
+21. **🔜 NEXT SESSION — destroy the Ignition snippet after first boot; it holds
+    the k3s join token (raised 2026-08-03).** The `.ign` on the shared snippet
+    storage embeds `token:` (`k3s-config.yaml.j2`), and **Ignition reads it
+    exactly once** — the `ignition.firstboot` flag is cleared afterwards, so past
+    first boot it's a live credential with no remaining purpose, sitting on
+    CephFS reachable from all three hypervisors. The token's other two copies
+    (the vault, and `/etc/rancher/k3s/config.yaml` on the node) are both
+    necessary; this is the one that isn't, and it has the widest blast radius.
+    - **Agreed shape (Chris, 2026-08-03): do it in `provision-nodes.yml`, not
+      `bootstrap-cluster.yml`.** Add up-checks to the provisioning play — the
+      same pattern bootstrap already uses — then clean up there. Better than the
+      alternatives considered: it keeps a Proxmox concern in the Proxmox
+      playbook, the play already owns the VM lifecycle (so it owns `cicustom`),
+      and it stays correct for a node that is provisioned but never bootstrapped.
+    - **The up-check that matters is SSH on :22**, which is a genuine
+      Ignition-completed signal rather than a proxy for one — the admin user and
+      its `authorized_keys` come *from* Ignition, so port 22 answering means the
+      config was consumed. `bootstrap-cluster.yml` already does exactly this
+      ("Wait for SSH (port 22) on each server's DMZ IP"); reuse it.
+    - **⚠ ORDER IS LOAD-BEARING, and getting it wrong breaks the boot path.**
+      Remove `cicustom` from the VM config FIRST (`qm set <vmid> --delete
+      cicustom` — already covered by provisioner's existing scoped sudo), THEN
+      delete the snippet. **PVE rebuilds the cloud-init config drive on every VM
+      start**, and `read_cloudinit_snippets_file` ends in
+      `PVE::Tools::file_get_contents($full_path, ...)` with **no error handling**
+      (verified in `/usr/share/perl5/PVE/QemuServer/Cloudinit.pm`, 2026-08-03).
+      Delete the file while `cicustom` still points at it and `qm start` dies —
+      not at the next provision, but at **the next reboot**, which is the worst
+      time to find out.
+    - **⚠ Backup/restore trap — document it with the change.** Restoring a VM
+      backup taken *before* the cleanup yields a config that still has `cicustom`
+      pointing at a snippet that no longer exists → the VM won't start. Recovery
+      is just re-running provisioning, but that's something to know during an
+      actual restore rather than derive at 2am.
+    - **Open, verify rather than assume:** the `ide2` cloud-init drive stays
+      attached, so with `cicustom` gone PVE generates a *default* cloud-init
+      config for it. Flatcar shouldn't re-read anything (firstboot cleared), but
+      confirm across a reboot before trusting it. Removing `ide2` as well is an
+      option and is more invasive.
+    - **Minor cost, accept knowingly:** the on-storage record of "what config did
+      this node actually get" goes away. It's reproducible from the vault + node
+      map, so this is a debugging convenience, not data.
 
 ---
 
