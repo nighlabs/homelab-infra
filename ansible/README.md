@@ -168,10 +168,22 @@ install -d -m700 -o provisioner -g provisioner /home/provisioner/.ssh
 # paste your ~/.ssh/id_ed25519.pub into:
 #   /home/provisioner/.ssh/authorized_keys   (chown provisioner:provisioner, chmod 600)
 
-# 3. Passwordless sudo, SCOPED to qm only (not ALL) — this is the whole point
-echo 'provisioner ALL=(root) NOPASSWD: /usr/sbin/qm' >/etc/sudoers.d/provisioner
-chmod 440 /etc/sudoers.d/provisioner
-visudo -cf /etc/sudoers.d/provisioner    # syntax-check
+# 3. Passwordless sudo, SCOPED to fixed commands (never ALL) — the whole point.
+#    qm    : root-only CLI, ignores the API token/ACL system.
+#    chgrp } repair the snippets dir when PVE resets it (see the ⚠ below step 4).
+#    chmod } Fully-qualified paths with FIXED arguments — sudo matches the entire
+#            command line, so these cannot touch another path or group.
+#    ⚠ Validate BEFORE installing; a broken sudoers file is painful to undo.
+cat >/tmp/prov.sudoers <<'SUDOERS'
+provisioner ALL=(root) NOPASSWD: /usr/sbin/qm, /usr/bin/chgrp pve-snippets /mnt/pve/cephfs/snippets, /usr/bin/chmod 2770 /mnt/pve/cephfs/snippets
+SUDOERS
+visudo -cf /tmp/prov.sudoers && install -m 440 -o root -g root /tmp/prov.sudoers /etc/sudoers.d/provisioner
+rm -f /tmp/prov.sudoers
+#    ⚠ PER-NODE, and every node that Ansible might SSH to needs it — adding it on
+#    one host and forgetting the others produces a failure that only shows up
+#    when provisioning happens to target the node you missed.
+#    ⚠ The paths/group/mode must match `proxmox_snippet_*` in
+#    inventory/group_vars/all/vars.yml byte-for-byte, or the repair is refused.
 
 # 4. Let provisioner write the Ignition snippet WITHOUT sudo (keeps the sudoers
 #    to just `qm`). Proxmox references snippets by a FLAT volid
@@ -196,14 +208,22 @@ This keeps the snippets dir `root:root` — provisioner gets write access, not
 ownership. (A provisioner-owned *subdirectory* won't work: cicustom can't point
 at `snippets/<subdir>/<file>`.)
 
-> **⚠ Step 4 is not durable state — re-check it if provisioning fails on the
-> upload.** PVE recreates content subdirectories as `root:root 0755` on storage
-> activation, which silently undoes the `chgrp`/`chmod` while leaving the group
-> membership from steps 2–3 intact (so `id` looks correct and the directory
-> still exists). Hit for real on 2026-08-02. `flatcar_vm` now asserts the
-> directory is *writable* rather than merely present, so this fails fast with
-> this fix in the message — but the repair is still manual and needs **root**,
-> since provisioner's sudo is scoped to `qm`:
+> **⚠ Step 4 is not durable state — PVE resets it, and `flatcar_vm` now repairs
+> it automatically.** PVE recreates storage content subdirectories as
+> `root:root 0755` on storage activation, silently undoing the `chgrp`/`chmod`
+> while leaving the group membership from steps 2–3 intact — so `id` looks
+> correct and the directory still exists, but the write fails. **Observed twice
+> (2026-08-02 and 2026-08-03); a template rebuild is enough to trigger it**,
+> since `qm destroy` + image import touch storage.
+>
+> Because it recurs, detection isn't enough: `flatcar_vm` stats the directory,
+> **repairs it via the scoped `chgrp`/`chmod` sudoers rules from step 3**, then
+> re-stats and asserts. A missed node or a changed path shows up as the assert
+> firing with the manual fix in the message, rather than as `copy` failing four
+> tasks later with a message naming neither the group nor this README.
+>
+> Manual repair, if you need it (needs **root** — the sudoers rules are
+> fixed-argument and won't cover a different path):
 >
 > ```bash
 > chgrp pve-snippets /mnt/pve/cephfs/snippets
@@ -213,7 +233,8 @@ at `snippets/<subdir>/<file>`.)
 >
 > Note the failure only reproduces when the target `<hostname>.ign` doesn't
 > already exist — Ansible's `copy` checks the *directory* only in that branch —
-> so a leftover snippet hides it until the next new node.
+> so a leftover snippet hides it until the next new node. That is why it went
+> unnoticed until a rebuild, and why it was a standing blocker for worker nodes.
 
 Then set `vault_proxmox_ssh_user: "provisioner"` in your vault (the default in
 `vault.example.yml`). The roles invoke `qm` via the `proxmox_qm` helper
@@ -230,10 +251,18 @@ uv run ansible proxmox -m raw -a 'sudo qm list' --ask-vault-pass
 With this in place you can set `PermitRootLogin no` in the PVE host's `sshd`
 and never SSH as root for provisioning.
 
-- **Why scoped and not `NOPASSWD: ALL`?** `qm` is the only root-only command
-  the roles run; the snippet write is handled by owning the dir (step 4). If
-  you later add a role step that shells out to another root-only tool (e.g.
-  `pvesm`), extend the sudoers line accordingly.
+- **Why scoped and not `NOPASSWD: ALL`?** The roles need exactly three root
+  commands, so they get exactly three. `qm` is root-only by design; `chgrp` and
+  `chmod` exist solely to repair the snippets dir after PVE resets it, and are
+  pinned to one group, one mode and one path. Because sudo matches the whole
+  command line, none of them can be repurposed — that property is the point, and
+  it's why they're spelled out rather than given a wildcard.
+  - The *snippet write itself* still needs no sudo — that's what owning the dir
+    via the group (step 4) buys. The added rules restore that ownership when the
+    storage layer takes it away; they don't replace it.
+  - If you later add a role step shelling out to another root-only tool (e.g.
+    `pvesm`), extend the sudoers line the same way: full path, fixed arguments,
+    `visudo -cf` before installing, and **on every PVE node**.
 
 ## Run
 

@@ -82,6 +82,14 @@ proxmox_ssh_host: "pve"
 # to just `qm` via /etc/sudoers.d/provisioner. As root, call it directly. Works
 # both ways, so the ssh user is a free choice.
 proxmox_qm: "{{ 'qm' if vault_proxmox_ssh_user == 'root' else 'sudo qm' }}"
+# Same idea for the snippet-dir repair in flatcar_vm (PVE resets that dir's
+# group+setgid on storage activation). ⚠ The sudoers rules are FIXED-ARGUMENT,
+# so the repair commands must match them byte-for-byte — changing
+# `vault_proxmox_snippet_dir`, the group, or the mode means updating
+# /etc/sudoers.d/provisioner on every PVE node too (README step 4).
+proxmox_sudo: "{{ '' if vault_proxmox_ssh_user == 'root' else 'sudo ' }}"
+proxmox_snippet_group: "pve-snippets"
+proxmox_snippet_mode: "2770"
 
 # Storage targets — names reveal the environment, so they're vaulted.
 proxmox_vm_storage: "{{ vault_proxmox_vm_storage }}"
