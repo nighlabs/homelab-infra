@@ -467,19 +467,37 @@ single-node milestone.
 dataplane moves to BGP, the pfSense/FRR side (LB `/24`, the two private ASNs
 from 64512–65534, the peering itself, and the eBGP policy config — item 8) gates
 the Calico migration rather than sitting alongside it. **Runbook:
-`docs/pfsense-frr-bgp-setup.md`** — full GUI procedure for pfSense CE 2.8.1,
-written to be staged *before* the cluster side exists (a parked config sits in
-`Active`/`Connect` with no session; that's success, not a fault).
+`docs/pfsense-frr-bgp-setup.md`** — the full `frr.conf` for pfSense CE 2.8.1,
+written to be staged *before* the cluster side exists. ⚠ With a listen range a
+parked config shows **no neighbors at all** until a node connects — that's
+success, not a fault, and it differs from the explicit-neighbor behaviour
+(`Active`/`Connect`) most guides describe.
 
 Note FRR must accept the **pod CIDR** too if nodes ever span subnets; on the
 same-subnet design above it only needs the LB range, and the `BGPFilter`
 guarantees that's all it's offered.
 
-⚠ **No dynamic neighbors.** `bgp listen range` is not exposed in the pfSense FRR
-GUI, and the Raw Config tab is not a workaround — saving it stops the GUI config
-from being applied *at all*. So each node needs an explicit neighbor entry on
-pfSense (a `k3s-nodes` peer group carries the shared settings) alongside its
-Calico-side `BGPPeer`. Budget for that on every node add. See the runbook §5/§8.
+✅ **DECIDED 2026-08-02 — pfSense FRR is managed as raw config, not via the GUI.**
+Two things we want exist only there: `bgp listen range` (dynamic neighbors) and
+`maximum-paths` (ECMP). Neither is exposed in the FRR GUI and `vtysh` edits are
+overwritten on the next Apply. The cost is real and total — saving a raw config
+stops the GUI's routing config being applied *at all* — but the config is ~25
+lines, and a committed Jinja2 template is more reviewable and reproducible than
+GUI forms, which are unversioned by construction. Same pattern as Ignition.
+
+Consequences to hold onto:
+- **Adding a k3s node needs no pfSense change.** The listen range admits any node
+  in the DMZ subnet into the peer group; one global `BGPPeer` (no `nodeSelector`)
+  covers the cluster side. Neither side has per-node config.
+- ⚠ **The GUI still starts the daemons.** The BGP tab's Enable is the *"master
+  enable switch for BGP routing"* — leave it off and `bgpd` never runs, so the
+  raw config is never read and it fails silently. Enable-in-GUI,
+  configure-in-raw.
+- ⚠ **Raw config can be silently ignored across upgrades**
+  ([#7859](https://redmine.pfsense.org/issues/7859) was exactly that). Re-verify
+  `show running-config` after every FRR package/pfSense upgrade.
+
+Full config, rationale and verification: `docs/pfsense-frr-bgp-setup.md` §4–§7.
 
 **Migration ordering — the risk window is node 2, not today.** With one node the
 mesh has no peers to form, so flipping to no-encap is trivially safe and nothing
@@ -612,13 +630,13 @@ apply once k3s work starts.
    `Established` and no prefixes move — the most common silent failure in this
    setup. Two ways to satisfy it:
 
-   - ~~**Option A** — check **Services > FRR BGP > Advanced > "Disable eBGP
-     Require Policy"**.~~ One click, and what most MetalLB-era guides say.
-     **Rejected as the standing config.** Use only as a temporary bisect step
-     when isolating a bring-up fault, then revert.
-   - **Option B — apply actual prefix lists (CHOSEN).** Leave "Disable eBGP
-     Require Policy" **unchecked**; the requirement is satisfied *because policy
-     exists*. Inbound permits only the LB range; outbound denies everything.
+   - ~~**Option A** — `no bgp ebgp-requires-policy` (the GUI's "Disable eBGP
+     Require Policy").~~ What most MetalLB-era guides say. **Rejected as the
+     standing config.** Use only as a temporary bisect step when isolating a
+     bring-up fault, then revert.
+   - **Option B — apply actual prefix lists (CHOSEN).** Omit the disable
+     entirely; the requirement is satisfied *because policy exists*. `K3S-IN`
+     permits only the LB range; `K3S-OUT` denies everything.
 
    **Why B, given A is one checkbox:** we want the inbound prefix-list
    regardless, as defense-in-depth. The Calico-side `BGPFilter` is the primary
@@ -637,8 +655,8 @@ apply once k3s work starts.
    the pod CIDR is absent from `vtysh -c 'show ip bgp'`; if `10.42.0.0/16`
    appears, *both* the `BGPFilter` and the prefix list failed.
 
-   **Full GUI procedure, exact field labels, and verification commands:
-   `docs/pfsense-frr-bgp-setup.md`** (§4 and §6).
+   **The `frr.conf` implementing this, plus verification commands:
+   `docs/pfsense-frr-bgp-setup.md`** (§4 and §7).
 
 9. **ceph-csi version vs. Proxmox Ceph release, and RBD/CephFS image
    features vs. the Flatcar kernel.** **Test:** provision one test PVC (RBD)
