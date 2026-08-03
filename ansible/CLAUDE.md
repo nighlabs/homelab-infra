@@ -34,12 +34,20 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > still *Ansible*-managed (helm revision 1), so re-priming is an Ansible re-run
 > rather than a fight with Flux. Every week that gets worse.
 >
-> **Versions settled 2026-08-02: Calico `v3.32.1` + k3s `v1.36.x`** (§7 items 15
-> + 16 — decided together, both land in the same re-provision as the
-> encapsulation change). **⚠ The Calico bump is not just a pin change** — 3.32
-> ships a broken LoadBalancer-IPAM RBAC grant and the workaround ClusterRole
-> **must** be applied with it (item 15). The old "MetalLB secrets-ordering trap"
-> is **resolved** — see §6 step 5.
+> **Versions APPLIED 2026-08-03: Calico `v3.32.1` + k3s `v1.36.2+k3s1`** (§7
+> items 15 + 16). **They deliberately did NOT land with the encapsulation
+> change**, contrary to the original "one rebuild instead of two" plan: the BGP
+> work is blocked on pfSense values, while the version bump had no external
+> dependency, so batching them would have held a ready change hostage AND put
+> two variables in one rebuild. `values.yaml` is therefore still
+> `VXLANCrossSubnet` + `bgp: Disabled`.
+>
+> **⚠ The #12890 LoadBalancer-IPAM RBAC workaround is NOT yet applied.** That is
+> fine *only* because nothing allocates LoadBalancer IPs yet — it becomes
+> load-bearing the moment the BGP work starts, and a gap there stalls the
+> Gateway → cert-manager → ESO chain with LB IPs stuck `pending` while BGP looks
+> healthy. **Apply it with the BGP change, not after** (item 15). The old
+> "MetalLB secrets-ordering trap" is **resolved** — see §6 step 5.
 >
 > **Still open before writing config:** whether pfSense/FRR is actually
 > configured, plus the LB `/24`, FRR peer address and the two ASNs (§7 items 6 +
@@ -51,12 +59,18 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > cluster exists. Runbook: `docs/pfsense-frr-bgp-setup.md`. BWS unblocks nothing
 > (`vault.yml` already works), so it follows rather than leads.
 >
-> **Runnable in parallel — the Calico eBPF trial (§7 item 17, decided
-> 2026-08-02).** Not on the critical path and **not blocked by BGP in either
-> direction**: eBPF replaces kube-proxy, not routing, and the stage-1 test runs
-> against a NodePort, so it needs no LB IP and no FRR session. Worth doing *now*
-> rather than later because the dataplane switch disrupts existing connections
-> and there are none yet. Plan: `docs/calico-ebpf-single-node-trial.md`.
+> **✅ DONE 2026-08-03 — versions bumped, and the Calico eBPF migration is
+> complete.** The cluster now runs **k3s `v1.36.2+k3s1` + Calico `v3.32.1` with
+> `linuxDataplane: BPF` and no kube-proxy at all**, all from committed config and
+> verified on a from-scratch rebuild (§7 items 15–17). Source IP is preserved
+> under `externalTrafficPolicy: Cluster`, which **collapses the four-row matrix
+> in `docs/pfsense-frr-bgp-setup.md` §10 to one row** — re-read that section
+> before writing the BGP manifests, it's the main thing tonight changed for them.
+>
+> Two things the bump dragged in, both resolved and worth knowing before the next
+> Calico bump: v3.32 **removed the CRDs from the chart** (new `gitops/crds/` tier,
+> server-side applied — item 15), and the PVE **snippet-dir permissions reset**
+> on storage activation (now self-repairing — item 18).
 
 ---
 
@@ -990,9 +1004,32 @@ apply once k3s work starts.
       the running version to re-converge at rebuild, then drift again within the
       new minor — same behavior as documented, new baseline.
 
-17. **Calico eBPF dataplane — ✅ DECIDED 2026-08-02: trial it on the single node,
-    staged, and NOT with DSR.** Full plan, patches, and pass criteria:
-    `docs/calico-ebpf-single-node-trial.md`. Summary of what was decided and why:
+17. **Calico eBPF dataplane — ✅ DONE 2026-08-03, BOTH STAGES, committed.**
+    (Decided 2026-08-02; trialled, verified and made durable 2026-08-03.)
+    Reasoning record, verification detail and revert procedure:
+    `docs/calico-ebpf-single-node-trial.md`.
+    - **Result: source IP preserved under `externalTrafficPolicy: Cluster`.** The
+      pod's observed `RemoteAddr` went from the node's address to the real
+      off-cluster client on the flip, policy unchanged. **Stage 1 re-verified on
+      a from-scratch rebuild from committed config** — the hand-patches that set
+      it up died with the previous node, so the repo owns the result.
+      **Stage 2** then removed kube-proxy entirely.
+    - **⚠ Verifying stage 2 needs care — the obvious check is worthless.** k3s
+      *embeds* kube-proxy and never had a DaemonSet, so `get ds kube-proxy` →
+      NotFound proves nothing; and eBPF handles packets first, so the source-IP
+      test passes either way. What proved it: no `*proxy*` process in
+      `/proc/*/comm`, `:10249` not listening, **0** residual `KUBE-SERVICES`
+      chains, and `felix/kube-proxy.go` live in the reconcile loop. **`:10256`
+      IS listening and that's correct** — Felix's `bpfKubeProxyHealthzPort`
+      default, deliberately on kube-proxy's port. Don't read it as failure.
+    - **`felixconfiguration.yaml` was deleted at stage 2, deliberately.** It only
+      disabled `bpfKubeProxyIptablesCleanupEnabled` for coexistence; with
+      kube-proxy gone, leaving cleanup off would ORPHAN its stale iptables rules.
+      The 0-chain count confirms Felix cleaned up. Don't reintroduce it without
+      also reverting `disable-kube-proxy` in the k3s config.
+    - **DSR still NOT enabled**, per the original decision — it remains a
+      one-line runtime `FelixConfiguration` patch, no re-provision needed.
+    Original decision and reasoning, unchanged and still the justification:
     - **The reason is source IP, not performance.** With `externalTrafficPolicy:
       Cluster`, kube-proxy SNATs externally-originated traffic to the node IP and
       the client address is gone before the pod sees it — unrecoverable at L7, so
