@@ -6,10 +6,18 @@ kind: Kustomization
 namespace: tigera-operator
 resources:
   - namespace.yaml
-  # eBPF dataplane prerequisites — both must exist for linuxDataplane: BPF to
-  # work (see each file's header, and ansible/CLAUDE.md §7 item 17).
+  # eBPF dataplane prerequisite: in eBPF mode Calico implements Services itself
+  # and must reach the API server without a ClusterIP (see that file's header,
+  # and ansible/CLAUDE.md §7 item 17).
+  #
+  # NOTE: felixconfiguration.yaml lived here for stage 1 and was REMOVED at
+  # stage 2 (2026-08-03), on purpose. It only disabled
+  # bpfKubeProxyIptablesCleanupEnabled so Felix and k3s's embedded kube-proxy
+  # wouldn't overwrite each other's iptables rules. With `disable-kube-proxy` in
+  # the k3s config there is nothing to coexist with, and leaving cleanup off
+  # would orphan kube-proxy's stale rules instead of letting Felix remove them.
+  # Don't reintroduce it without also reverting that k3s config key.
   - kubernetes-services-endpoint.yaml
-  - felixconfiguration.yaml   # ⚠ stage-1 only; delete at stage 2
   - helmrepository.yaml
   - helmrelease.yaml
 # Generate the calico-values ConfigMap from the canonical values.yaml so the

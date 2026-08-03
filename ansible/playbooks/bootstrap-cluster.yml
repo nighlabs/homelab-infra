@@ -309,16 +309,19 @@
           status: "True"
 
     # --- eBPF dataplane prerequisites (§7 item 17) --------------------------
-    # ORDERING IS LOAD-BEARING, all three before helm:
+    # ORDERING IS LOAD-BEARING, both before helm:
     #   namespace  — the ConfigMap has nowhere to land otherwise (helm's
     #                create_namespace would come too late, and is idempotent).
     #   ConfigMap  — in eBPF mode Calico implements Services itself and must
     #                reach the API server without a ClusterIP; calico-node
     #                cannot start the dataplane without it.
-    #   Felix      — the cleanup flag must be false BEFORE Felix comes up in BPF
-    #                mode, or it and k3s's embedded kube-proxy overwrite each
-    #                other's iptables rules on repeat. Creatable pre-operator
-    #                because the CRDs are already applied above.
+    #
+    # A third task primed a FelixConfiguration during stage 1, disabling
+    # bpfKubeProxyIptablesCleanupEnabled so Felix and k3s's embedded kube-proxy
+    # didn't fight over iptables. Removed at stage 2 along with the manifest —
+    # `disable-kube-proxy: true` in the k3s config means there's nothing to
+    # coexist with, and leaving cleanup off would orphan kube-proxy's stale
+    # rules rather than let Felix clean them up.
     - name: Prime the tigera-operator namespace (so the ConfigMap can land)
       delegate_to: localhost
       kubernetes.core.k8s:
@@ -337,17 +340,6 @@
                     calico_manifest_dir ~ '/kubernetes-services-endpoint.yaml')
              | replace('${k3s_api_ip}', node_eth0_ip) | from_yaml }}
         state: present
-        kubeconfig: "{{ kubeconfig_local }}"
-
-    - name: Prime the FelixConfiguration (kube-proxy coexistence — stage 1 only)
-      delegate_to: localhost
-      kubernetes.core.k8s:
-        src: "{{ calico_manifest_dir }}/felixconfiguration.yaml"
-        state: present
-        apply: true
-        server_side_apply:
-          field_manager: calico-felix-ansible
-          force_conflicts: true
         kubeconfig: "{{ kubeconfig_local }}"
 
     - name: Install/prime the tigera-operator (Calico) release

@@ -16,6 +16,19 @@
 flannel-backend: none
 disable-network-policy: true
 
+# Stage 2 of the eBPF migration (ansible/CLAUDE.md §7 item 17): Calico's eBPF
+# dataplane replaces kube-proxy's service handling entirely, so stop k3s running
+# one. k3s EMBEDS kube-proxy — there is no kube-system DaemonSet to scale down,
+# which is why this is a config key + re-provision rather than a kubectl change.
+#
+# ⚠ VERIFY IT ACTUALLY TOOK, don't assume. k3s#9561 was `disable-kube-proxy`
+# being IGNORED when set in config.yaml while working as a CLI flag. Fixed well
+# before v1.36, but the failure mode is silent — kube-proxy just keeps running
+# and you conclude eBPF didn't help. Check on the node:
+#   kubectl -n kube-system get ds kube-proxy   -> must be NotFound
+#   pgrep -af kube-proxy                       -> must be empty
+disable-kube-proxy: true
+
 # Bundled add-ons we replace from Git: traefik -> NGINX Gateway Fabric,
 # servicelb -> MetalLB, local-storage -> ceph-csi. Helm controller -> Flux.
 disable:
