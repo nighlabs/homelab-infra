@@ -245,6 +245,10 @@
     # it via a generated ConfigMap). Priming from the same file guarantees the
     # Git definition and the live release match, so Flux adopts without a diff.
     calico_values_file: "{{ playbook_dir }}/../../gitops/infrastructure/calico/values.yaml"
+    # The vendored CRDs, shared with the `crds` Flux Kustomization the same way
+    # values.yaml is shared with the HelmRelease — one file, primed identically
+    # twice. Regeneration command lives in that file's header.
+    calico_crds_file: "{{ playbook_dir }}/../../gitops/crds/calico/crds.yaml"
   tasks:
     - name: Assert the committed Calico pod CIDR matches k3s_cluster_cidr
       vars:
@@ -260,6 +264,46 @@
         quiet: true
       delegate_to: localhost
       run_once: true
+
+    # ⚠ Calico v3.32 REMOVED the CRDs from the tigera-operator chart — its
+    # `crds/` dir is empty (at v3.29.1 it shipped 5 files). They now live in a
+    # SEPARATE chart, `crd.projectcalico.org.v1`, which MUST be applied first or
+    # the operator install dies with "no matches for kind Installation /
+    # APIServer / Goldmane / Whisker in version operator.tigera.io/v1 — ensure
+    # CRDs are installed first". Upstream rationale (chart README): Helm never
+    # upgrades or deletes CRDs that live in a chart's crds/ dir, so they were
+    # split out to get a real lifecycle.
+    #
+    # SERVER-SIDE APPLY IS MANDATORY — not a style preference. 3 of the 32 CRDs
+    # blow past the 262144-byte client-side apply limit (installations 1.46 MB,
+    # gatewayapis 466 KB, istios 284 KB). That's also why this can't simply be a
+    # second helm release: `helm install` of this chart fails for the same
+    # reason, which the chart README states outright.
+    #
+    # Applied from the VENDORED file, not re-rendered from the chart — that's
+    # what keeps the Ansible prime and the Flux-managed state byte-identical
+    # (gitops/crds/, reconciled by the `crds` Flux Kustomization that
+    # `infrastructure` dependsOn). Re-rendering here would create a second
+    # source that drifts the moment the vendored copy is regenerated, which is
+    # the same diff-war the shared values.yaml exists to prevent.
+    #
+    # Deliberately NOT `run_once` — CRDs are cluster-scoped, so every cluster
+    # gets its own apply against its own kubeconfig (same shape as the helm task
+    # below).
+    - name: Prime the Calico CRDs (server-side; see the note above)
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        src: "{{ calico_crds_file }}"
+        state: present
+        apply: true
+        server_side_apply:
+          field_manager: calico-crds-ansible
+          force_conflicts: true
+        kubeconfig: "{{ kubeconfig_local }}"
+        wait: true
+        wait_condition:
+          type: Established
+          status: "True"
 
     - name: Install/prime the tigera-operator (Calico) release
       delegate_to: localhost

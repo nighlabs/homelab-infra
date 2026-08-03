@@ -15,7 +15,7 @@ spec:
       # Keep in lockstep with calico_version in group_vars/all/vars.yml — the
       # Ansible prime and this must install the same chart version (Renovate
       # tracks both). A mismatch would make Flux's first reconcile a diff.
-      version: "v3.29.1"
+      version: "v3.32.1"
       sourceRef:
         kind: HelmRepository
         name: tigera-operator

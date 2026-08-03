@@ -105,8 +105,8 @@ flatcar_template_name: "flatcar-stable"
 # (Renovate marker) when seeding a new node. k3s_minor is the sysupdate feature
 # name / MatchPattern minor pin — patch releases within it auto-apply, minor bumps
 # are a deliberate change here. Keep the two in sync (minor ⊂ version).
-k3s_version: "v1.32.2+k3s1"
-k3s_minor: "v1.32"
+k3s_version: "v1.36.2+k3s1"
+k3s_minor: "v1.36"
 
 # Cluster-internal CIDRs — pinned explicitly (never left as k3s implicit
 # defaults) so Calico's IPPool always matches (design §4.1, guardrail §8).
@@ -168,4 +168,4 @@ kubeconfig_set_current_context: true
 # the primed release and the Git definition are identical (clean adoption). The
 # pod-CIDR the operator uses lives in gitops/infrastructure/calico/values.yaml
 # (the single values source shared by both) and is asserted == k3s_cluster_cidr.
-calico_version: "v3.29.1"
+calico_version: "v3.32.1"

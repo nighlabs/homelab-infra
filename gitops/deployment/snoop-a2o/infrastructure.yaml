@@ -10,6 +10,12 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
+  # Gate on the CRD tier: Calico v3.32 moved its CRDs out of the tigera-operator
+  # chart, so the HelmRelease below fails outright ("ensure CRDs are installed
+  # first") if it reconciles before they're Established. crds.yaml sets
+  # `wait: true`, so this dependsOn gates on Established, not merely applied.
+  dependsOn:
+    - name: crds
   # Relative to the GitRepository root. Assumes the source is the repo root; if
   # Flux bootstrap points the GitRepository at gitops/ instead, drop the prefix.
   path: ./gitops/infrastructure

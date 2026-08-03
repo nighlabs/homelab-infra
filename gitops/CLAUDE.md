@@ -6,12 +6,15 @@ milestone) installs the Flux Operator + `FluxInstance` pointed at this repo.
 Standing repo-wide guardrails (no Terraform, no second Ceph, no CGNAT CIDRs, no
 DHCP) apply here too — see the root `CLAUDE.md`.
 
-## Layout (3-tier)
+## Layout (4-tier)
 
 ```
 deployment/<cluster>/     # Flux entrypoints: the per-cluster Kustomization CRs
-  infrastructure.yaml       #   -> ../../infrastructure  (controllers)
+  crds.yaml                 #   -> ../../crds  (prune: false, wait: true)
+  infrastructure.yaml       #   -> ../../infrastructure  (dependsOn crds)
   apps.yaml                 #   -> ../../apps  (dependsOn infrastructure)
+crds/                     # CRDs that must be Established BEFORE controllers:
+  calico/                   #   vendored, server-side applied (see below)
 infrastructure/           # controllers, in dependency order (design §6):
   calico/                   #   calico (CNI + BGP) -> cert-manager ->
   kustomization.yaml        #   ceph-csi-operator -> ESO + Bitwarden SDK -> ...
@@ -20,6 +23,10 @@ apps/                     # workloads only: litellm, qdrant, open-webui, ...
                           #   (empty until the infra layer is up)
 ```
 
+- **`crds/`** is the tier added 2026-08-02 for CRDs a chart can't install
+  itself. **Only Calico qualifies today, and it's the exception, not a
+  convention** — don't route other controllers' CRDs here just because they have
+  some. See "The CRD tier" below for why Calico is special.
 - **`deployment/`** holds the Flux `Kustomization` CRs (the entrypoints Flux
   reconciles), NOT the workloads. One subdir per cluster (today: `snoop-a2o`).
   These reference the `flux-system` `GitRepository` created by the
@@ -56,6 +63,45 @@ decided in `ansible/CLAUDE.md §6` (2026-07-08):
 - **Version pins** (`calico_version` in `group_vars/all/vars.yml` and the
   `version:` in `helmrelease.yaml`) must stay in lockstep; both are
   Renovate-tracked.
+
+## The CRD tier — why Calico's CRDs are vendored (decided 2026-08-02)
+
+Hit for real when bumping `calico_version` to `v3.32.1`: the helm prime failed
+with *"no matches for kind Installation / APIServer / Goldmane / Whisker in
+version operator.tigera.io/v1 — ensure CRDs are installed first."*
+
+- **Calico v3.32 removed the CRDs from the tigera-operator chart.** Its `crds/`
+  dir is empty (v3.29.1 shipped 5 files); they moved to a separate
+  `crd.projectcalico.org.v1` chart. Upstream's reason: Helm never upgrades or
+  deletes CRDs living in a chart's `crds/`, so they were split out to get a real
+  lifecycle. **This is an install-contract change, not a bad pin** — it applies
+  to any Calico ≥3.32.
+- **⚠ A second HelmRelease with `dependsOn` does NOT work** — the obvious fix,
+  and it fails. **3 of the 32 CRDs exceed the 262144-byte client-side apply
+  limit** (`installations` 1.46 MB, `gatewayapis` 466 KB, `istios` 284 KB), so
+  they require **server-side apply**. helm-controller drives Helm's client-side
+  apply; the chart's own README says to use `helm template | kubectl apply
+  --server-side` for exactly this reason. So the CRD chart can never be a
+  HelmRelease — in Flux *or* in Ansible.
+- **kustomize-controller applies server-side by default**, so a plain
+  `Kustomization` over vendored YAML does work. Hence `crds/calico/crds.yaml`:
+  3.0 MB of generated output, regenerated (never hand-edited) on version bumps
+  via the command in its header.
+- **One source, primed twice** — `bootstrap-cluster.yml` applies **that same
+  file** with `kubernetes.core.k8s` + `server_side_apply`. Do not "simplify" it
+  back to rendering from the chart: that recreates two sources that drift apart
+  the moment the vendored copy is regenerated, which is the identical failure
+  mode the shared `values.yaml` exists to prevent.
+- **⚠ `prune: false` on the `crds` Kustomization is deliberate.** Pruning a CRD
+  cascades — Kubernetes garbage-collects every CR of that kind, which for Calico
+  is the entire network config (Installation, IPPools, BGP). A rendering slip
+  that dropped a CRD from the build would take the dataplane with it. Removing a
+  CRD is a manual act, never a reconcile.
+- **`wait: true`** so `infrastructure`'s `dependsOn: [crds]` gates on the CRDs
+  being *Established*, not merely submitted.
+- **On every `calico_version` bump**: regenerate `crds.yaml` in the same commit
+  as `vars.yml` + `helmrelease.yaml`, and apply CRDs **before** the operator
+  chart — upstream is explicit that Helm won't do it for you.
 
 ## Topology blinding — `${var}` placeholders, not SOPS (decided 2026-08-02)
 
@@ -161,6 +207,21 @@ through `valuesFrom`.
   - **A GitHub Actions workflow** that builds the gitops tree into an OCI
     artifact and pushes it to a registry (e.g. GHCR) — on merge to `main`
     and/or tag (`flux push artifact oci://…` or the equivalent action).
+  - **⚠ TODO at that milestone — render the Calico CRDs at build time and stop
+    vendoring them.** `crds/calico/crds.yaml` is **3.0 MB of generated output
+    committed to Git**, and every `calico_version` bump adds another full copy
+    to history forever. That was accepted knowingly (2026-08-02) because it's
+    the only option that gives Flux the ordering guarantee *today* — see "The
+    CRD tier". Once the artifact is built by CI, the workflow can run
+    `helm template calico-crds crd.projectcalico.org.v1 --version <pin>` into
+    the artifact instead, so the 3 MB exists in the OCI layer and never in Git.
+    **Two constraints that must survive the move:** (a) the version must come
+    from the *same* pin as `calico_version`/`helmrelease.yaml`, or the three
+    drift silently; (b) `bootstrap-cluster.yml` primes from the vendored file —
+    if Git stops carrying it, Ansible needs its own render at that same pin, and
+    the "one source, primed twice" invariant has to be re-established some other
+    way (a CI-published artifact both sides consume, most likely). Don't delete
+    the vendored file until that second half is actually solved.
   - **Image/artifact signing** (cosign — keyless via the GHA OIDC identity is
     the low-friction path) so the artifact is provably built by our pipeline,
     plus **`OCIRepository.spec.verify`** (cosign) on the Flux side so
