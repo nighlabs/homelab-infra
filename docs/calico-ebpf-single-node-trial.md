@@ -1,9 +1,27 @@
 # Calico eBPF dataplane — single-node trial on `snoop-a2o`
 
-> **Status: PLANNED, not yet run.** Decision recorded in `ansible/CLAUDE.md`
-> §7 item 17. This is a *trial* with an explicit pass/fail criterion and a
-> one-command revert — not a migration. Nothing here is a prerequisite for the
-> Calico BGP work; the two are independent (see §8).
+> **Status: ✅ RUN AND PASSED, 2026-08-03 — BOTH STAGES COMPLETE AND COMMITTED.**
+> Kept as the reasoning record and the revert procedure; it is no longer a plan.
+> Decision in `ansible/CLAUDE.md` §7 item 17. Nothing here was a prerequisite for
+> the Calico BGP work — the two are independent (see §8), and that held.
+>
+> **Result — `externalTrafficPolicy: Cluster` throughout, three requests each:**
+>
+> | | Pod's observed `RemoteAddr` |
+> |---|---|
+> | Before (iptables/kube-proxy) | the **node's** address — SNAT |
+> | After (eBPF, Tunnel mode) | the **real off-cluster client** ✅ |
+>
+> Environment: Flatcar `4593.2.4` / kernel `6.12.95-flatcar`, k3s `v1.36.2+k3s1`,
+> `tigera-operator-v3.32.1`, `bpfExternalServiceMode` left at default (Tunnel,
+> `DSR:false`). **Stage 1 re-verified on a from-scratch rebuild from committed
+> config**, so the result belongs to the repo rather than to hand-applied
+> patches. **Stage 2** then removed kube-proxy entirely (`disable-kube-proxy` in
+> the k3s config) — see §7 for what "verified" had to mean there, since the
+> obvious check is worthless on k3s.
+>
+> **⚠ §8 still applies in full** — one node cannot exercise the VXLAN tunnel
+> path, ECMP, or mixed-mode. Cite the result with that attached.
 
 **Blinding rule (same as every committed doc):** no real addresses, ASNs, or
 hostnames. `${placeholder}` only. The one literal here is the pod CIDR
@@ -234,9 +252,41 @@ back and re-provisioning — which is precisely why stage 2 is separate.
 
 ---
 
-## 7. Stage 2 — remove kube-proxy (optional, later)
+## 7. Stage 2 — remove kube-proxy ✅ DONE 2026-08-03
 
-Only after stage 1 passes and only if the efficiency is actually wanted:
+**⚠ The obvious verification is worthless here.** `kubectl -n kube-system get ds
+kube-proxy` returning NotFound proves nothing on k3s — **k3s embeds kube-proxy
+and never had a DaemonSet**. Combined with
+[k3s#9561](https://github.com/k3s-io/k3s/issues/9561) (`disable-kube-proxy`
+silently ignored from `config.yaml` while working as a CLI flag — fixed long
+before 1.36, but silent when it bites), it is entirely possible to "verify"
+stage 2, still be running kube-proxy, and still pass the source-IP test because
+eBPF handles the packet first.
+
+What actually proved it, on the node:
+
+| Check | Result |
+|---|---|
+| process named `*proxy*` in `/proc/*/comm` | none |
+| `:10249` — kube-proxy's metrics port | not listening |
+| residual `KUBE-SERVICES` iptables chains | **0** |
+| `felix/kube-proxy.go` + `resync-kube-proxy-v4` in the reconcile loop | present — Calico's implementation is the live one |
+
+**⚠ `:10256` IS listening, and that is correct.** It's kube-proxy's healthz port,
+but the owner is Felix's `bpfKubeProxyHealthzPort` at its default — Calico
+deliberately serves on the standard port so health checks expecting kube-proxy
+keep working. This is the single most likely observation to make you conclude,
+wrongly, that stage 2 failed.
+
+Use `/proc/*/comm` rather than `ps | grep` — process *names* can't self-match,
+whereas a grep pattern containing `kube-proxy` matches the shell running it.
+(That produced a false positive first time through.)
+
+The zero residual chains also confirm deleting `felixconfiguration.yaml` worked
+as intended: `bpfKubeProxyIptablesCleanupEnabled` returned to its default and
+Felix removed kube-proxy's stale rules instead of orphaning them.
+
+Steps taken, for the record — only after stage 1 passed:
 
 1. Drop `--disable-kube-proxy` into the k3s server config
    (`roles/*/templates/k3s-config.yaml.j2` — a server-only flag, per §8's
