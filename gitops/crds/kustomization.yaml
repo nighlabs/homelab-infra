@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The CRD tier: CustomResourceDefinitions that must be Established BEFORE the
+# controllers in ../infrastructure reconcile. Kept as its own tier (and its own
+# Flux Kustomization, see deployment/<cluster>/crds.yaml) rather than folded into
+# infrastructure/, so the ordering is explicit and nothing can double-own these
+# objects.
+#
+# Only add a controller's CRDs here when the chart genuinely can't install them
+# itself — that is the exception, not the rule. Calico qualifies because v3.32
+# removed CRDs from the chart AND they exceed the client-side apply size limit.
+resources:
+  - calico

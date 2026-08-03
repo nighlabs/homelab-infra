@@ -1,0 +1,36 @@
+# Flux entrypoint for the CRD tier. INERT until the Flux bootstrap milestone,
+# like its infrastructure/apps siblings (the `flux-system` GitRepository it
+# references is created by the FluxInstance then).
+#
+# This exists because Calico v3.32 removed CRDs from the tigera-operator chart
+# and they must be applied server-side — see gitops/crds/calico/crds.yaml.
+# `infrastructure` dependsOn this, so controllers never reconcile against a
+# cluster whose CRDs aren't Established yet.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: crds
+  namespace: flux-system
+spec:
+  interval: 30m
+  # Relative to the GitRepository root — same assumption as infrastructure.yaml.
+  path: ./gitops/crds
+  # ⚠ prune: false — DELIBERATE, do not "fix" this to match the other tiers.
+  # Pruning a CustomResourceDefinition cascades: Kubernetes garbage-collects
+  # every custom resource of that kind. For Calico that is the entire cluster
+  # network config (Installation, IPPools, BGP config), so a transient rendering
+  # slip that drops a CRD from the build would take the dataplane with it.
+  # Removing a CRD is therefore a deliberate manual act, never a reconcile.
+  prune: false
+  # wait: true so `infrastructure`'s dependsOn actually gates on the CRDs being
+  # Established, not merely submitted. Flux health-checks CRDs on that condition.
+  wait: true
+  # 3 MB of CRDs, server-side applied; the default 5m is tight on a cold API
+  # server, and a timeout here blocks the whole infrastructure tier.
+  timeout: 10m
+  # TODO (Flux bootstrap): switch to the signed OCIRepository source alongside
+  # the other tiers — and see gitops/CLAUDE.md "Not here yet", which records the
+  # plan to render these CRDs at OCI build time so the 3 MB stops living in Git.
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
