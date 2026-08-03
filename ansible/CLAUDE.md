@@ -822,6 +822,23 @@ apply once k3s work starts.
     the bet knowingly. Either path ends with no MetalLB *speaker* and a single
     BGP session to FRR, which is most of the goal.
 
+    **⚠ SECOND, UNRELATED 3.32 GOTCHA — hit for real 2026-08-02 on the first
+    bootstrap at the new pin.** v3.32 **removed the CRDs from the tigera-operator
+    chart** (its `crds/` dir is empty; v3.29.1 shipped 5 files) — they moved to a
+    separate `crd.projectcalico.org.v1` chart. Symptom: the helm prime fails with
+    *"no matches for kind Installation / APIServer / Goldmane / Whisker in
+    version operator.tigera.io/v1 — ensure CRDs are installed first."* This is an
+    **install-contract change, not a bad pin**, and it applies to any Calico
+    ≥3.32. Resolved by the new `gitops/crds/` tier + a server-side-apply task in
+    `bootstrap-cluster.yml`. **The obvious fix — a second HelmRelease with
+    `dependsOn` — does NOT work**: 3 of the 32 CRDs exceed the 262144-byte
+    client-side apply limit, so they require server-side apply, which
+    helm-controller (and `helm install`) can't do. Full reasoning, the vendoring
+    decision, and the `prune: false` rationale: `gitops/CLAUDE.md` "The CRD
+    tier". **On every `calico_version` bump, regenerate `gitops/crds/calico/
+    crds.yaml` in the same commit** — see item 20, which proposes dropping Helm
+    for Calico entirely and makes this simpler.
+
     **✅ DECIDED 2026-08-02 — pin `v3.32.1` (latest stable) AND pre-apply the
     #12890 RBAC workaround.** An earlier draft of this item recommended the
     `v3.31.x` line; that is **superseded**. Release landscape at decision time:
@@ -1054,6 +1071,106 @@ apply once k3s work starts.
       `${k3s_api_ip}` and resolved via `postBuild.substituteFrom`, never a
       literal. `${k3s_api_ip}` is **derived, not a new vault var**:
       `{{ dmz_network.subnet_base }}.{{ node_number }}` from `inventory/nodes.yml`.
+
+18. **⚠ Snippet-dir permissions are NOT durable host prep — and the gap silently
+    blocked every worker node (hit and fixed 2026-08-02).** Provisioning died on
+    `Destination /mnt/pve/cephfs/snippets not writable`. Root cause: the dir was
+    `root:root 0755` instead of `drwxrws--- root pve-snippets` — README "Proxmox
+    SSH access" step 4's `chgrp`/`chmod` half wasn't in effect, while the
+    `groupadd`/`usermod` half was (so `id` looked correct and the dir existed).
+    - **Why it hid for a month.** Ansible's `copy` checks the *directory* for
+      writability **only when the destination file doesn't exist**; otherwise it
+      checks the file. `snoop-a2o.ign` was already there from the §1 run, so the
+      directory permission was never exercised. Deleting that file didn't create
+      the bug — it removed the thing masking it.
+    - **⚠ It was a standing blocker for §6 step 2, not a one-off.** The
+      destination is `{{ proxmox_snippet_dir }}/{{ hostname }}.ign` — **every new
+      node writes a new filename**, so the first worker would have hit this
+      regardless. §1's "verified end-to-end" never actually covered it.
+    - **Why it can come back:** PVE recreates content subdirectories as
+      `root:root 0755` on storage activation. Treat step 4 as a **precondition to
+      verify**, not state that stays put. Repair needs **root** — provisioner's
+      sudo is scoped to `/usr/sbin/qm`, so `sudo chgrp` is refused.
+    - **Hardened in the role (2026-08-02):** `flatcar_vm` now `stat`s the dir and
+      **asserts `writeable`**, with the repair commands in the `fail_msg`, so this
+      fails fast and self-describing instead of four tasks later with a message
+      naming neither the group nor the README. The old `file: state=directory`
+      check passed happily against `root:root 0755` — *existence was never the
+      thing in doubt.*
+    - **Second fix, same class — security-relevant.** The upload was
+      `mode: "0644"`, and that `.ign` **embeds the k3s cluster join token**
+      (`k3s-config.yaml.j2` → `token:`), which per the root `CLAUDE.md` lets
+      anyone holding it register a node. It was world-readable, protected only by
+      the dir's `2770` — the exact state we just watched revert to `0755`. Now
+      `0660`, so exposure takes two independent regressions instead of one.
+
+19. **Flatcar OS update policy is unset by default — decide it before there's
+    state (raised 2026-08-02).** There is **no `update-engine`/`locksmith`
+    configuration anywhere** in the Ignition templates (grepped `roles/` +
+    `playbooks/`), so Flatcar's default auto-update-and-reboot is in force. §1.4's
+    DoD deliberately proved unattended reboot works — that same mechanism now
+    means **nodes move to new stable on their own schedule**.
+    - **Consequence for testing:** you cannot pin the tested OS by controlling
+      the template; the node walks away from it. That matters most for §7 item
+      17 — **eBPF behavior is kernel-dependent**, so an unattended reboot into a
+      new kernel mid-trial reads as a flake, and a "verified" result may be
+      against a kernel you're no longer running. **Record OS + kernel with the
+      trial result** (`4593.2.4` / `6.12.95-flatcar` as of 2026-08-02).
+    - **Related trap — the template is a pin by accident.** `flatcar_version:
+      "current"` means a *rebuild* always fetches latest stable, but
+      `flatcar_template`'s build is guarded on `qm status <vmid>` failing, so
+      `build-template.yml` **runs green and silently skips** whenever vmid 9000
+      exists. A successful run is not evidence of a fresh template. Rebuilding =
+      `qm destroy 9000` then re-run (safe: clones are `full: true`, so existing
+      VMs are independent). A stale template also means every provision boots
+      old, then auto-updates and reboots shortly after — the mid-trial reboot,
+      near-scheduled.
+    - **Open question, not yet decided:** leave the default (fine while
+      disposable, and why §1.4 tested it), or move to a k8s-aware
+      drain-then-reboot. It stops being fine once there's Ceph-backed state on a
+      single control-plane node (item 10). **Don't just set `reboot-strategy:
+      off`** — that trades unplanned reboots for unpatched nodes.
+    - Cheap mitigation available now: add a `flatcar_template_force` flag so a
+      rebuild is `-e flatcar_template_force=true` rather than a manual `qm
+      destroy`, and so the silent-skip stops being a trap.
+
+20. **Drop Helm for Calico and install the operator from manifests — PROPOSED
+    2026-08-02, do it AFTER the current rebuild verifies.** Investigated while
+    fixing the v3.32 CRD split (item 15). Calico supports a manifest install
+    alongside the chart; neither is deprecated.
+    - **The sizes make the case.** `manifests/tigera-operator.yaml` is **19.6 KB**
+      — Namespace, ServiceAccount, 2 ClusterRoles, bindings, one Deployment.
+      `manifests/operator-crds.yaml` is the 32 CRDs and is **byte-for-byte
+      identical content** to what `helm template crd.projectcalico.org.v1`
+      produces (verified: 40,019 lines each, `diff` clean), so `gitops/crds/`
+      needs **no rework** — regeneration just becomes a `curl`.
+    - **We use nothing the chart provides.** `bgp`, `ipPools`,
+      `nodeAddressAutodetectionV4` all live in the **`Installation` CR**; the
+      chart's only job is passing `installation:` straight through to it.
+    - **What it deletes:** `helmrepository.yaml`, `helmrelease.yaml`, the
+      `configMapGenerator` + `disableNameSuffixHash` + `valuesFrom` indirection,
+      the `helm` binary as a control-node prerequisite, `kubernetes.core.helm`,
+      the Helm-4-vs-`kubernetes.core` 6.5 compatibility pin in
+      `requirements.yml`, and helm-controller from Calico's dependency chain.
+    - **The big one: it dissolves the adoption problem.** "Ansible primes, Flux
+      adopts" is delicate — release name, namespace, and chart version must match
+      exactly or helm-controller fights the primed release. With manifests there
+      is no release identity to match; both sides server-side apply the same YAML,
+      idempotent by construction. **And the HelmRelease is the only thing in the
+      repo that needs adoption** (`BGPPeer` and the #12890 workaround are already
+      plain Ansible-primed manifests; everything after Flux exists needs no
+      priming). So this removes the concept entirely rather than leaving a special
+      case — **`gitops/CLAUDE.md`'s "reference example of the handoff" framing
+      would need rewriting, not patching.**
+    - **What we'd give up:** chart knobs for the *operator deployment* (registry,
+      pull secrets, tolerations, resources) become kustomize patches — rare here;
+      and Renovate ergonomics, since a chart `version:` is first-class while a
+      vendored manifest needs a regex manager on a pinned version string (already
+      true for `crds.yaml` regardless).
+    - **⚠ Sequencing: not now.** The bootstrap was only just unblocked and the
+      1.36/3.32.1 rebuild is unverified. Landing this on top puts two variables in
+      flight — the same attribution argument accepted for item 17's staging. It's
+      also *cheaper* afterwards, with a known-good cluster to diff against.
 
 ---
 
