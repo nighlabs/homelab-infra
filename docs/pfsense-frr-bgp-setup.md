@@ -452,6 +452,15 @@ after landing:
 | **`Local` + no ECMP** | ✗ one node takes all | ⚠ **only replicas on that node** | preserved |
 | **`Local` + ECMP** | ✓ per-flow across advertising nodes | ✓ all replicas, weighted per *node* not per pod | preserved |
 
+> **⚠ This whole matrix assumes the standard (iptables/kube-proxy) dataplane.**
+> Calico's **eBPF dataplane preserves the source IP under `Cluster`**, which
+> collapses all four rows into one — `Cluster` + ECMP with the client IP intact,
+> and no `Local`-vs-`Cluster` trade at all. That's under trial, staged and
+> reversible: `docs/calico-ebpf-single-node-trial.md`, decision in
+> `ansible/CLAUDE.md` §7 item 17. **Nothing in this runbook changes either way** —
+> eBPF replaces kube-proxy, not routing, so the `frr.conf` in §4 is identical.
+> Re-read this section once that trial has a result.
+
 The counterintuitive row is **`Local` + no ECMP**: the load balancing you get is
 **pod-level, confined to one node**. Replicas elsewhere receive **zero** external
 traffic — not lightly loaded, unused for ingress (they still serve in-cluster

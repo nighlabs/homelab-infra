@@ -50,6 +50,13 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > the values the manifests consume, and it can be staged and parked before the
 > cluster exists. Runbook: `docs/pfsense-frr-bgp-setup.md`. BWS unblocks nothing
 > (`vault.yml` already works), so it follows rather than leads.
+>
+> **Runnable in parallel — the Calico eBPF trial (§7 item 17, decided
+> 2026-08-02).** Not on the critical path and **not blocked by BGP in either
+> direction**: eBPF replaces kube-proxy, not routing, and the stage-1 test runs
+> against a NodePort, so it needs no LB IP and no FRR session. Worth doing *now*
+> rather than later because the dataplane switch disrupts existing connections
+> and there are none yet. Plan: `docs/calico-ebpf-single-node-trial.md`.
 
 ---
 
@@ -965,6 +972,88 @@ apply once k3s work starts.
       sysupdate at the new minor's transfer config. Expect the seeded version and
       the running version to re-converge at rebuild, then drift again within the
       new minor — same behavior as documented, new baseline.
+
+17. **Calico eBPF dataplane — ✅ DECIDED 2026-08-02: trial it on the single node,
+    staged, and NOT with DSR.** Full plan, patches, and pass criteria:
+    `docs/calico-ebpf-single-node-trial.md`. Summary of what was decided and why:
+    - **The reason is source IP, not performance.** With `externalTrafficPolicy:
+      Cluster`, kube-proxy SNATs externally-originated traffic to the node IP and
+      the client address is gone before the pod sees it — unrecoverable at L7, so
+      NGF would log node IPs as clients forever. Calico's eBPF dataplane preserves
+      it under `Cluster`. That **collapses the four-row matrix** in
+      `docs/pfsense-frr-bgp-setup.md` §10 to one row and deletes the
+      `Local`-vs-`Cluster` trade entirely. The CPU/latency win from dropping
+      kube-proxy is real but negligible at our scale — **do not let it drive
+      this.**
+    - **⚠ DSR is explicitly OUT.** Source IP preservation comes from eBPF mode in
+      the default `Tunnel` mode; `bpfExternalServiceMode: DSR` only optimises the
+      return path and in exchange requires the fabric to let nodes emit packets
+      sourced from each other's IPs. New requirement, rounding-error payoff.
+    - **Staged, because the cost asymmetry is large and separable.** Stage 1
+      (`linuxDataplane: BPF` + `bpfKubeProxyIptablesCleanupEnabled: false`,
+      kube-proxy left running) reverts with one `kubectl patch`, touches no
+      Ignition, and buys the source IP. Stage 2 (`--disable-kube-proxy`) costs a
+      **re-provision** because the k3s config comes from Ignition, and buys only
+      efficiency. **Stopping permanently after stage 1 is a legitimate outcome.**
+      If stage 2 happens at all, fold it into the same rebuild as item 16.
+    - **Reversibility is the reason this is cheap** — and the structural
+      difference from an eBPF-only CNI. Calico's dataplane is a switch
+      (`linuxDataplane: Iptables` reverts it, documented and supported), policy
+      semantics / CRDs / IPAM / BIRD all unchanged. ⚠ The switch **is disruptive
+      to existing connections in both directions**, which is harmless today and
+      won't be later — an argument for running it *now*. What genuinely does not
+      revert: the debugging toolchain. `iptables-save` stops telling you anything
+      and it's `calico-node -bpf` instead.
+    - **Independent of the BGP work, in both directions.** eBPF replaces
+      kube-proxy, not routing — BIRD still carries BGP and the `frr.conf` in the
+      runbook is byte-identical either way. The stage-1 test runs against a
+      **NodePort**, so it needs no LB IP and no FRR session and could run today.
+      Neither task blocks the other.
+    - **Preconditions verified live on `snoop-a2o` 2026-08-02**, not assumed:
+      kernel `6.12.95-flatcar` (needs ≥5.10), `/sys/fs/cgroup` cgroup2 `rw`,
+      `/run` writable tmpfs, **bpffs and debugfs already mounted** (so
+      `mount-bpffs` has nothing to fail at).
+      **⚠ Do NOT copy Talos cgroup guidance here.** The widely-repeated advice to
+      override `CALICO_CGROUP_PATH` / `cgroupV2Path` on "immutable OSes" is
+      [#7892](https://github.com/projectcalico/calico/issues/7892), which is
+      Talos-specific — Talos's rootfs is read-only except `/var`, whereas Flatcar
+      makes only `/usr` read-only and `/run` is an ordinary systemd tmpfs.
+      Verified empirically above. Keep `cgroupV2Path` as a **diagnostic** (it's
+      available on the 3.32.1 pin), never as a pre-emptive setting.
+      *General lesson: Talos and Flatcar get lumped together as "immutable" and
+      their writable surfaces are nothing alike — same class of assumption as the
+      `raw`-module rule in §8.*
+    - **Two historical eBPF bugs are already fixed at our pin**, which is part of
+      why now is reasonable: the eBPF-vs-iptables tail-latency regression (eBPF
+      conntrack reclaimed faster than the kernel's `TIME_WAIT` → spurious RSTs,
+      hundred-ms p99s) fixed in **3.30**; and `bpfin.cali`/`bpfout.cali` stuck at
+      MTU 1500 under a jumbo underlay
+      ([#8868](https://github.com/projectcalico/calico/issues/8868), closed by
+      PR #8922) — which matters here specifically because of `mtu 8996` on eth1.
+    - **⚠ Two traps that make this fail confusingly rather than loudly:**
+      (a) the `kubernetes-services-endpoint` ConfigMap must carry the node's
+      **real IP, never `localhost`** — [#9141](https://github.com/projectcalico/calico/issues/9141)
+      is `kube-controllers` dying on `dial tcp [::1]:6443` while `calico-node` and
+      `typha` come up fine, i.e. a *partial* failure; (b) leaving
+      `bpfKubeProxyIptablesCleanupEnabled` at its default while kube-proxy still
+      runs makes Felix and kube-proxy overwrite each other's iptables rules on
+      repeat.
+    - **What one node cannot prove — say this whenever the result is cited.** The
+      VXLAN tunnel path only runs when the backend is on a *different* node, so
+      it's never exercised (and that's exactly where the tail-latency bug lived);
+      ECMP / `maximum-paths` / the node-to-node mesh need ≥2 nodes. And **mixed
+      eBPF and standard-dataplane nodes are unsupported**, so node 2's join is a
+      *cluster-wide* dataplane flip, not a per-node rollout — single-node testing
+      structurally hides that.
+    - **Repo integration** (nothing applied by hand once decided):
+      `linuxDataplane: BPF` goes in `gitops/infrastructure/calico/values.yaml`
+      next to the queued `bgp: Enabled` + no-encap change, so the Ansible prime
+      and the Flux `configMapGenerator` stay byte-identical. The endpoint
+      ConfigMap is **Ansible-primed** (needed before the dataplane works, so it
+      can't wait for Flux) and carries a node IP → it's topology, committed as
+      `${k3s_api_ip}` and resolved via `postBuild.substituteFrom`, never a
+      literal. `${k3s_api_ip}` is **derived, not a new vault var**:
+      `{{ dmz_network.subnet_base }}.{{ node_number }}` from `inventory/nodes.yml`.
 
 ---
 
