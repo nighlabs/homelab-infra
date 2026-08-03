@@ -30,7 +30,9 @@ disable-network-policy: true
 disable-kube-proxy: true
 
 # Bundled add-ons we replace from Git: traefik -> NGINX Gateway Fabric,
-# servicelb -> MetalLB, local-storage -> ceph-csi. Helm controller -> Flux.
+# servicelb -> Calico BGP (NOT MetalLB — Calico owns both LoadBalancer IP
+# advertisement and the pod dataplane; root CLAUDE.md guardrail, §7 item 13),
+# local-storage -> ceph-csi. Helm controller -> Flux.
 disable:
   - traefik
   - servicelb

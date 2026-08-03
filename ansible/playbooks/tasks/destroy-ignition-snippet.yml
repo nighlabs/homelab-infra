@@ -1,0 +1,82 @@
+---
+# Destroy one node's Ignition snippet, now that the node has booted and Ignition
+# has consumed it. Included per node by provision-nodes.yml, which does the SSH
+# up-check first — that check is the whole safety argument for this file.
+#
+# WHY: the `.ign` embeds the k3s cluster join token (k3s-config.yaml.j2 ->
+# `token:`), and anyone holding it can register a node. Ignition reads it EXACTLY
+# ONCE — the `ignition.firstboot` kernel flag is cleared on that boot — so from
+# then on it's a live credential with no remaining purpose, sitting on shared
+# snippet storage that every hypervisor in the cluster can reach. The token's
+# other two copies (the vault, and /etc/rancher/k3s/config.yaml on the node) are
+# both load-bearing; this one isn't, and it has the widest blast radius.
+# See ansible/CLAUDE.md §7 item 21.
+#
+# ⚠ EVERY VAR HERE IS `cleanup_*`-PREFIXED ON PURPOSE. The flatcar_vm role sets
+# `hostname`, `vmid` and `eth0_ip` as *facts* (preflight.yml), and facts outrank
+# task vars — so reusing those names here would silently resolve to the LAST
+# provisioned node's values, and the `delete: cicustom` below would land on the
+# wrong VM. The name-match assert exists to catch exactly that class of mistake.
+
+# `config: current` is the ACTIVE config (API `current=1`), deliberately not
+# `pending` — we want to know whether cicustom is attached right now.
+- name: "{{ cleanup_hostname }} — read the VM's current config"
+  community.proxmox.proxmox_vm_info:
+    node: "{{ proxmox_node }}"
+    type: qemu
+    vmid: "{{ cleanup_vmid | int }}"
+    config: current
+  register: cleanup_vm_info
+
+- name: "{{ cleanup_hostname }} — assert that config really belongs to this node"
+  ansible.builtin.assert:
+    that:
+      - cleanup_vm_info.proxmox_vms | length == 1
+      - (cleanup_vm_info.proxmox_vms | first).name == cleanup_hostname
+    fail_msg: >-
+      Expected exactly one VM with vmid {{ cleanup_vmid }} named
+      '{{ cleanup_hostname }}', got
+      {{ cleanup_vm_info.proxmox_vms | map(attribute='name') | list }}. Refusing
+      to detach cicustom — that would modify a VM this play doesn't own. Check
+      the vmid derivation (node_number, or an explicit `vmid:`) in
+      inventory/nodes.yml.
+    quiet: true
+
+# ⚠ ORDER IS LOAD-BEARING: cicustom comes off the VM config BEFORE the file is
+# deleted, and the failure for getting it backwards is delayed and nasty. PVE
+# regenerates the cloud-init drive on EVERY VM start, and
+# read_cloudinit_snippets_file ends in PVE::Tools::file_get_contents with no
+# error handling (verified in /usr/share/perl5/PVE/QemuServer/Cloudinit.pm) — so
+# a snippet deleted while cicustom still points at it doesn't fail here, it
+# fails at the node's NEXT REBOOT, with `qm start` dying.
+#
+# Safe to do while the VM is running (verified against PVE 9.2.3, both paths):
+#   - every key of $confdesc_cloudinit — cicustom included — is added to
+#     $fast_plug_option (QemuServer.pm), so vmconfig_hotplug_pending applies the
+#     pending delete IMMEDIATELY to the live config rather than deferring it;
+#   - and even if it were deferred, vm_start_nolock applies pending changes and
+#     reloads the config BEFORE calling apply_cloudinit_config, so the drive is
+#     never regenerated against a stale cicustom.
+#
+# Gated on the config read because the module hard-codes changed=True (it exits
+# immediately after proxmox.settings(...)), so an unconditional task can never
+# report anything but "changed". Note this gate rarely *fires* in the normal
+# flow — the role re-attaches cicustom a few tasks earlier, so there's almost
+# always something to detach. It's here for the paths where that isn't true:
+# this file included standalone, or a future run where the attach is conditional.
+# The wrong-VM assert above, not this gate, is the load-bearing safety check.
+- name: "{{ cleanup_hostname }} — detach cicustom (MUST precede the file delete)"
+  community.proxmox.proxmox_kvm:
+    node: "{{ proxmox_node }}"
+    vmid: "{{ cleanup_vmid | int }}"
+    delete: cicustom
+  when: (cleanup_vm_info.proxmox_vms | first).config.cicustom | default('') | length > 0
+
+# No sudo: provisioner owns this file (it uploaded it) and has write on the
+# setgid snippets dir via the pve-snippets group — the same grant the upload
+# relies on. Unlinking needs write on the DIRECTORY, which is exactly that.
+- name: "{{ cleanup_hostname }} — delete the Ignition snippet from the Proxmox host"
+  ansible.builtin.file:
+    path: "{{ proxmox_snippet_dir }}/{{ cleanup_hostname }}.ign"
+    state: absent
+  delegate_to: "{{ proxmox_ssh_host }}"

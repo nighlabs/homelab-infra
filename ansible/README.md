@@ -145,8 +145,9 @@ Notes:
   `403 Forbidden: Permission check failed (…, SDN.Use)`. It's in the role privs
   above; to add it to an already-created role:
   `pveum role modify Provisioning --privs "SDN.Use" --append`.
-- This token is only the **API** half. The snippet upload and
-  `qm set --cicustom` go over **SSH** — see below.
+- This token is only the **API** half. Attaching *and detaching* `cicustom` both
+  go through it (`proxmox_kvm`), but the snippet **upload and delete** are file
+  operations on the storage, so they go over **SSH** — see below.
 
 ## Proxmox SSH access — `provisioner` user (one-time, per PVE node)
 
@@ -288,6 +289,53 @@ bootstrap itself is the next milestone; see `CLAUDE.md` §6).
 cluster in `inventory/nodes.yml` and primes each cluster's Calico against that
 cluster's own kubeconfig. Only one cluster exists today, so the multi-cluster path
 is structurally in place but untested against real hardware.
+
+### The Ignition snippet is destroyed after first boot
+
+`provision-nodes.yml` doesn't stop at "VM is running". It waits for **SSH on port
+22** for every node it provisioned, and then, for each node that answered,
+removes `cicustom` from the VM config and deletes `<hostname>.ign` from the
+snippet storage.
+
+Port 22 is a genuine *Ignition-completed* signal rather than a proxy for one —
+the admin user and its `authorized_keys` come **from** Ignition, so sshd
+answering means the config was consumed. And once it has been, the snippet is
+dead weight of the worst kind: it embeds the **k3s join token**, Ignition reads
+it exactly once (`ignition.firstboot` is cleared on that boot), and it sits on
+storage every hypervisor in the cluster can reach. The token's other two copies —
+the vault, and `/etc/rancher/k3s/config.yaml` on the node — are both load-bearing;
+this one isn't.
+
+> **⚠ The order is load-bearing: `cicustom` comes off the VM config BEFORE the
+> file is deleted.** PVE regenerates the cloud-init drive on *every* VM start,
+> and `read_cloudinit_snippets_file` ends in `file_get_contents` with no error
+> handling — so a snippet deleted while `cicustom` still points at it doesn't
+> fail at provision time, it fails at the node's **next reboot**, with `qm start`
+> dying. `playbooks/tasks/destroy-ignition-snippet.yml` enforces the order and
+> documents why it's safe to do while the VM is running.
+
+> **⚠ Restore trap.** A VM backup taken *before* the cleanup restores a config
+> that still references a snippet which no longer exists — **the VM won't
+> start**. Recovery is just re-running `provision-nodes.yml` for that node (it
+> re-uploads the snippet and re-sets `cicustom`), but it's worth knowing during a
+> restore rather than deriving it at 2am. Alternatively, clear the stale
+> reference by hand: `qm set <vmid> --delete cicustom`.
+
+The `ide2` cloud-init drive **stays attached** — that's normal for any Proxmox
+cloud-init VM, the template ships it, and `cicustom` needs it to land on at the
+next rebuild. With `cicustom` gone PVE generates a *default* cloud-init config
+for it, which is inert on Flatcar (Ignition is firstboot-only) and carries
+nothing sensitive: no `ciuser`/`cipassword`/`sshkeys` are ever set on these VMs.
+
+| Var | Default | Effect |
+|---|---|---|
+| `destroy_ignition_snippet` | `true` | Run the post-boot cleanup. Set `false` to keep the snippets — this also skips the SSH up-check, so the play won't block on a node that never boots. The escape hatch while debugging a first boot. |
+| `node_boot_timeout` | `300` | Seconds to wait for a node's SSH before treating it as failed to boot. |
+
+If a node doesn't come up in time, the play **still cleans up every node that
+did**, then fails naming the ones it couldn't — their `.ign` is deliberately left
+in place (deleting it with `cicustom` still attached is the trap above). Fix the
+boot, re-run the play, and the cleanup finishes.
 
 ### Kubeconfig handling
 
