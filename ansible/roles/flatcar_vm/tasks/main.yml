@@ -76,23 +76,64 @@
   changed_when: false
 
 # --- 2. Deliver the Ignition to the Proxmox snippet storage ----------------
-# Assert the snippets dir is present before we write into it. It's created
-# root-owned in one-time host prep (see README "Proxmox SSH access"), with the
-# provisioner granted write via ACL — so DON'T set owner/mode here: as the
-# non-root provisioner a chmod would fail (it has write, not ownership). No
-# `mode` = pure existence check on an existing dir; only creates one if run as
-# a user that can (e.g. root), otherwise fails fast with a clear error.
-- name: "{{ hostname }} — assert snippet dir exists on the Proxmox host"
-  ansible.builtin.file:
+# Assert the snippets dir is present AND WRITABLE before we write into it. It's
+# created root-owned in one-time host prep (see README "Proxmox SSH access"),
+# with the provisioner granted write via the `pve-snippets` group + setgid — so
+# DON'T set owner/mode here: as the non-root provisioner a chmod would fail (it
+# has write, not ownership).
+#
+# ⚠ Existence alone is NOT a sufficient check, and that gap cost a debug session
+# (2026-08-02). Two compounding reasons:
+#   - PVE recreates content subdirectories `root:root 0755` on storage
+#     activation, so the dir can exist while having silently lost the group +
+#     setgid the upload depends on. One-time host prep is therefore NOT durable
+#     state; treat it as a precondition to verify on every run.
+#   - `copy` only checks the *directory* when the destination file does not yet
+#     exist (it checks the file otherwise), so a stale snippet masks it. It hid
+#     behind snoop-a2o's leftover .ign and would otherwise have first appeared
+#     on the very first worker node — every node writes a new <hostname>.ign.
+# The old `file: state=directory` check passed happily against `root:root 0755`
+# and let the run fail four tasks later with copy's "Destination ... not
+# writable", which names neither the group nor the README.
+- name: "{{ hostname }} — stat the snippet dir on the Proxmox host"
+  ansible.builtin.stat:
     path: "{{ proxmox_snippet_dir }}"
-    state: directory
+  register: snippet_dir
   delegate_to: "{{ proxmox_ssh_host }}"
 
+- name: "{{ hostname }} — assert the snippet dir exists and is writable"
+  ansible.builtin.assert:
+    that:
+      - snippet_dir.stat.exists | default(false)
+      - snippet_dir.stat.isdir | default(false)
+      - snippet_dir.stat.writeable | default(false)
+    quiet: true
+    fail_msg: >-
+      {{ proxmox_snippet_dir }} on the Proxmox host is not a directory writable
+      by '{{ vault_proxmox_ssh_user }}'
+      (exists={{ snippet_dir.stat.exists | default('n/a') }},
+      isdir={{ snippet_dir.stat.isdir | default('n/a') }},
+      writeable={{ snippet_dir.stat.writeable | default('n/a') }}).
+      Fix ON THE PVE HOST AS ROOT — the provisioner's sudo is scoped to `qm`, so
+      `sudo chgrp` will be refused:
+      `groupadd -f pve-snippets;
+      usermod -aG pve-snippets {{ vault_proxmox_ssh_user }};
+      chgrp pve-snippets {{ proxmox_snippet_dir }};
+      chmod 2770 {{ proxmox_snippet_dir }}`
+      — then verify `ls -ld` shows `drwxrws--- root pve-snippets`. Group changes
+      apply on the next login. See ansible/README.md "Proxmox SSH access" step 4.
+
+# mode 0660, NOT 0644: this .ign embeds the k3s cluster join token
+# (k3s-config.yaml.j2 -> `token:`), and anyone holding it can register a node.
+# Group `pve-snippets` is inherited from the setgid dir; PVE itself reads the
+# snippet as root, so nothing needs world-read. The dir's 2770 already blocks
+# traversal, but that's exactly the state PVE can silently reset (see above) —
+# so don't let the file's own mode be the thing that leaks it when it does.
 - name: "{{ hostname }} — upload Ignition snippet to Proxmox host"
   ansible.builtin.copy:
     src: "{{ build_dir.path }}/{{ hostname }}.ign"
     dest: "{{ proxmox_snippet_dir }}/{{ hostname }}.ign"
-    mode: "0644"
+    mode: "0660"
   delegate_to: "{{ proxmox_ssh_host }}"
 
 # --- 3. Clone the template + shape the VM ----------------------------------

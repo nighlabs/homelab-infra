@@ -196,6 +196,25 @@ This keeps the snippets dir `root:root` — provisioner gets write access, not
 ownership. (A provisioner-owned *subdirectory* won't work: cicustom can't point
 at `snippets/<subdir>/<file>`.)
 
+> **⚠ Step 4 is not durable state — re-check it if provisioning fails on the
+> upload.** PVE recreates content subdirectories as `root:root 0755` on storage
+> activation, which silently undoes the `chgrp`/`chmod` while leaving the group
+> membership from steps 2–3 intact (so `id` looks correct and the directory
+> still exists). Hit for real on 2026-08-02. `flatcar_vm` now asserts the
+> directory is *writable* rather than merely present, so this fails fast with
+> this fix in the message — but the repair is still manual and needs **root**,
+> since provisioner's sudo is scoped to `qm`:
+>
+> ```bash
+> chgrp pve-snippets /mnt/pve/cephfs/snippets
+> chmod 2770 /mnt/pve/cephfs/snippets
+> ls -ld /mnt/pve/cephfs/snippets     # want: drwxrws--- root pve-snippets
+> ```
+>
+> Note the failure only reproduces when the target `<hostname>.ign` doesn't
+> already exist — Ansible's `copy` checks the *directory* only in that branch —
+> so a leftover snippet hides it until the next new node.
+
 Then set `vault_proxmox_ssh_user: "provisioner"` in your vault (the default in
 `vault.example.yml`). The roles invoke `qm` via the `proxmox_qm` helper
 (`inventory/group_vars/all/vars.yml`), which resolves to `sudo qm` for a
