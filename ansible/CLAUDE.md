@@ -1156,6 +1156,19 @@ apply once k3s work starts.
       - The assert stays as the backstop for exactly those cases. The original
         `file: state=directory` check passed happily against `root:root 0755` —
         *existence was never the thing in doubt.*
+      - **✅ Repair path verified end-to-end 2026-08-03** (third occurrence, this
+        time self-healed): `stat` → **repair `changed`** on both sudo commands →
+        re-`stat` → assert `ok` → upload `changed`, with no human involved. The
+        resulting file is `-rw-rw---- provisioner pve-snippets`, which
+        simultaneously confirms the `0660` join-token fix and that the setgid
+        group inheritance works in practice.
+      - **The reset is cheaper to trigger than "a template rebuild" implies.**
+        This occurrence followed merely deleting the snippet. The storage root's
+        mtime changed a few minutes *before* the repair while `snippets/` changed
+        at repair time — and a parent's mtime only moves when an entry in it is
+        created or removed, so the content subdirectories were genuinely
+        recreated. Assume **any** storage-touching operation can do it; that's
+        the case for self-repair over a documented manual fix.
     - **Second fix, same class — security-relevant.** The upload was
       `mode: "0644"`, and that `.ign` **embeds the k3s cluster join token**
       (`k3s-config.yaml.j2` → `token:`), which per the root `CLAUDE.md` lets
