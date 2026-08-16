@@ -15,6 +15,12 @@ inventory/group_vars/**/vault.yml
 # NEVER commit. Regenerated on demand from the running node's /etc/rancher/k3s.
 .kube/
 
+# Rendered pfSense/FRR config (playbooks/render-frr-config.yml). frr.conf
+# embeds vault_frr_master_password, so it's a credential-bearing artifact —
+# NEVER commit. Regenerate on demand from inventory/nodes.yml + the vault; the
+# committed inputs are the template and the node map, not this output.
+.frr/
+
 # In-repo Ansible collections path (collections_path in ansible.cfg). Restored
 # from requirements.yml via `uv run ansible-galaxy collection install`, like the
 # uv venv is from uv.lock — the pinned input is requirements.yml, not this tree.

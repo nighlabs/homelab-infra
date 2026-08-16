@@ -316,9 +316,18 @@ State this plainly whenever the trial's result is cited:
 
 **Independence from the BGP work.** eBPF replaces kube-proxy, not routing —
 BIRD still carries BGP, LoadBalancer IPs still advertise identically. The
-`frr.conf` in `pfsense-frr-bgp-setup.md` (listen range, peer group,
-`K3S-IN`/`K3S-OUT`, `maximum-paths 8`) is byte-identical either way. Neither
-task blocks the other, in either order.
+`frr.conf` in `pfsense-frr-bgp-setup.md` (peer group, `<CLUSTER>-IN`/`-OUT`,
+`maximum-paths 8`) is byte-identical either way. Neither task blocks the other,
+in either order.
+
+> **⚠ One consequence for the BGP side, added 2026-08-16.** eBPF preserving the
+> source IP under `externalTrafficPolicy: Cluster` is what makes `Cluster` the
+> default choice — and `Cluster` advertises the **whole LB block**, where `Local`
+> advertises a **/32 per Service**. The pfSense prefix list therefore needs
+> `le 32` to accept both; without it a `Local` Service establishes a healthy
+> session and silently blackholes. See `pfsense-frr-bgp-setup.md` §4. This
+> supersedes that runbook's old "use `Local` on the ingress Gateway" advice,
+> whose sole justification was source-IP preservation.
 
 ---
 

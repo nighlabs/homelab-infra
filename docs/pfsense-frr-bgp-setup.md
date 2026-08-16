@@ -6,10 +6,19 @@ the Calico side lives in `gitops/CLAUDE.md` ("Calico BGP — CRs, not Helm
 values").
 
 > **✅ DECIDED 2026-08-02 — the FRR configuration is managed as raw config, not
-> through the GUI.** Two capabilities we want (`bgp listen range` and
-> `maximum-paths`) exist *only* there. The GUI's routing config is ignored
+> through the GUI.** `maximum-paths` exists *only* there, and it's the only thing
+> providing node-level load distribution. The GUI's routing config is ignored
 > wholesale once raw config is saved, so this is an all-or-nothing choice and
 > we're taking it deliberately. Rationale and consequences: §4.
+>
+> **✅ REVISED 2026-08-16 — explicit `neighbor` statements, not `bgp listen
+> range`.** Dynamic neighbors were the original second reason for raw config;
+> they're incompatible with giving two clusters distinct ASNs on a shared DMZ
+> subnet, which is what `inventory/nodes.yml` assumes. Full reasoning: §4.
+>
+> **✅ The config is generated** by
+> `ansible/playbooks/render-frr-config.yml` from `inventory/nodes.yml` + the
+> vault — don't hand-write or GUI-edit it. See §9.
 
 > **⚠ This runs on live production gear.** The same pfSense box routes
 > everything else in the house. Every step below is additive and parked —
@@ -23,59 +32,105 @@ Do not paste real values back into this file.
 
 ---
 
-## 1. Values to decide first
+## 1. Values — ✅ DECIDED 2026-08-16
 
-These are the open blockers from `ansible/CLAUDE.md` §7 item 6. Decide them all
-before touching pfSense — they're inputs to both sides of the peering, and a
-mismatch just yields a session that never establishes.
+These were the open blockers from `ansible/CLAUDE.md` §7 item 6. All are now
+settled, and **most are derived rather than chosen** — a cluster declares one
+number and everything else falls out of it.
 
-| Value | Vault variable | Constraint |
+### Per-cluster values derive from `index`
+
+Each cluster in `ansible/inventory/nodes.yml` carries an `index:`; its ASN and
+its LoadBalancer range both derive from that one number, the same way every
+host-shaped fact derives from `node_number`:
+
+| Value | Derivation | `homelab` (index 1) |
 |---|---|---|
-| Cluster ASN | `vault_calico_asn` | Private range **64512–65534** |
-| pfSense ASN | `vault_bgp_peer_asn` | Private range, **different** from the cluster ASN |
-| pfSense peer IP | `vault_bgp_peer_ip` | pfSense's **DMZ interface** address |
-| LoadBalancer range | `vault_lb_range` | A `/24` inside the DMZ subnet, **outside** the DHCP pool and any static assignments |
-| DMZ subnet (CIDR) | derived from `vault_dmz_subnet_base` | The listen range (§4); already vaulted |
+| Cluster ASN | `bgp_asn_base + index` | `64601` |
+| LoadBalancer range | `${lb_range_base}.<index>.0/24` | index `1` of that supernet |
+
+Adding a cluster means adding an `index:` — not editing four variables and
+hoping they stay consistent.
+
+### Fixed values
+
+| Value | Where | Note |
+|---|---|---|
+| pfSense ASN | `bgp_peer_asn: 64512` (cleartext) | **One** AS for the whole router, shared by every cluster's peering — it's one device, one AS |
+| ASN base | `bgp_asn_base: 64600` (cleartext) | Leaves 64512–64599 free; keeps cluster ASNs visually distinct from pfSense's |
+| pfSense peer IP | `bgp_peer_ip: {{ dmz_network.gateway }}` | **Not a new variable** — see below |
+| LB supernet base | `vault_lb_range_base` | Environment-revealing, so vaulted |
 | FRR master password | `vault_frr_master_password` | A **credential** — BWS-managed, never in a committed manifest |
 
-Two distinct ASNs makes this **eBGP**, which is what we want: it's the mode with
-AS_PATH loop prevention, and the mode FRR's policy requirement applies to (§4).
-iBGP would need a route reflector or full mesh to distribute anything, which is
-pointless for a two-party peering.
+ASNs stay in cleartext deliberately: a number from the RFC 6996 private range
+reveals nothing about the environment. Addresses stay vaulted.
 
-The LB range must not overlap anything pfSense already hands out. Calico owns
-these addresses via BGP advertisement; if DHCP also leases one you get an
-intermittent duplicate-address failure that looks like a BGP problem and isn't.
+**The peer IP is the DMZ gateway.** pfSense's BGP address *is* its DMZ interface
+address, which *is* the nodes' default gateway — one value, already vaulted, so
+there is no second variable to drift. ⚠ That equivalence breaks under **CARP**:
+the gateway would be a VIP while BGP must peer with the physical interface
+address. There is no CARP on that interface today (confirmed 2026-08-16); if
+that changes, `bgp_peer_ip` becomes its own vault var.
 
-### Where the two ASNs actually get set
+### ⚠ The LB range must be routed-only
 
-**Every k3s node shares one ASN.** There is no per-node AS assignment anywhere —
-the two numbers are each stated twice, once per side, and that's the complete
-list:
+The LB range is **not** a subnet of the DMZ, and must be assigned to **no
+interface anywhere** — not a pfSense interface, not a VLAN, not a DHCP pool. It
+exists only as a BGP-learned route.
+
+This was wrong in an earlier revision of this document, which called for "a /24
+inside the DMZ subnet." That fails two ways, and neither is obvious:
+
+- pfSense has a **connected** route for the DMZ. A BGP route of equal length
+  loses to it on administrative distance, so pfSense forwards onto the DMZ
+  segment instead of to a node.
+- On-subnet clients skip routing entirely and **ARP** for the LB address.
+  Nothing answers — Calico does no L2 for LoadBalancer IPs. That's MetalLB's
+  L2 mode, which we don't run.
+
+Using a range that exists nowhere else also makes the old "outside the DHCP
+pool" constraint moot: there is no DHCP there to collide with.
+
+`playbooks/render-frr-config.yml` asserts the derived ranges don't overlap the
+DMZ subnet, the Ceph public network, or the pod/service CIDRs — but it cannot
+see your pfSense interface list, so **that** part is on you.
+
+### Two ASNs, and where they actually get set
+
+Two distinct ASNs makes each session **eBGP**, which is what we want: it's the
+mode with AS_PATH loop prevention, and the mode FRR's policy requirement applies
+to (§4). iBGP would need a route reflector or full mesh to distribute anything,
+which is pointless for a two-party peering.
+
+**Every k3s node in a cluster shares that cluster's one ASN.** There is no
+per-node AS assignment anywhere — the numbers are each stated twice, once per
+side, and that's the complete list:
 
 | # | Where | Setting |
 |---|---|---|
-| 1 | pfSense | `router bgp ${bgp_peer_asn}` |
-| 2 | pfSense | `neighbor k3s remote-as ${calico_asn}` (on the peer group) |
-| 3 | Calico | `BGPConfiguration.spec.asNumber` = `${calico_asn}` |
-| 4 | Calico | `BGPPeer.spec.asNumber` = `${bgp_peer_asn}` |
+| 1 | pfSense | `router bgp 64512` |
+| 2 | pfSense | `neighbor <cluster> remote-as <cluster ASN>` (on the peer group) |
+| 3 | Calico | `BGPConfiguration.spec.asNumber` = the cluster ASN |
+| 4 | Calico | `BGPPeer.spec.asNumber` = `64512` |
 
-Nodes never appear individually. On pfSense the listen range admits them into
-the peer group, which carries the remote AS. On the Calico side
+On pfSense, nodes appear as explicit `neighbor` lines but inherit the remote AS
+and the filters from their cluster's peer group (§4). On the Calico side
 `BGPConfiguration.spec.asNumber` is the cluster-wide default every node
 inherits, and `BGPPeer` is global (no `nodeSelector`), so it needs no per-node
 entry either.
 
 This makes the in-cluster mesh **iBGP** (all nodes one AS, full mesh — exactly
-what `nodeToNodeMeshEnabled` provides) and the pfSense session **eBGP**.
+what `nodeToNodeMeshEnabled` provides) and each pfSense session **eBGP**.
 
 ⚠ **Do not use the per-node ASN override** (`Node.spec.bgp.asNumber`). It exists
-for AS-per-rack topologies; here it would turn the mesh into eBGP and require
-per-node config on both sides for no benefit.
+for AS-per-rack topologies; here it would turn the mesh into eBGP *and* force
+`bgp bestpath as-path multipath-relax` on the pfSense side before ECMP would
+work at all (§4).
 
-⚠ **Calico's default `asNumber` is `64512`.** Set it explicitly even if you pick
-that value. If pfSense also lands on 64512 the session becomes iBGP and behaves
-differently — the two **must** differ.
+⚠ **Calico's default `asNumber` is `64512`** — the same number we gave pfSense.
+Set the cluster's ASN explicitly. If a cluster ever landed on 64512 the session
+would be iBGP and behave differently; the render playbook asserts against this
+specific collision because it's a live trap, not a theoretical one.
 
 ---
 
@@ -119,8 +174,8 @@ a correct config that does nothing.
 **Services > FRR BGP**, *BGP* tab:
 
 - **Enable** — check. This starts `bgpd`.
-- **Local AS** — `${vault_bgp_peer_asn}`
-- **Router ID** — `${vault_bgp_peer_ip}`
+- **Local AS** — `64512` (`bgp_peer_asn`)
+- **Router ID** — the DMZ interface address (`bgp_peer_ip`, §1)
 
 Leave OSPF and OSPF6 disabled — we only want BGP.
 
@@ -137,37 +192,63 @@ Leave OSPF and OSPF6 disabled — we only want BGP.
 
 ### Why raw, and what it costs
 
-The GUI cannot express two things we want:
-
 | | GUI | Raw config |
 |---|---|---|
-| `bgp listen range` (dynamic neighbors) | ✗ | ✓ — node adds need **zero** pfSense changes |
 | `maximum-paths` (ECMP) | ✗ | ✓ |
-| Per-node neighbor rows | required | none |
-| Config reviewable in Git | ✗ | ✓ — as a template (§9) |
+| Config generated from the node map | ✗ | ✓ — §9 |
+| Config reviewable in Git | ✗ | ✓ |
 | GUI routing config still applied | ✓ | **✗** |
 
-`bgp listen range` is a longstanding gap (the equivalent OPNsense requests
-[#4015](https://github.com/opnsense/plugins/issues/4015) /
-[#4713](https://github.com/opnsense/plugins/issues/4713) are still open);
-`maximum-paths` is [Feature #16278](https://redmine.pfsense.org/issues/16278),
-open and unassigned. `vtysh` is not an alternative for either — per that report,
-*"Manual CLI changes via vtysh work until the next GUI 'Apply,' which overwrites
-them."*
+**`maximum-paths` alone justifies this.** It is
+[Feature #16278](https://redmine.pfsense.org/issues/16278), open and unassigned,
+and it's the only thing providing node-level load distribution — without it one
+node wins best-path and takes 100% of ingress. `vtysh` is not an alternative:
+per that report, *"Manual CLI changes via vtysh work until the next GUI 'Apply,'
+which overwrites them."*
 
-**The cost is total and confirmed:** *"If you are using Raw-Config to add
-commands, the GUI will not be able to control the configuration. You need to
-delete Raw-Config and add the configuration via GUI only."* There is no warning
-banner on the pages that quietly stop working.
+> **Changed 2026-08-16 — we no longer use `bgp listen range`.** Dynamic
+> neighbors were originally the headline reason for raw config: any node in the
+> DMZ subnet would be admitted automatically, so adding a node needed zero
+> pfSense changes. We now use **explicit `neighbor` statements** instead. Why,
+> in order of weight:
+>
+> 1. **All clusters share the DMZ subnet** (`inventory/nodes.yml` — node_number
+>    uniqueness is global precisely because of this). A listen range maps one
+>    address prefix to one peer group, and a peer group carries exactly one
+>    `remote-as` *and* one set of prefix lists. So every cluster on that subnet
+>    would be forced onto **one ASN and one permitted LB range**, with each
+>    cluster free to advertise the other's. Splitting them would mean carving
+>    the /24 into per-cluster bands and constraining how node_numbers are
+>    allocated forever after.
+> 2. **The neighbor list and the §6 firewall alias become the same list**, both
+>    rendered from `inventory/nodes.yml`, so they cannot drift.
+> 3. Explicit neighbors are the tightest admission control available.
+>
+> The cost is one pfSense paste per **added** node — not per rebuild, since node
+> IPs derive deterministically from `node_number`. With §6 of `ansible/CLAUDE.md`
+> planning three workers and then stability, that's a small, bounded number.
+>
+> `remote-as external` / `auto` would technically admit multiple ASNs through
+> one listen range, but the peer group still carries one prefix list — so you'd
+> get the multiple ASNs *without* the isolation that was the reason to want
+> them, and lose the AS check that makes a misconfigured cluster fail loudly.
 
-That's an acceptable trade here because the config is ~25 lines. Owning it
-outright is a smaller commitment than "hand-managed firewall" implies, and a
-committed template is *more* reviewable and reproducible than GUI forms, which
-are unversioned by definition.
+**The cost of raw config is total and confirmed:** *"If you are using Raw-Config
+to add commands, the GUI will not be able to control the configuration. You need
+to delete Raw-Config and add the configuration via GUI only."* There is no
+warning banner on the pages that quietly stop working.
+
+That's an acceptable trade because we don't hand-maintain the result — it's
+generated (§9). A generated, asserted, version-controlled config is strictly
+more reviewable and reproducible than GUI forms, which are unversioned by
+definition.
 
 ### The config
 
-Placeholders match the vault variables in §1.
+⚠ **Do not hand-write this.** It is generated from `inventory/nodes.yml` + the
+vault — see §9 for the command. Below is the shape it produces, with addresses
+blinded; the real render carries one `neighbor` pair per node and one peer group
+per cluster.
 
 ```
 frr defaults traditional
@@ -175,32 +256,36 @@ service integrated-vtysh-config
 log syslog informational
 password ${frr_master_password}
 !
-router bgp ${bgp_peer_asn}
+router bgp 64512
  bgp router-id ${bgp_peer_ip}
  bgp log-neighbor-changes
  timers bgp 3 9
  !
- ! Dynamic neighbors: any k3s node in the DMZ joins automatically.
- neighbor k3s peer-group
- neighbor k3s remote-as ${calico_asn}
- bgp listen range ${dmz_subnet_cidr} peer-group k3s
+ ! --- cluster: homelab (index 1, AS 64601, LB ${lb_range}) ---
+ neighbor homelab peer-group
+ neighbor homelab remote-as 64601
+ neighbor ${node_ip} peer-group homelab
+ neighbor ${node_ip} description snoop-a2o
  !
  address-family ipv4 unicast
-  neighbor k3s activate
+  neighbor homelab activate
   ! RFC 8212 is satisfied by HAVING policy — see below.
-  neighbor k3s prefix-list K3S-IN in
-  neighbor k3s prefix-list K3S-OUT out
+  neighbor homelab prefix-list HOMELAB-IN in
+  neighbor homelab prefix-list HOMELAB-OUT out
   maximum-paths 8
  exit-address-family
 !
-! Inbound: accept ONLY the LoadBalancer range.
-ip prefix-list K3S-IN seq 10 permit ${lb_range}
-ip prefix-list K3S-IN seq 20 deny any
+! Inbound: accept ONLY this cluster's LoadBalancer range.
+ip prefix-list HOMELAB-IN seq 10 permit ${lb_range} le 32
+ip prefix-list HOMELAB-IN seq 20 deny any
 !
 ! Outbound: advertise nothing to the cluster.
-ip prefix-list K3S-OUT seq 10 deny any
+ip prefix-list HOMELAB-OUT seq 10 deny any
 !
 ```
+
+A second cluster appends its own peer group, `neighbor` lines, and `-IN`/`-OUT`
+prefix lists, with its own ASN and LB range. Nothing about the first changes.
 
 ### Line-by-line rationale
 
@@ -210,10 +295,14 @@ minimum of the two peers' values**, so setting it here governs the session
 regardless of Calico's default — no cluster-side change needed. See §10 for why
 BFD isn't the answer.
 
-**`bgp listen range … peer-group k3s`** — the whole reason for raw config. Any
-node in the DMZ subnet that initiates a session is admitted and inherits the
-peer group's remote-AS and filters. Adding a k3s node requires **no pfSense
-change at all**.
+**One peer group per cluster.** The peer group is what carries `remote-as` *and*
+the prefix lists, so it — not the neighbor lines — is what actually separates one
+cluster from another on a shared subnet. Nodes join it by explicit `neighbor
+<ip> peer-group <cluster>` and inherit both.
+
+**`neighbor <ip> description <hostname>`** — costs nothing and makes
+`show bgp neighbors` readable, so a session problem names a host instead of an
+address you have to go look up.
 
 **No `no bgp ebgp-requires-policy`.** FRR 7.4+ implements RFC 8212: an eBGP
 session with no policy discards all routes in both directions while still
@@ -223,25 +312,42 @@ once it exists, disabling the requirement only discards a safety net. **Both
 directions must be populated**; an inbound filter alone still gets outbound
 routes discarded.
 
-**`K3S-IN`** is the real security boundary. It guarantees pfSense never installs
-a route to the pod CIDR (`10.42.0.0/16`) even if the Calico-side `BGPFilter` is
-wrong or missing. The `BGPFilter` is enforced by the very device we'd be
-guarding against misconfiguring, so it isn't trusted alone — these are two
-independent controls.
+**`<CLUSTER>-IN`** is the real security boundary. It guarantees pfSense never
+installs a route to the pod CIDR (`10.42.0.0/16`) even if the Calico-side
+`BGPFilter` is wrong or missing. The `BGPFilter` is enforced by the very device
+we'd be guarding against misconfiguring, so it isn't trusted alone — these are
+two independent controls.
 
-**`K3S-OUT` denies everything.** The k3s nodes get their default route
+**⚠ `le 32` is load-bearing, and its absence fails silently.** Without it FRR
+matches the prefix length *exactly*: *"In the case of no le or ge command, the
+prefix length must match exactly the length specified in the prefix list."*
+Calico's advertisement granularity is not fixed — it follows the Service's
+`externalTrafficPolicy`:
+
+| Policy | What Calico advertises | Matched by bare `permit …/24`? |
+|---|---|---|
+| `Cluster` | the **whole block**, from every node | ✓ |
+| `Local` | a **/32 per Service**, from nodes holding a backend | ✗ — **dropped** |
+
+So a bare `permit ${lb_range}` works right up until the first `Local` Service,
+which then establishes a perfectly healthy-looking session and blackholes. `le
+32` covers both modes and costs nothing, so there's no reason to pick one and
+bet on it.
+
+**`<CLUSTER>-OUT` denies everything.** The k3s nodes get their default route
 statically from Ignition (repo rule: no DHCP in cluster networking), so they
 need to learn nothing from pfSense. This also means the LAN table can never leak
 into the cluster.
 
 **`maximum-paths 8`** — ECMP across nodes advertising the same LB prefix. Inert
-at one node. See §10 for what it does and doesn't buy.
+at one node, and the sole reason raw config is required at all. See §10 for what
+it does and doesn't buy.
 
 **No `bgp bestpath as-path multipath-relax`** — deliberately. ECMP across eBGP
 peers normally needs it, because without it the *entire* AS_PATH must match, not
-just its length. Since every node shares one ASN (§1), the AS_PATH from all of
-them is byte-identical. Another reason to avoid per-node ASNs: they'd require
-this too.
+just its length. Since every node in a cluster shares one ASN (§1), the AS_PATH
+from all of them is byte-identical. Another reason to avoid per-node ASNs:
+they'd require this too.
 
 ### ⚠ Verify the password line
 
@@ -254,7 +360,11 @@ daemons are healthy (§7), you're fine.
 
 ## 5. Apply it
 
-1. Paste the rendered config into **Saved frr.conf** and save.
+0. Render it (§9):
+   `ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass`
+1. Paste **the whole of** `ansible/.frr/frr.conf` into **Saved frr.conf** and
+   save. Always paste the entire file — it's generated, so a partial edit is
+   silently reverted on the next render.
 2. Restart FRR (**Status > Services**, or toggle Global Settings Enable).
 3. Confirm it actually loaded — the GUI accepting the paste is not proof:
 
@@ -278,13 +388,19 @@ listening services are not exempt from interface rules:
 |---|---|
 | **Action** | Pass |
 | **Protocol** | TCP |
-| **Source** | the k3s node addresses (an alias is tidiest) |
+| **Source** | an alias holding the k3s node addresses |
 | **Destination** | This Firewall (self) |
 | **Destination Port** | 179 (BGP) |
 
-Source-restrict it. This matters more with a listen range than it would with
-explicit neighbors: FRR will accept a session from *anything* in the range, so
-the firewall rule is doing real work in bounding who can try.
+**The alias members are generated** — `ansible/.frr/bgp-nodes.txt`, written by
+the same play that renders `frr.conf`, from the same node map. That's deliberate:
+the BGP neighbor list and the firewall alias are the same list of addresses, and
+deriving both from `inventory/nodes.yml` is what stops them drifting apart. When
+you add a node, both files change in one render.
+
+Source-restrict it regardless. It's the outermost of the three controls bounding
+who can peer — the others being the explicit `neighbor` lines (§4) and the peer
+group's `remote-as` check.
 
 Separately, once LB routes are being learned, traffic *to* the LB range from
 other segments needs its own pass rules. Learning a route and being permitted to
@@ -295,12 +411,19 @@ looks exactly like a broken BGP session from a client.
 
 ## 7. Verification
 
-⚠ **With a listen range, a parked config shows _no neighbors at all_.** Dynamic
-neighbors don't exist until a node connects — unlike explicit neighbors, which
-would sit visibly in `Active`/`Connect`. An empty `show bgp summary` before the
-cluster exists is **success**, not a fault. Don't go hunting.
+**With explicit neighbors, a parked config lists every node up front**, sitting
+in `Active` or `Connect` and retrying. That is **expected and harmless** before
+the cluster exists — pfSense dials out to nodes that aren't up yet, and logs it.
+It's also useful: you can confirm the intended peer list is right before there's
+anything to peer with.
 
-Pre-cluster, verify only that the daemon is up and the config loaded:
+> Earlier revisions used `bgp listen range`, where the opposite held — a parked
+> config showed *no* neighbors at all, and an empty `show bgp summary` was
+> success. If you're reading an old note that says that, it no longer applies
+> (§4).
+
+Pre-cluster, verify the daemon is up, the config loaded, and the neighbor list
+matches the node map:
 
 ```sh
 # bgpd actually running (§3 — the silent-failure check)
@@ -312,14 +435,14 @@ vtysh -c 'show running-config'
 # Listening at all
 sockstat -4 -l | grep 179
 
-# The listen range is registered
-vtysh -c 'show bgp listeners'
+# Every node from inventory/nodes.yml present, Active/Connect (not Established)
+vtysh -c 'show bgp summary'
 ```
 
 Post-cluster:
 
 ```sh
-# Dynamic neighbors appear here once nodes connect
+# Every node now Established
 vtysh -c 'show bgp summary'
 
 # What we LEARNED — must contain the LB range and nothing else
@@ -343,11 +466,17 @@ confirming what's actually loaded.
 
 1. `bgpd` is running and `show running-config` matches the pasted config.
 2. TCP/179 listening; firewall rule passes from node addresses only.
-3. Pre-cluster: `show bgp summary` empty (expected).
-4. Post-cluster: every k3s node appears as a dynamic neighbor, `Established`.
+3. Pre-cluster: `show bgp summary` lists every node from `inventory/nodes.yml`
+   in `Active`/`Connect` (expected — nothing is up yet).
+4. Post-cluster: every k3s node is `Established`, in its own cluster's peer
+   group.
 5. `show ip bgp` contains the LB range — **and no pod CIDR**. If `10.42.0.0/16`
-   appears, *both* the Calico `BGPFilter` and `K3S-IN` failed; stop and fix.
+   appears, *both* the Calico `BGPFilter` and `<CLUSTER>-IN` failed; stop and
+   fix.
 6. `advertised-routes` is empty for every neighbor.
+7. **Reach an actual LoadBalancer IP from another segment.** RFC 8212 refusal
+   and a missing `le 32` both present as a healthy `Established` session with
+   nothing flowing, so the session state is not the test — the reachability is.
 
 ### 🔁 Re-verify after every FRR package update
 
@@ -361,11 +490,13 @@ pfSense upgrade rather than assuming it survived.
 
 Why this is safe to stage ahead of the cluster:
 
-- **Nothing is redistributed.** `K3S-OUT` denies everything and no `network`
-  statements exist, so pfSense advertises no routes and no existing routing
-  decision changes.
-- **No session, no routes.** Until a Calico node connects, the config is inert.
-- **Learned routes are filtered to one `/24`** that is otherwise unused.
+- **Nothing is redistributed.** Every `<CLUSTER>-OUT` denies everything and no
+  `network` statements exist, so pfSense advertises no routes and no existing
+  routing decision changes.
+- **No session, no routes.** Until a Calico node connects, the config is inert —
+  the `neighbor` lines just retry into nothing.
+- **Learned routes are filtered to one `/24` per cluster**, each of which is
+  otherwise unused and attached to no interface (§1).
 
 The one genuinely global change is **Enable FRR** (§3), which starts the
 daemons. On a box that has never run FRR that's a new listening service, not a
@@ -387,35 +518,75 @@ restore is a known-good path rather than undo-by-memory.
 
 ## 9. Repo integration
 
-### The config is a template, not a paste
+### The config is generated, not hand-written
 
-Commit `frr.conf.j2` with `{{ }}` placeholders; Ansible renders it from the
-vault. This is the same Jinja2-from-vault pattern the repo already uses for
-Ignition, and it's why raw config is *better* for us than the GUI rather than
-merely more capable — the GUI's state is unversioned by construction.
+```sh
+cd ansible
+ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass
+```
 
-The template is committed; the rendered file never is. Paste into the GUI is
-manual (pfSense CE ships no API by default), but with a listen range this is a
-rare event rather than a per-node one.
+Writes two git-ignored files to `ansible/.frr/`:
 
-**Put a banner at the top of the rendered config** noting the GUI is inert and
-edits belong in the template. That's the failure mode most likely to bite a
-future reader — including us.
+| File | Goes where |
+|---|---|
+| `frr.conf` | §5 — Services > FRR Global Settings > Raw Config |
+| `bgp-nodes.txt` | §6 — members of the firewall alias |
+
+Both are rendered from `inventory/nodes.yml` + the vault, so the BGP neighbor
+list and the firewall alias cannot disagree. Same Jinja2-from-vault pattern the
+repo already uses for Ignition.
+
+The play reads inventory and writes two local files — it does **not** touch
+pfSense or any node. Delivery is a manual paste, because pfSense CE ships no API.
+
+**Committed:** `playbooks/templates/frr.conf.j2`, `playbooks/render-frr-config.yml`.
+**Never committed:** anything under `ansible/.frr/` — `frr.conf` embeds the FRR
+master password, so it's written `0600` into a `0700` directory and ignored in
+`ansible/.gitignore`. To share or diff a render safely:
+
+```sh
+ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass \
+  -e frr_redact_password=true
+```
+
+The rendered file opens with a banner stating the GUI is inert and edits belong
+in the template. That's the failure mode most likely to bite a future reader —
+including us.
+
+**What the play asserts before rendering** (it fails rather than emitting a
+config that would break something):
+
+- every cluster declares an `index`, unique, in 1..254
+- cluster ASNs are in 64512–65534, unique, and **different from pfSense's** —
+  the Calico-default-`64512` trap in §1
+- no derived LB range overlaps the DMZ subnet, the Ceph public network, or the
+  pod/service CIDRs
+
+It cannot see your pfSense interface list, so the "assigned to no interface"
+half of §1 stays a manual check.
+
+⚠ The play derives each neighbor address as
+`{{ dmz_network.subnet_base }}.{{ node_number }}` — the **same** derivation as
+`roles/flatcar_vm/tasks/preflight.yml`'s `eth0_ip`, duplicated in the one other
+place that needs it. If that derivation ever changes, change it in both, or
+pfSense will peer with addresses no node holds.
 
 ### Vault additions
 
 ```yaml
-vault_calico_asn: <cluster ASN>
-vault_bgp_peer_asn: <pfSense ASN>
-vault_bgp_peer_ip: "<pfSense DMZ address>"
-vault_lb_range: "<LB /24>"
+vault_lb_range_base: "<first two octets of the LB supernet>"
 vault_frr_master_password: "<FRR master password>"
 ```
 
-These flow to the cluster as the `cluster-topology` Secret, consumed via Flux
-`postBuild.substituteFrom` — so committed manifests keep `${bgp_peer_ip}` /
-`${bgp_peer_asn}` placeholders and nothing environment-revealing lands in Git.
-See `gitops/CLAUDE.md` ("Topology blinding").
+Only these two are new. The pfSense peer IP is `dmz_network.gateway` (already
+vaulted) and both ASNs are cleartext constants in `group_vars/all/vars.yml` —
+see §1.
+
+The address-shaped values flow to the cluster as the `cluster-topology` Secret,
+consumed via Flux `postBuild.substituteFrom` — so committed manifests keep
+`${bgp_peer_ip}` / `${lb_range}` placeholders and nothing environment-revealing
+lands in Git. See `gitops/CLAUDE.md` ("Topology blinding"). The ASNs need no
+blinding and can appear literally.
 
 `vault_frr_master_password` is a **credential**, not topology — BWS-managed, and
 it never reaches a committed manifest.
@@ -452,14 +623,25 @@ after landing:
 | **`Local` + no ECMP** | ✗ one node takes all | ⚠ **only replicas on that node** | preserved |
 | **`Local` + ECMP** | ✓ per-flow across advertising nodes | ✓ all replicas, weighted per *node* not per pod | preserved |
 
-> **⚠ This whole matrix assumes the standard (iptables/kube-proxy) dataplane.**
-> Calico's **eBPF dataplane preserves the source IP under `Cluster`**, which
-> collapses all four rows into one — `Cluster` + ECMP with the client IP intact,
-> and no `Local`-vs-`Cluster` trade at all. That's under trial, staged and
-> reversible: `docs/calico-ebpf-single-node-trial.md`, decision in
-> `ansible/CLAUDE.md` §7 item 17. **Nothing in this runbook changes either way** —
-> eBPF replaces kube-proxy, not routing, so the `frr.conf` in §4 is identical.
-> Re-read this section once that trial has a result.
+> **⚠ RESOLVED 2026-08-03 — this matrix is historical.** It assumes the standard
+> iptables/kube-proxy dataplane, which we no longer run. The cluster is on
+> **Calico's eBPF dataplane with kube-proxy disabled entirely**, verified on a
+> from-scratch rebuild (`ansible/CLAUDE.md` §7 item 17), and eBPF **preserves the
+> source IP under `Cluster`**. That collapses all four rows into one:
+>
+> | | Node-level | Pod-level | Source IP |
+> |---|---|---|---|
+> | **`Cluster` + ECMP (what we run)** | ✓ per-flow across nodes | ✓ all replicas | **preserved** |
+>
+> There is no `Local`-vs-`Cluster` trade to make. The rows below are kept because
+> they explain *why* the trade used to exist, and they'd apply again if the eBPF
+> dataplane were ever reverted.
+>
+> **Nothing in this runbook changed** — eBPF replaces kube-proxy, not routing, so
+> the `frr.conf` in §4 is identical either way. The one place it does matter is
+> `le 32` in the prefix list (§4): policy choice drives whether Calico advertises
+> the whole block or /32s, and `le 32` is what makes the filter correct under
+> both.
 
 The counterintuitive row is **`Local` + no ECMP**: the load balancing you get is
 **pod-level, confined to one node**. Replicas elsewhere receive **zero** external
@@ -473,6 +655,12 @@ Cluster gives *"good overall load balancing"*, Local is *"uneven"* — inherent,
 since ECMP hashes the 5-tuple across nodes with no weighting by pod count.
 
 ### `Cluster` does not preserve the client IP — and L7 can't recover it
+
+> **⚠ Historical — does not apply to the eBPF dataplane we run.** This section
+> describes kube-proxy's behavior, which was the reason to prefer `Local`. Under
+> Calico eBPF the SNAT below doesn't happen and the client IP survives `Cluster`
+> (§7 item 17). Kept because it explains the trade, and because it applies again
+> if eBPF is ever reverted.
 
 Calico is explicit: Cluster-mode traffic is *"load balanced across all nodes
 using ECMP, then forwarded to the appropriate pod via **SNAT**."*
@@ -489,23 +677,34 @@ it stamps records the node, not the caller — and you can't fix that at L7,
 because the component that would add the header has already lost the
 information.
 
-### ✅ Use `Local` on the ingress Gateway from the start
+### ✅ Use `Cluster` on the ingress Gateway — superseded 2026-08-03
 
-At one all-in-one node, `Local` is **strictly better** — both of its usual
-downsides are structurally impossible:
+> **This section previously said "use `Local` on the ingress Gateway from the
+> start."** That advice was correct for the iptables dataplane and is now wrong.
+> Its entire justification was source-IP preservation, which `Cluster` now gives
+> us for free.
 
-| | `Cluster` today | `Local` today |
+With the eBPF dataplane, `Cluster` wins on every axis that used to favor
+`Local`:
+
+| | `Cluster` (eBPF) | `Local` |
 |---|---|---|
-| Source IP | lost to SNAT | **preserved** |
-| Extra hop | yes | no |
-| Uneven distribution | — | can't occur (one node) |
-| Dropped if no local pod | — | can't occur (one node) |
+| Source IP | **preserved** | preserved |
+| Pod-level spread | **all replicas, cluster-wide** | only replicas on the ingress node |
+| Node-level spread | per-flow across all nodes | per-flow across *advertising* nodes only |
+| Dropped if no local pod | can't happen | possible once there's more than one node |
+| Advertised prefix | whole block, one route | a /32 per Service |
 
-At node 2 this becomes **active/standby ingress**: the best-path winner serves
-everything, the other node's gateway replicas idle, and BGP failover promotes
-the standby if the winner dies. That's a legitimate homelab posture — and with
-`maximum-paths 8` already in the config, going active/active needs no pfSense
-change at all.
+The old `Local` recommendation also carried a second-node consequence —
+active/standby ingress, with the best-path winner serving everything and the
+other node's replicas idle. `Cluster` doesn't have that shape: every node
+advertises, and `maximum-paths 8` spreads across all of them from the moment the
+second one joins.
+
+**Use `Local` only for a specific Service that genuinely needs traffic pinned to
+nodes holding a backend** — not as the default. And note that doing so changes
+what gets advertised (a /32, not the block), which is exactly the case `le 32`
+in §4 exists to keep working.
 
 ### ⚠ BFD is not available to us
 
@@ -553,6 +752,8 @@ detector.
 - [Feature #16278](https://redmine.pfsense.org/issues/16278) — `maximum-paths` absent from the FRR GUI (open)
 - [Todo #15785](https://redmine.pfsense.org/issues/15785) — FRR 10 targets CE 2.9.0 · [Feature #13575](https://redmine.pfsense.org/issues/13575) — FRR 9.0.1
 - [Bug #7859](https://redmine.pfsense.org/issues/7859) — raw config silently ignored · [Bug #12928](https://redmine.pfsense.org/issues/12928) — vtysh saves invalidate GUI changes
-- [opnsense/plugins#4015](https://github.com/opnsense/plugins/issues/4015) · [#4713](https://github.com/opnsense/plugins/issues/4713) — BGP listen range unimplemented
+- [opnsense/plugins#4015](https://github.com/opnsense/plugins/issues/4015) · [#4713](https://github.com/opnsense/plugins/issues/4713) — BGP listen range unimplemented in the GUI (context only; we no longer use listen ranges — §4)
+- [FRR: prefix lists](https://docs.frrouting.org/en/latest/filter.html) — `le`/`ge`; without them the prefix length must match exactly (§4)
+- [FRR: BGP](https://docs.frrouting.org/en/latest/bgp.html) — peer groups, `remote-as internal|external|auto`
 - [Calico: advertise service IPs](https://docs.tigera.io/calico/latest/networking/configuring/advertise-service-ips) · [resource overview](https://docs.tigera.io/calico/latest/reference/resources/overview) · [BGPPeer](https://docs.tigera.io/calico/latest/reference/resources/bgppeer) · [BGPConfiguration](https://docs.tigera.io/calico/latest/reference/resources/bgpconfig)
 - [projectcalico#6074](https://github.com/projectcalico/calico/issues/6074) (fixed) · [discussion #10537](https://github.com/orgs/projectcalico/discussions/10537)
