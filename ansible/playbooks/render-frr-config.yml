@@ -53,17 +53,22 @@
           from it (group_vars/all/vars.yml, "BGP / LoadBalancer").
         quiet: true
 
-    - name: Assert cluster indexes are unique and in 1..254
+    # 0..255, not 1..254: the index is the THIRD octet of a /24, where every
+    # value is a legal network (<base>.0.0/24 and <base>.255.0/24 are both
+    # fine) — unlike node_number, which is a HOST octet and must dodge network
+    # and broadcast. The ASN check below independently bounds the other use of
+    # this number, so a wide range here costs nothing.
+    - name: Assert cluster indexes are unique and in 0..255
       vars:
         indexes: "{{ clusters | dict2items | map(attribute='value.index') | map('int') | list }}"
       ansible.builtin.assert:
         that:
-          - indexes | min >= 1
-          - indexes | max <= 254
+          - indexes | min >= 0
+          - indexes | max <= 255
           - (indexes | length) == (indexes | unique | length)
         fail_msg: >-
           inventory/nodes.yml: cluster `index` values must be unique and in
-          1..254 (each is an address octet in <lb_range_base>.<index>.0/24).
+          0..255 (each is the third octet of <lb_range_base>.<index>.0/24).
           Got {{ indexes }}.
         quiet: true
 
