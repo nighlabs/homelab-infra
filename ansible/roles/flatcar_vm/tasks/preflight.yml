@@ -56,12 +56,59 @@
     # taint is added when dedicated workers arrive — ansible/CLAUDE.md §6.1).
     k3s_taint: "{{ (node.role | default('')) in ['server', 'control-plane'] }}"
 
+# k3s identity is CLUSTER-scoped, not fleet-wide: both the join token and the
+# extra TLS SANs are looked up by node.cluster (annotated onto every node by
+# playbooks/tasks/load-node-map.yml). See group_vars/all/vars.yml for why.
+#
 # The join token is required for any k3s node — fail fast if the vault is
 # missing it rather than baking a tokenless (insecure/broken) server config.
-- name: "{{ hostname }} — assert k3s join token is present when k3s is enabled"
+- name: "{{ hostname }} — assert its cluster has a k3s join token"
   ansible.builtin.assert:
     that:
-      - vault_k3s_token is defined and (vault_k3s_token | string | length) > 0
-    fail_msg: "node '{{ hostname }}' is a k3s node but vault_k3s_token is unset — add it to the encrypted vault (see vault.example.yml)"
+      - node.cluster in k3s_tokens
+      - (k3s_tokens[node.cluster] | default('') | string | length) > 0
+    fail_msg: >-
+      node '{{ hostname }}' is a k3s node in cluster '{{ node.cluster }}', but
+      vault_k3s_tokens has no non-empty entry for it. Every cluster needs its
+      OWN token — add one to the encrypted vault (see vault.example.yml). If
+      you're migrating from the old fleet-wide `vault_k3s_token`, move its value
+      under `vault_k3s_tokens.{{ node.cluster }}`: keeping the same value
+      renders byte-identical config, so no node needs re-provisioning.
+    quiet: true
+  when: k3s_enabled
+
+# ⚠ Set UNCONDITIONALLY, not `when: k3s_enabled`. set_fact persists across the
+# role's per-node loop iterations, so a `when` here would leave a non-k3s node
+# holding the PREVIOUS node's token — the same stale-registered-value trap as
+# ansible/CLAUDE.md §7 item 18. The k3s block in butane.yaml.j2 is gated on
+# k3s_enabled anyway, so the empty values are never rendered.
+- name: "{{ hostname }} — resolve the cluster-scoped k3s facts"
+  vars:
+    cluster_cfg: "{{ clusters[node.cluster] }}"
+    # Fleet default, overridable per cluster in inventory/nodes.yml.
+    eff_version: "{{ cluster_cfg.k3s_version | default(k3s_version_default) }}"
+    # v1.36.2+k3s1 -> v1.36. Derived so minor ⊂ version can't drift; an explicit
+    # cluster override still wins, and the assert below covers both paths.
+    eff_minor: "{{ cluster_cfg.k3s_minor | default(eff_version.split('.')[0:2] | join('.')) }}"
+  ansible.builtin.set_fact:
+    k3s_token: "{{ k3s_tokens[node.cluster] | default('') if k3s_enabled | bool else '' }}"
+    k3s_tls_sans: "{{ k3s_tls_sans_by_cluster[node.cluster] | default([]) if k3s_enabled | bool else [] }}"
+    k3s_version: "{{ eff_version if k3s_enabled | bool else '' }}"
+    k3s_minor: "{{ eff_minor if k3s_enabled | bool else '' }}"
+
+# minor ⊂ version, or the sysext seeded at provision time falls outside the
+# sysupdate MatchPattern that's supposed to keep it current — the node boots on
+# the right k3s and then silently never updates, because `k3s-<minor>.@v` simply
+# never matches it.
+- name: "{{ hostname }} — assert k3s_minor is the minor series of k3s_version"
+  ansible.builtin.assert:
+    that:
+      - k3s_version.startswith(k3s_minor ~ '.')
+    fail_msg: >-
+      node '{{ hostname }}' (cluster '{{ node.cluster }}') resolves
+      k3s_version='{{ k3s_version }}' but k3s_minor='{{ k3s_minor }}' — the
+      version must be inside the minor series. k3s_minor is derived from
+      k3s_version by default, so this means an explicit `k3s_minor:` override in
+      inventory/nodes.yml disagrees with the version; drop it or correct it.
     quiet: true
   when: k3s_enabled

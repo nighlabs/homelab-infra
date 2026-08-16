@@ -1,0 +1,102 @@
+{#
+  pfSense/FRR BGP config. Rendered by playbooks/render-frr-config.yml from
+  inventory/nodes.yml + the vault; pasted into Services > FRR > Raw Config.
+  Rationale for every line below: docs/pfsense-frr-bgp-setup.md §4.
+
+  Peer-group name and prefix-list names are derived from the cluster key, so a
+  second cluster in nodes.yml produces its own peer group, ASN and filters with
+  no edit here.
+-#}
+{% macro pl(name) %}{{ name | upper | regex_replace('[^A-Z0-9]', '-') }}{% endmacro -%}
+! =============================================================================
+! GENERATED FILE — DO NOT EDIT IN THE pfSense GUI.
+!
+! Saving raw config makes pfSense ignore ALL of its GUI routing forms; they
+! keep accepting input and silently stop having any effect. The GUI is inert by
+! design here (docs/pfsense-frr-bgp-setup.md §4), so an edit made there is lost
+! the moment this file is re-pasted — and produces no warning in the meantime.
+!
+! Edits belong in:
+!   ansible/playbooks/templates/frr.conf.j2   (structure)
+!   ansible/inventory/nodes.yml               (clusters + nodes)
+!   ansible/inventory/group_vars/all/vars.yml (ASNs, LB ranges)
+! then re-render with:
+!   ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass
+! and paste the WHOLE file back.
+!
+! Source: inventory/nodes.yml — {{ cluster_rows | length }} cluster(s), {{ bgp_nodes | length }} node(s)
+! =============================================================================
+frr defaults traditional
+service integrated-vtysh-config
+log syslog informational
+{% if frr_redact_password | default(false) | bool %}
+! ⚠ REDACTED RENDER — this file is for review/diffing only. The real password
+! ⚠ line is required (raw config replaces the generated frr.conf wholesale), so
+! ⚠ re-render without frr_redact_password before pasting.
+password <REDACTED: vault_frr_master_password>
+{% else %}
+password {{ frr_master_password }}
+{% endif %}
+!
+router bgp {{ bgp_peer_asn }}
+ bgp router-id {{ bgp_peer_ip }}
+ bgp log-neighbor-changes
+ ! keepalive 3s / hold 9s. The default 180s hold means up to three minutes of
+ ! blackholing on node failure. Negotiated hold time is the MINIMUM of the two
+ ! peers', so setting it here governs the session with no cluster-side change.
+ timers bgp 3 9
+{% for c in cluster_rows %}
+ !
+ ! --- cluster: {{ c.name }} (index {{ c.index }}, AS {{ c.asn }}, LB {{ c.lb_range }}) ---
+ ! One peer group per cluster: it carries the remote-as AND the filters, so
+ ! this is what keeps two clusters on a shared subnet separable.
+ neighbor {{ c.name }} peer-group
+ neighbor {{ c.name }} remote-as {{ c.asn }}
+{% for n in bgp_nodes | selectattr('cluster', 'equalto', c.name) %}
+ neighbor {{ n.ip }} peer-group {{ c.name }}
+ neighbor {{ n.ip }} description {{ n.hostname }}
+{% endfor %}
+{% endfor %}
+ !
+ address-family ipv4 unicast
+{% for c in cluster_rows %}
+  neighbor {{ c.name }} activate
+  ! RFC 8212 is satisfied by HAVING policy in BOTH directions — see below.
+  neighbor {{ c.name }} prefix-list {{ pl(c.name) }}-IN in
+  neighbor {{ c.name }} prefix-list {{ pl(c.name) }}-OUT out
+{% endfor %}
+  ! ECMP across the nodes advertising a given prefix. Inert at one node. This
+  ! is the ONLY thing providing node-level distribution — without it one node
+  ! wins best-path and takes 100% of ingress.
+  !
+  ! No `bgp bestpath as-path multipath-relax`, deliberately: ECMP across eBGP
+  ! peers normally needs it because the entire AS_PATH must match, not just its
+  ! length — but every node in a cluster shares one ASN, so the AS_PATHs are
+  ! byte-identical already.
+  maximum-paths 8
+ exit-address-family
+!
+{% for c in cluster_rows %}
+! --- {{ c.name }} filters ---------------------------------------------------
+! INBOUND is the real security boundary: it guarantees pfSense never installs a
+! route to the pod CIDR ({{ k3s_cluster_cidr }}) even if the Calico-side BGPFilter is
+! wrong or missing. That filter is enforced by the very device we'd be guarding
+! against misconfiguring, so it is not trusted alone — these are two
+! independent controls.
+!
+! ⚠ `le 32` is load-bearing. Calico's advertisement granularity follows the
+! Service's externalTrafficPolicy: `Cluster` advertises the whole block from
+! every node, `Local` advertises a /32 per Service from nodes holding a backend.
+! A bare `permit {{ c.lb_range }}` matches ONLY the exact /24, so a `Local`
+! Service would establish a healthy-looking session and silently blackhole.
+ip prefix-list {{ pl(c.name) }}-IN seq 10 permit {{ c.lb_range }} le 32
+ip prefix-list {{ pl(c.name) }}-IN seq 20 deny any
+!
+! OUTBOUND denies everything: nodes get their default route statically from
+! Ignition (repo rule — no DHCP in cluster networking), so they need to learn
+! nothing from pfSense, and the LAN table can never leak into the cluster.
+! Populating BOTH directions is required — an inbound filter alone still gets
+! outbound routes discarded under RFC 8212.
+ip prefix-list {{ pl(c.name) }}-OUT seq 10 deny any
+!
+{% endfor %}

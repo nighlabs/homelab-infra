@@ -110,11 +110,28 @@ flatcar_template_name: "flatcar-stable"
 #
 # k3s_version is the exact seed asset fetched at provision time; the sysext .raw
 # is https://extensions.flatcar.org/extensions/k3s-<version>-x86-64.raw . Bump it
-# (Renovate marker) when seeding a new node. k3s_minor is the sysupdate feature
-# name / MatchPattern minor pin — patch releases within it auto-apply, minor bumps
-# are a deliberate change here. Keep the two in sync (minor ⊂ version).
-k3s_version: "v1.36.2+k3s1"
-k3s_minor: "v1.36"
+# (Renovate marker) when seeding a new node.
+#
+# This is the FLEET DEFAULT. A cluster may override it with `k3s_version:` in
+# its block in inventory/nodes.yml — which is what lets you stage a minor bump
+# on one cluster while another stays put, instead of moving everything at once.
+# Unlike the Calico version, nothing in gitops/ consumes this: it reaches a node
+# through Ignition only (butane.yaml.j2, k3s-sysupdate.conf.j2), so per-cluster
+# k3s versions cost nothing on the Flux side.
+k3s_version_default: "v1.36.2+k3s1"
+
+# k3s_minor is the systemd-sysupdate feature name / MatchPattern minor pin —
+# patch releases within it auto-apply, minor bumps are a deliberate change.
+#
+# It is DERIVED from the effective k3s_version (`v1.36.2+k3s1` -> `v1.36`) rather
+# than stated separately, because the two must satisfy minor ⊂ version and
+# keeping that by hand is exactly the kind of two-place edit that drifts. A
+# cluster can still override `k3s_minor:` in nodes.yml if it ever needs to;
+# preflight asserts the containment either way, so the override can't silently
+# be wrong.
+#
+# ⚠ Do NOT reference these two directly in a template — preflight.yml resolves
+# the per-node `k3s_version` / `k3s_minor` from the node's cluster.
 
 # Cluster-internal CIDRs — pinned explicitly (never left as k3s implicit
 # defaults) so Calico's IPPool always matches (design §4.1, guardrail §8).
@@ -122,13 +139,26 @@ k3s_minor: "v1.36"
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
 
-# Cluster join token (server sets it, agents present it) — a secret, so vaulted.
-# ⚠ This is baked into each node's Ignition, which is why provision-nodes.yml
-# destroys the .ign once the node has booted (see destroy_ignition_snippet).
-k3s_token: "{{ vault_k3s_token }}"
-# Extra API-cert SANs (e.g. a stable API DNS name) beyond the node IP + hostname
-# the server config always includes. Optional; defaults to none.
-k3s_tls_sans: "{{ vault_k3s_tls_sans | default([]) }}"
+# Cluster join tokens — a MAP KEYED BY CLUSTER NAME (the `clusters:` keys in
+# inventory/nodes.yml). Per-cluster, not fleet-wide, for two reasons:
+#
+#   - It is the credential that admits a node to a cluster. One shared token
+#     means a leak from any cluster is a leak for every cluster.
+#   - k3s also derives the key encrypting bootstrap data in the datastore from
+#     the server token, so sharing the token shares that key material too.
+#
+# roles/flatcar_vm/tasks/preflight.yml resolves a node's `k3s_token` from
+# node.cluster. ⚠ Baked into each node's Ignition, which is why
+# provision-nodes.yml destroys the .ign once the node has booted (see
+# destroy_ignition_snippet).
+k3s_tokens: "{{ vault_k3s_tokens }}"
+
+# Extra API-server cert SANs beyond the node IP + hostname the config always
+# includes — also keyed by cluster name, and per-cluster by nature: a stable API
+# DNS name or VIP belongs to exactly one cluster, so a fleet-wide list would put
+# cluster B's name into cluster A's certificate. Optional per cluster; a missing
+# entry means "no extra SANs".
+k3s_tls_sans_by_cluster: "{{ vault_k3s_tls_sans_by_cluster | default({}) }}"
 
 # --- Post-boot snippet cleanup (playbooks/provision-nodes.yml) -------------
 # After a node boots, provision-nodes.yml removes `cicustom` from its VM config
@@ -201,3 +231,70 @@ kubeconfig_set_current_context: true
 # pod-CIDR the operator uses lives in gitops/infrastructure/calico/values.yaml
 # (the single values source shared by both) and is asserted == k3s_cluster_cidr.
 calico_version: "v3.32.1"
+#
+# ⚠ DELIBERATELY FLEET-WIDE, unlike k3s_version — considered and rejected
+# 2026-08-16. The blocker isn't Calico, it's that `gitops/` has no per-cluster
+# dimension yet. k3s's version reaches a node through Ignition alone, so making
+# it per-cluster touched only Ansible. Calico's version is dual-owned: this pin
+# AND `gitops/infrastructure/calico/helmrelease.yaml` must be identical for Flux
+# to adopt the primed release without a diff war, and `gitops/crds/calico/
+# crds.yaml` is regenerated per version (v3.32 moved CRDs out of the chart).
+# Two clusters on different Calico versions therefore forks the CRD tier, the
+# HelmRelease, and values.yaml — i.e. a per-cluster gitops layout
+# (`clusters/<name>/`, the standard Flux pattern), which is a restructure worth
+# doing when a second cluster actually exists rather than in advance of one.
+# Note `gitops/deployment/snoop-a2o/` is currently named for the NODE; that tier
+# is the natural seam for per-cluster divergence when the time comes.
+
+# --- BGP / LoadBalancer ----------------------------------------------------
+# Calico BGP owns BOTH LoadBalancer IP advertisement and the pod dataplane;
+# there is no MetalLB (root CLAUDE.md; ansible/CLAUDE.md §7 item 13). These
+# values are shared by both sides of the peering — the pfSense/FRR config
+# (rendered by playbooks/render-frr-config.yml) and the Calico BGP CRs — so
+# they live here rather than in either one.
+# Full rationale: docs/pfsense-frr-bgp-setup.md.
+
+# pfSense's own AS. ONE value for the whole router no matter how many clusters
+# peer with it — it's one device, one AS. Two DIFFERENT ASNs is what makes each
+# session eBGP, which is what we want (AS_PATH loop prevention, and the mode
+# FRR's RFC 8212 policy requirement applies to). Generic — a number from the
+# RFC 6996 private range reveals nothing — so it stays in cleartext.
+bgp_peer_asn: 64512
+
+# pfSense's BGP address IS its DMZ interface address, which IS the nodes'
+# default gateway. One value, already vaulted, so there's no second variable to
+# keep in sync. ⚠ That equivalence breaks if pfSense ever runs CARP on this
+# interface: the gateway would be a VIP while BGP must peer with the physical
+# interface address. No CARP there today (confirmed 2026-08-16) — if that
+# changes, this becomes its own vault var.
+bgp_peer_ip: "{{ dmz_network.gateway }}"
+
+# Base for per-cluster ASNs: a cluster's ASN is bgp_asn_base + its `index`
+# (inventory/nodes.yml). 64600 leaves 64512-64599 free for anything else that
+# ever needs a private ASN here, and keeps cluster ASNs visually distinct from
+# bgp_peer_asn above.
+#
+# ⚠ Every node in a cluster shares that one ASN — do NOT set the per-node
+# override (Node.spec.bgp.asNumber). It exists for AS-per-rack topologies; here
+# it would turn the in-cluster mesh from iBGP into eBGP and force
+# `bgp bestpath as-path multipath-relax` on the pfSense side for ECMP to work
+# at all (docs/pfsense-frr-bgp-setup.md §4).
+bgp_asn_base: 64600
+
+# First two octets of the LoadBalancer supernet; a cluster's range is
+# <lb_range_base>.<index>.0/24.
+#
+# ⚠ This range must be assigned to NO interface anywhere — not a pfSense
+# interface, not a VLAN, not a DHCP pool. It exists ONLY as a BGP-learned
+# route. An LB range that is also a connected subnet loses to the connected
+# route on admin distance, and on-subnet clients ARP for an address that
+# nothing answers (Calico does no L2 for LB IPs — that's MetalLB's L2 mode,
+# which we don't run). Environment-revealing, so vaulted.
+lb_range_base: "{{ vault_lb_range_base }}"
+
+# FRR's internal daemon password (Services > FRR Global Settings) — NOT a BGP
+# peer password. Saving raw config replaces the generated frr.conf wholesale,
+# so this has to appear IN the rendered file, which is why that artifact is
+# git-ignored and mode 0600. A credential per the root CLAUDE.md tiers:
+# BWS-managed, never in a committed manifest.
+frr_master_password: "{{ vault_frr_master_password }}"

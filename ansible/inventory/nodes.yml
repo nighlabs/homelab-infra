@@ -31,9 +31,31 @@
 # playbooks/tasks/load-node-map.yml) before anything is created.
 
 clusters:
-  # The single cluster today. A second one = another key here with its own nodes
-  # and non-overlapping node_numbers — nothing else in the repo changes.
+  # The single cluster today. A second one = another key here with its own
+  # `index`, its own nodes, and non-overlapping node_numbers.
   homelab:
+    # Cluster index — the one number every cluster-scoped BGP value derives
+    # from (group_vars/all/vars.yml, "BGP / LoadBalancer"):
+    #
+    #   ASN      -> bgp_asn_base + index              (64600 + 1 = 64601)
+    #   LB range -> <lb_range_base>.<index>.0/24
+    #
+    # Same idea as node_number: one number to change, nothing to keep in sync.
+    # Must be unique across clusters and in 1..254 (it's an address octet).
+    # Asserted by playbooks/render-frr-config.yml, which is also where those
+    # ranges are checked for collisions against the DMZ/Ceph/pod/service CIDRs.
+    index: 1
+    # Optional per-cluster k3s pin. Omitted = the fleet default
+    # (`k3s_version_default` in group_vars/all/vars.yml), which is the normal
+    # case. Set it here to stage a bump on ONE cluster while others stay put:
+    #
+    #   k3s_version: "v1.36.2+k3s1"
+    #
+    # `k3s_minor` is derived from it (v1.36.2+k3s1 -> v1.36) and rarely needs
+    # stating; preflight asserts minor ⊂ version either way. Nothing in gitops/
+    # reads these — k3s reaches a node through Ignition only — so per-cluster
+    # k3s versions cost nothing on the Flux side. That is NOT true of Calico;
+    # see group_vars/all/vars.yml under `calico_version`.
     nodes:
       snoop-a2o:                 # "all to one" — single all-in-one node
         node_number: 50          # final octet -> DMZ + Ceph-public IPs (bases vaulted)

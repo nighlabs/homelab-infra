@@ -418,7 +418,9 @@ Flux); that's expected here, not a failure. Over SSH to the DMZ IP:
 - `systemctl status k3s-sysext-download.service` → **active (exited)** on first
   boot (skipped/`condition` on later boots, once the `.raw` is cached)
 - `systemd-sysext status` lists **k3s**; `/usr/local/bin/k3s --version` matches
-  the `k3s_version` pin
+  the pin for that node's cluster (`k3s_version_default` in
+  `group_vars/all/vars.yml`, or a `k3s_version:` override on the cluster in
+  `inventory/nodes.yml`)
 - `systemctl is-active k3s` → **active**; `journalctl -u k3s` clean
 - `sudo k3s kubectl get nodes -o wide` → the node present, version = pin,
   **`STATUS NotReady` (expected — no CNI)**, `INTERNAL-IP` = the eth0/DMZ IP

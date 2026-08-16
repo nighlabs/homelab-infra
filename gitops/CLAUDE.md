@@ -128,6 +128,29 @@ spec:
 needed before ESO exists — see root `CLAUDE.md`). Values then rotate without a
 commit, and diffs stay fully readable.
 
+> **Refined 2026-08-16 — only the address-shaped values need blinding.** With the
+> values settled (`ansible/CLAUDE.md` §7 item 6), the split is:
+>
+> | Value | In Git as | Why |
+> |---|---|---|
+> | `peerIP` | `${bgp_peer_ip}` | an address — blind it |
+> | LB range | `${lb_range}` | an address — blind it |
+> | `BGPPeer.spec.asNumber` (pfSense, `64512`) | literal | a private-range AS number reveals nothing |
+> | `BGPConfiguration.spec.asNumber` (cluster, `64601`) | literal | same |
+>
+> Both ASNs are already cleartext in `ansible/inventory/group_vars/all/vars.yml`,
+> so blinding them here would be theater — and it costs readability at the exact
+> place the empty-string substitution trap below bites hardest.
+>
+> ⚠ **The LB range appears in TWO places on the Calico side**, and they are
+> different mechanisms: the pool LB IPs are *allocated* from (Calico 3.32's
+> LoadBalancer IPAM — the feature with the broken RBAC grant in
+> [#12890](https://github.com/projectcalico/calico/issues/12890), whose
+> workaround must land **with** the BGP CRs) and
+> `BGPConfiguration.spec.serviceLoadBalancerIPs`, which controls *advertisement*.
+> Confirm the exact 3.32 CR shape before writing them — that release also moved
+> the CRDs out of the chart.
+
 - **⚠ Undefined variables become the empty string and reconcile SUCCESSFULLY.**
   Per the docs: *"All the undefined variables in the format `${var}` will be
   substituted with an empty string unless a default value is provided."* A typo

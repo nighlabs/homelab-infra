@@ -49,15 +49,34 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > healthy. **Apply it with the BGP change, not after** (item 15). The old
 > "MetalLB secrets-ordering trap" is **resolved** — see §6 step 5.
 >
-> **Still open before writing config:** whether pfSense/FRR is actually
-> configured, plus the LB `/24`, FRR peer address and the two ASNs (§7 items 6 +
-> 8) — these are now the only real blockers, and they're facts from the network
-> rather than decisions. Also §7 item 14 (scoped kubeconfig for Flux).
+> **✅ DONE 2026-08-16 — §7 item 6 is RESOLVED and the pfSense config generator
+> is written.** Cluster ASN `64601` (`bgp_asn_base + index`), pfSense AS
+> `64512`, LB range `<lb_range_base>.<index>.0/24`, peer IP = `dmz_network.gateway`.
+> **Nodes did not move, so nothing was re-provisioned.** Two new vault vars only
+> (`vault_lb_range_base`, `vault_frr_master_password`); both ASNs are cleartext.
 >
-> **Do the pfSense/FRR side first** — it's the only genuine unknown, it produces
-> the values the manifests consume, and it can be staged and parked before the
-> cluster exists. Runbook: `docs/pfsense-frr-bgp-setup.md`. BWS unblocks nothing
-> (`vault.yml` already works), so it follows rather than leads.
+> `playbooks/render-frr-config.yml` renders the pfSense/FRR config and the
+> firewall-alias member list from `inventory/nodes.yml` + the vault — verified
+> rendering correctly for one and two clusters, and its collision asserts
+> verified *firing*, not just passing (the item 18 lesson). pfSense CE has no
+> API, so delivery is still a manual paste, but the content is generated and
+> asserted.
+>
+> Two real bugs were found in the runbook while doing this, both silent-failure
+> modes: the LB range must **not** live inside the DMZ subnet (item 6), and the
+> prefix list needs **`le 32`** or `Local`-policy Services blackhole (item 8).
+>
+> **Still open before writing the Calico manifests:** whether pfSense/FRR is
+> actually configured on the box (§2–§7 of the runbook — the render is done, the
+> paste is not), and §7 item 14 (scoped kubeconfig for Flux). BWS unblocks
+> nothing (`vault.yml` already works), so it follows rather than leads.
+>
+> **⚠ Next session, before writing `BGPConfiguration`/`BGPPeer`/`BGPFilter`:**
+> confirm the exact CR shape for Calico **3.32** — that release moved the CRDs
+> out of the chart (item 15), and the LB range appears in *two* places: the pool
+> LB IPs are allocated from (3.32's LoadBalancer IPAM, the feature with the
+> broken RBAC grant in #12890) and `BGPConfiguration.spec.serviceLoadBalancerIPs`
+> for advertisement. The #12890 workaround must land **with** these, not after.
 >
 > **✅ DONE 2026-08-03 — versions bumped, and the Calico eBPF migration is
 > complete.** The cluster now runs **k3s `v1.36.2+k3s1` + Calico `v3.32.1` with
@@ -264,13 +283,64 @@ auto-update machinery wired. The node stays **NotReady** until Calico (its CNI)
 arrives — that's a later milestone (§6), not this one.
 
 **What was added (all in `roles/flatcar_vm/` + `group_vars`):**
-- `group_vars/all/vars.yml`: `k3s_version` (seed asset, Renovate marker),
-  `k3s_minor` (sysupdate feature/MatchPattern pin), `k3s_cluster_cidr`/
-  `k3s_service_cidr` (pinned, guardrail §8), `k3s_token`/`k3s_tls_sans`
-  (vaulted). `vault.example.yml` gains `vault_k3s_token`/`vault_k3s_tls_sans`.
-- `preflight.yml`: derives `k3s_enabled`/`k3s_role`/`k3s_taint`, asserts the
-  role is known and the join token is present when enabled. All-in-one gets
-  **no** CP taint (added when workers arrive, §6.1).
+- `group_vars/all/vars.yml`: `k3s_version_default` (seed asset, Renovate
+  marker), `k3s_cluster_cidr`/`k3s_service_cidr` (pinned, guardrail §8),
+  `k3s_tokens`/`k3s_tls_sans_by_cluster` (vaulted). `vault.example.yml` gains
+  `vault_k3s_tokens`/`vault_k3s_tls_sans_by_cluster`.
+- `preflight.yml`: derives `k3s_enabled`/`k3s_role`/`k3s_taint`, resolves the
+  cluster-scoped `k3s_token`/`k3s_tls_sans`, asserts the role is known and the
+  node's cluster has a token. All-in-one gets **no** CP taint (added when
+  workers arrive, §6.1).
+
+  > **✅ CHANGED 2026-08-16 — the join token and TLS SANs are per-CLUSTER, not
+  > fleet-wide.** Both are now maps keyed by the cluster name, resolved from
+  > `node.cluster`. The token is the credential that admits a node to a cluster,
+  > so one shared value made a leak from any cluster a leak for all of them —
+  > and k3s derives the datastore bootstrap-data encryption key from it too. TLS
+  > SANs are per-cluster by construction: a stable API name or VIP belongs to
+  > one cluster, and a shared list puts cluster B's name in cluster A's cert.
+  >
+  > **Migration is a no-op for a running node**: move the old `vault_k3s_token`
+  > value under `vault_k3s_tokens.homelab` and the rendered config is
+  > byte-identical, so nothing is re-provisioned. There is deliberately **no
+  > fallback** to the old variable — a loud assert beats a silent half-migration,
+  > and its fail message spells out the move.
+  >
+  > ⚠ Those facts are set **unconditionally**, not under `when: k3s_enabled`.
+  > `set_fact` persists across the role's per-node loop, so a `when` would leave
+  > a non-k3s node holding the *previous* node's token — the same
+  > stale-registered-value trap as §7 item 18. Verified on that exact case (a
+  > bare VM provisioned after two k3s nodes from different clusters resolves to
+  > `''`), not just on the happy path.
+
+  > **✅ CHANGED 2026-08-16 — `k3s_version`/`k3s_minor` are per-cluster too.**
+  > `k3s_version_default` in `group_vars` is the fleet default; a cluster
+  > overrides it with `k3s_version:` in its `inventory/nodes.yml` block. That's
+  > what lets a minor bump be staged on one cluster while another stays put,
+  > rather than moving the whole fleet at once.
+  >
+  > **`k3s_minor` is now DERIVED** from the effective version
+  > (`v1.36.2+k3s1` → `v1.36`) instead of stated separately. The two always had
+  > to satisfy minor ⊂ version, and keeping that by hand is a two-place edit that
+  > drifts. An explicit per-cluster `k3s_minor:` override still wins, and
+  > preflight asserts containment on both paths — verified firing on a
+  > deliberately mismatched override.
+  >
+  > **Why this failure mode is worth an assert:** if the seeded sysext falls
+  > outside the sysupdate `MatchPattern`, the node boots the *correct* k3s and
+  > then silently never updates, because `k3s-<minor>.@v` never matches it.
+  > Nothing looks wrong at provision time.
+  >
+  > `snoop-a2o` resolves to `v1.36.2+k3s1`/`v1.36` exactly as before — no
+  > re-provision.
+  >
+  > ⚠ **Calico was considered for the same treatment and deliberately left
+  > fleet-wide** — see the note under `calico_version` in `group_vars/all/vars.yml`.
+  > k3s's version reaches a node through Ignition alone, so per-cluster cost
+  > nothing; `calico_version` is dual-owned with `gitops/` (the HelmRelease chart
+  > version must match for clean adoption, and `gitops/crds/calico/crds.yaml` is
+  > per-version), so per-cluster Calico forces a per-cluster gitops layout. Do
+  > that when a second cluster exists, not before.
 - `templates/k3s-config.yaml.j2` (server `/etc/rancher/k3s/config.yaml`) and
   `templates/k3s-sysupdate.conf.j2` (minor-pinned transfer config), rendered to
   `files/` by a `k3s_enabled`-gated task in `main.yml`, pulled into
@@ -501,31 +571,42 @@ The Ceph pool/client-user setup can happen in parallel — it doesn't block the
 single-node milestone.
 
 **Networking prep is no longer parallel — it's on the critical path.** Once the
-dataplane moves to BGP, the pfSense/FRR side (LB `/24`, the two private ASNs
-from 64512–65534, the peering itself, and the eBGP policy config — item 8) gates
-the Calico migration rather than sitting alongside it. **Runbook:
-`docs/pfsense-frr-bgp-setup.md`** — the full `frr.conf` for pfSense CE 2.8.1,
-written to be staged *before* the cluster side exists. ⚠ With a listen range a
-parked config shows **no neighbors at all** until a node connects — that's
-success, not a fault, and it differs from the explicit-neighbor behaviour
-(`Active`/`Connect`) most guides describe.
+dataplane moves to BGP, the pfSense/FRR side (LB range, the ASNs, the peering
+itself, and the eBGP policy config — item 8) gates the Calico migration rather
+than sitting alongside it. The **values and the generator are done** (item 6);
+what remains is applying it to the box. **Runbook:
+`docs/pfsense-frr-bgp-setup.md`** — written to be staged *before* the cluster
+side exists. A parked config lists every node in `Active`/`Connect`, retrying;
+that's expected.
 
 Note FRR must accept the **pod CIDR** too if nodes ever span subnets; on the
 same-subnet design above it only needs the LB range, and the `BGPFilter`
 guarantees that's all it's offered.
 
 ✅ **DECIDED 2026-08-02 — pfSense FRR is managed as raw config, not via the GUI.**
-Two things we want exist only there: `bgp listen range` (dynamic neighbors) and
-`maximum-paths` (ECMP). Neither is exposed in the FRR GUI and `vtysh` edits are
-overwritten on the next Apply. The cost is real and total — saving a raw config
-stops the GUI's routing config being applied *at all* — but the config is ~25
-lines, and a committed Jinja2 template is more reviewable and reproducible than
-GUI forms, which are unversioned by construction. Same pattern as Ignition.
+`maximum-paths` (ECMP) exists only there, isn't exposed in the FRR GUI, and
+`vtysh` edits are overwritten on the next Apply. The cost is real and total —
+saving a raw config stops the GUI's routing config being applied *at all* — but
+we don't hand-maintain the result: it's generated from the node map
+(`playbooks/render-frr-config.yml`), which is more reviewable and reproducible
+than GUI forms, unversioned by construction. Same pattern as Ignition.
+
+✅ **REVISED 2026-08-16 — explicit `neighbor` statements, not `bgp listen
+range`.** Dynamic neighbors were the original *second* reason for raw config.
+They're incompatible with giving two clusters distinct ASNs on a shared DMZ
+subnet: a listen range maps one prefix to one peer group, and a peer group
+carries exactly one `remote-as` **and** one set of prefix lists — so every
+cluster would share an ASN and a permitted LB range, each free to advertise the
+other's. Separating them would have meant carving the /24 into per-cluster bands
+and constraining `node_number` allocation permanently.
 
 Consequences to hold onto:
-- **Adding a k3s node needs no pfSense change.** The listen range admits any node
-  in the DMZ subnet into the peer group; one global `BGPPeer` (no `nodeSelector`)
-  covers the cluster side. Neither side has per-node config.
+- **Adding a k3s node costs one pfSense paste** — re-render and paste the whole
+  file. Not per *rebuild*, since node IPs derive deterministically from
+  `node_number`; only genuinely new nodes. The cluster side still has no
+  per-node config (one global `BGPPeer`, no `nodeSelector`).
+- **The BGP neighbor list and the §6 firewall alias are the same list**, both
+  rendered from `inventory/nodes.yml`, so they can't drift.
 - ⚠ **The GUI still starts the daemons.** The BGP tab's Enable is the *"master
   enable switch for BGP routing"* — leave it off and `bgpd` never runs, so the
   raw config is never read and it fails silently. Enable-in-GUI,
@@ -635,22 +716,42 @@ apply once k3s work starts.
      (instances) + `ls -la /etc/extensions/` (where `k3s.raw` points) +
      `sudo journalctl -u systemd-sysupdate | grep k3s`.
 
-6. **LB `/24` + FRR peer address — TBD (partially closed 2026-08-02).** The
-   *node* VLAN half of this is **settled**: nodes live on the vaulted DMZ
-   network and `snoop-a2o` has been running there since 2026-07-07, and all k3s
-   nodes stay on that one subnet (§6 step 5). What's still open is the **LB
-   range** and the **FRR peer address + the two private ASNs** (64512–65534, one
-   for Calico, one for FRR). These now block the Calico BGP migration, which is
-   the *current* task — not a later step. Once chosen, they go into BWS and reach
-   the cluster via the Ansible-seeded `cluster-topology` Secret, never as
-   literals in Git.
+6. **LB `/24` + FRR peer address — ✅ RESOLVED 2026-08-16.** All four values are
+   decided, and most are now *derived* rather than chosen. **Nodes did not
+   move** — they stay on the vaulted DMZ network where `snoop-a2o` has run since
+   2026-07-07, so none of this required a re-provision.
 
-   **The pfSense side can be built and parked before any of the cluster work** —
-   see `docs/pfsense-frr-bgp-setup.md` §1 for the four values and the exact vault
-   variable names (`vault_lb_range`, `vault_bgp_peer_ip`, `vault_bgp_peer_asn`,
-   `vault_calico_asn`), plus §10 for blast radius. Doing pfSense first means the
-   vault gets populated once with the complete set, rather than being edited
-   again after BWS is stood up.
+   Each cluster declares one `index:` in `inventory/nodes.yml`; its ASN and LB
+   range both fall out of it, the same way every host-shaped fact falls out of
+   `node_number`:
+
+   | Value | Derivation | `homelab` (index 1) |
+   |---|---|---|
+   | Cluster ASN | `bgp_asn_base + index` | `64601` |
+   | LB range | `<lb_range_base>.<index>.0/24` | index 1 of that supernet |
+   | pfSense ASN | fixed, one per *router* | `64512` |
+   | pfSense peer IP | `dmz_network.gateway` | already vaulted |
+
+   Only **two** new vault vars exist: `vault_lb_range_base` and
+   `vault_frr_master_password`. The peer IP is the DMZ gateway (no CARP on that
+   interface — confirmed 2026-08-16; if that ever changes it needs its own var),
+   and both ASNs are cleartext constants in `group_vars/all/vars.yml` since a
+   private-range AS number reveals nothing.
+
+   ⚠ **The LB range is routed-only and must be attached to NO interface
+   anywhere.** An earlier revision of the runbook called for "a `/24` inside the
+   DMZ subnet" — that is wrong twice over: pfSense's *connected* DMZ route beats
+   an equal-length BGP route on admin distance, and on-subnet clients ARP for an
+   address nothing answers (Calico does no L2 for LB IPs — that's MetalLB L2
+   mode, which we don't run). `playbooks/render-frr-config.yml` asserts against
+   overlap with the DMZ/Ceph/pod/service ranges, but it cannot see the pfSense
+   interface list, so that half stays a manual check.
+
+   **The pfSense config is generated, not hand-written:**
+   `ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass` renders
+   `ansible/.frr/frr.conf` (paste target) and `bgp-nodes.txt` (firewall alias
+   members) from the node map. Both git-ignored — `frr.conf` embeds the FRR
+   master password. Full runbook: `docs/pfsense-frr-bgp-setup.md`.
 
 7. **Internal DNS resolver approach — TBD, three options undecided:**
    pfSense Unbound host overrides vs. a single wildcard `*.apps.<domain>` +
@@ -672,8 +773,11 @@ apply once k3s work starts.
      standing config.** Use only as a temporary bisect step when isolating a
      bring-up fault, then revert.
    - **Option B — apply actual prefix lists (CHOSEN).** Omit the disable
-     entirely; the requirement is satisfied *because policy exists*. `K3S-IN`
-     permits only the LB range; `K3S-OUT` denies everything.
+     entirely; the requirement is satisfied *because policy exists*.
+     `<CLUSTER>-IN` permits only that cluster's LB range (with `le 32` — see
+     below); `<CLUSTER>-OUT` denies everything. The filters are per-cluster
+     because they hang off the peer group, which is what separates clusters
+     (item 6).
 
    **Why B, given A is one checkbox:** we want the inbound prefix-list
    regardless, as defense-in-depth. The Calico-side `BGPFilter` is the primary
@@ -685,6 +789,16 @@ apply once k3s work starts.
 
    **Raised stakes since item 13:** with the dataplane on BGP too, a silent
    refusal is no longer only an LB-reachability bug.
+
+   **⚠ A second silent-blackhole mode was found 2026-08-16, with the same
+   symptom.** FRR prefix lists match the prefix length *exactly* unless given
+   `le`/`ge`, and Calico's advertisement granularity is not fixed: it advertises
+   the **whole block** under `externalTrafficPolicy: Cluster` but a **/32 per
+   Service** under `Local`. So a bare `permit <lb_range>` accepts the first and
+   silently drops the second. The rendered config uses `permit <lb_range> le 32`,
+   which covers both — see `docs/pfsense-frr-bgp-setup.md` §4. Two different
+   causes now produce "Established session, nothing flowing," which is why the
+   test below is reachability, not session state.
 
    **Test:** confirm one Calico-assigned LoadBalancer IP is actually reachable
    over BGP before assuming the LB layer works — a silent refusal looks like

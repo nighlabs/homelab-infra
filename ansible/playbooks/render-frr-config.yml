@@ -1,0 +1,208 @@
+---
+# Render the pfSense/FRR BGP configuration from inventory/nodes.yml + the vault.
+#
+# pfSense CE ships no API, so delivery is a manual paste (Services > FRR > Raw
+# Config) — but the CONTENT is generated, versioned and asserted, which is the
+# whole reason §4 of the runbook chose raw config over the GUI's unversioned
+# forms. Full procedure: docs/pfsense-frr-bgp-setup.md §5.
+#
+# Run:
+#   ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass
+#
+# Review/diff without exposing the FRR master password:
+#   ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass \
+#     -e frr_redact_password=true
+#
+# Outputs (git-ignored — frr.conf embeds the FRR master password, mode 0600):
+#   ansible/.frr/frr.conf        paste into Services > FRR > Raw Config (§5)
+#   ansible/.frr/bgp-nodes.txt   member list for the §6 firewall alias
+#
+# Both come from the SAME node map, so the BGP neighbor list and the firewall
+# alias cannot drift apart — which is the main thing explicit neighbors buy us
+# over a `bgp listen range`.
+#
+# This play touches nothing: it reads the inventory and writes two local files.
+# Nothing is pushed to pfSense or to any node.
+- name: Render the pfSense/FRR BGP configuration
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../inventory/nodes.yml
+  vars:
+    frr_out_dir: "{{ playbook_dir }}/../.frr"
+    frr_redact_password: false
+  tasks:
+    # clusters: → a flat, cluster-annotated `nodes` map, plus the global
+    # hostname/node_number uniqueness asserts.
+    - name: Load the node map
+      ansible.builtin.include_tasks: tasks/load-node-map.yml
+
+    # --- Validate the cluster-level BGP inputs -------------------------------
+
+    - name: Assert every cluster declares an index
+      vars:
+        missing: >-
+          {{ clusters | dict2items | rejectattr('value.index', 'defined')
+             | map(attribute='key') | list }}
+      ansible.builtin.assert:
+        that:
+          - missing | length == 0
+        fail_msg: >-
+          inventory/nodes.yml: cluster(s) {{ missing | join(', ') }} have no
+          `index:`. Every cluster needs one — its ASN and LB range both derive
+          from it (group_vars/all/vars.yml, "BGP / LoadBalancer").
+        quiet: true
+
+    - name: Assert cluster indexes are unique and in 1..254
+      vars:
+        indexes: "{{ clusters | dict2items | map(attribute='value.index') | map('int') | list }}"
+      ansible.builtin.assert:
+        that:
+          - indexes | min >= 1
+          - indexes | max <= 254
+          - (indexes | length) == (indexes | unique | length)
+        fail_msg: >-
+          inventory/nodes.yml: cluster `index` values must be unique and in
+          1..254 (each is an address octet in <lb_range_base>.<index>.0/24).
+          Got {{ indexes }}.
+        quiet: true
+
+    # --- Derive the per-cluster and per-node rows ----------------------------
+
+    - name: Build the per-cluster BGP rows
+      vars:
+        row:
+          name: "{{ item.key }}"
+          index: "{{ item.value.index | int }}"
+          asn: "{{ (bgp_asn_base | int) + (item.value.index | int) }}"
+          lb_range: "{{ lb_range_base }}.{{ item.value.index }}.0/24"
+          # Leading three octets of the LB /24, for the collision asserts below.
+          lb_net: "{{ lb_range_base }}.{{ item.value.index }}"
+      ansible.builtin.set_fact:
+        cluster_rows: "{{ (cluster_rows | default([])) + [row] }}"
+      loop: "{{ clusters | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    # ⚠ This mirrors roles/flatcar_vm/tasks/preflight.yml's `eth0_ip`
+    # derivation. The node map is the single source of truth for addressing and
+    # this is the only OTHER place that expands it — if eth0_ip's derivation
+    # changes there, it must change here too, or pfSense will peer with
+    # addresses no node actually holds.
+    - name: Derive each node's BGP (eth0 / DMZ) address
+      ansible.builtin.set_fact:
+        bgp_nodes: >-
+          {{ (bgp_nodes | default([])) + [{
+               'hostname': item.key,
+               'cluster': item.value.cluster,
+               'node_number': item.value.node_number,
+               'ip': dmz_network.subnet_base ~ '.' ~ item.value.node_number
+             }] }}
+      loop: "{{ nodes | dict2items | sort(attribute='value.node_number') }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    # --- Validate the derived values against everything else on the network --
+
+    - name: Assert the ASNs are private, distinct, and make each session eBGP
+      vars:
+        asns: "{{ cluster_rows | map(attribute='asn') | map('int') | list }}"
+      ansible.builtin.assert:
+        that:
+          # RFC 6996 private range.
+          - asns | min >= 64512
+          - asns | max <= 65534
+          - (bgp_peer_asn | int) >= 64512
+          - (bgp_peer_asn | int) <= 65534
+          # Two DIFFERENT ASNs is what makes the session eBGP. If a cluster ever
+          # landed on pfSense's ASN the session would be iBGP and behave
+          # differently — and Calico's own default asNumber is 64512, so this is
+          # a live trap, not a theoretical one.
+          - (bgp_peer_asn | int) not in asns
+          - (asns | length) == (asns | unique | length)
+        fail_msg: >-
+          Cluster ASNs {{ asns }} vs pfSense AS {{ bgp_peer_asn }}: each must be
+          in 64512-65534, unique per cluster, and different from pfSense's.
+          Adjust bgp_asn_base / bgp_peer_asn in group_vars/all/vars.yml or the
+          cluster indexes in nodes.yml.
+        quiet: true
+
+    # Every network compared here is a /24 (dmz/ceph carry `prefix: 24`) or a
+    # /16 whose first two octets are fixed, so comparing leading octets as
+    # strings is exact. It would NOT be if these prefixes ever varied — that
+    # would need real subnet math (and an ansible.utils dependency).
+    - name: Assert no LB range collides with a network already in use
+      vars:
+        lb_nets: "{{ cluster_rows | map(attribute='lb_net') | list }}"
+        pod_base: "{{ k3s_cluster_cidr.split('.')[0:2] | join('.') }}"
+        svc_base: "{{ k3s_service_cidr.split('.')[0:2] | join('.') }}"
+      ansible.builtin.assert:
+        that:
+          - dmz_network.subnet_base not in lb_nets
+          - ceph_public_network.subnet_base not in lb_nets
+          - lb_range_base != pod_base
+          - lb_range_base != svc_base
+          - (lb_nets | length) == (lb_nets | unique | length)
+        fail_msg: >-
+          LoadBalancer range collision. Derived {{ lb_nets }} from
+          lb_range_base + cluster indexes; these must not overlap the DMZ
+          subnet, the Ceph public network, or the pod/service CIDRs
+          ({{ k3s_cluster_cidr }} / {{ k3s_service_cidr }}). The LB range must
+          also be assigned to NO interface anywhere — see
+          docs/pfsense-frr-bgp-setup.md §1.
+        quiet: true
+
+    - name: Warn about clusters that would render a peer group with no members
+      vars:
+        empty: >-
+          {{ cluster_rows | map(attribute='name') | list
+             | difference(bgp_nodes | map(attribute='cluster') | list | unique) }}
+      ansible.builtin.debug:
+        msg: >-
+          NOTE: cluster(s) {{ empty | join(', ') }} have no nodes in the map, so
+          their peer group renders with no neighbors. Harmless, but pfSense will
+          have a peer group it never uses.
+      when: empty | length > 0
+
+    # --- Render ---------------------------------------------------------------
+
+    - name: Ensure the output directory exists
+      ansible.builtin.file:
+        path: "{{ frr_out_dir }}"
+        state: directory
+        mode: "0700"
+
+    # 0600: this embeds vault_frr_master_password. Git-ignored via
+    # ansible/.gitignore, but the mode is the control that doesn't depend on
+    # anyone reading a gitignore.
+    - name: Render frr.conf
+      ansible.builtin.template:
+        src: frr.conf.j2
+        dest: "{{ frr_out_dir }}/frr.conf"
+        mode: "0600"
+
+    # The §6 firewall rule source-restricts TCP/179 to exactly these addresses.
+    # Rendered from the same node map as the neighbor lines above so the two
+    # lists are the same list.
+    - name: Render the firewall alias member list
+      ansible.builtin.copy:
+        dest: "{{ frr_out_dir }}/bgp-nodes.txt"
+        mode: "0600"
+        content: |
+          # Members for the pfSense firewall alias used by the TCP/179 pass rule
+          # (docs/pfsense-frr-bgp-setup.md §6). Generated from
+          # inventory/nodes.yml by playbooks/render-frr-config.yml — the same
+          # source as the BGP neighbor lines, so these cannot drift apart.
+          {% for n in bgp_nodes %}
+          {{ n.ip }}    # {{ n.hostname }} ({{ n.cluster }})
+          {% endfor %}
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          Rendered {{ cluster_rows | length }} cluster(s),
+          {{ bgp_nodes | length }} neighbor(s) to {{ frr_out_dir }}/ —
+          pfSense AS {{ bgp_peer_asn }} @ {{ bgp_peer_ip }};
+          {% for c in cluster_rows %}{{ c.name }} AS {{ c.asn }} LB {{ c.lb_range }}{{ '; ' if not loop.last }}{% endfor %}.
+          Next: paste frr.conf into Services > FRR > Raw Config (§5), then
+          verify with `vtysh -c 'show running-config'` before trusting it.
