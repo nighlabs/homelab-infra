@@ -360,6 +360,36 @@ daemons are healthy (§7), you're fine.
 
 ## 5. Apply it
 
+### ⚠ First, read what's already there
+
+Raw config replaces the running `frr.conf` **wholesale**, so anything the GUI
+generator put there disappears. Before pasting, capture the current
+`vtysh -c 'show running-config'` and check it for:
+
+- **`network <prefix>` statements.** These make pfSense *originate* a prefix.
+  That is backwards for this design — the cluster advertises the LB range **to**
+  pfSense and pfSense learns it. A `network` statement means the prefix exists
+  whether or not any node is up, so you blackhole instead of failing over.
+  Delete it; don't carry it across.
+- **`no bgp network import-check`.** Exists only to let a `network` statement
+  advertise a prefix with no matching route. It goes with the `network` line.
+- **Pre-existing prefix lists** (e.g. a `k8s_prefixlist` from an earlier
+  attempt). The render emits `<CLUSTER>-IN`/`-OUT`; old lists simply vanish.
+  Confirm nothing else references them first.
+- **An existing LB range that isn't the one you configured.** Check firewall
+  rules, static routes and DNS before retiring it.
+- **`hostname` / `line vty`.** GUI-generator artifacts, purely cosmetic
+  (`hostname` sets the vtysh prompt). They go; nothing depends on them.
+- **`router bgp <ASN>` and `bgp router-id`** — these should already match
+  `bgp_peer_asn` and `bgp_peer_ip` from §1. If the router-id differs, resolve
+  that *before* pasting rather than letting the render silently move it.
+
+A config with **no `neighbor` statements has no sessions**, so replacing it
+disrupts nothing. That's the easy case — verify it with `show bgp summary`
+before assuming.
+
+### Then
+
 0. Render it (§9):
    `ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass`
 1. Paste **the whole of** `ansible/.frr/frr.conf` into **Saved frr.conf** and
@@ -372,10 +402,38 @@ daemons are healthy (§7), you're fine.
 vtysh -c 'show running-config'
 ```
 
-If the running config doesn't match what you pasted, **stop**.
-[Bug #7859](https://redmine.pfsense.org/issues/7859) was a case where a
-config-tag rename caused raw config to be *silently ignored*, so this is a real
-failure mode, not a formality.
+⚠ **It will NOT be byte-identical to what you pasted, and that's normal.** FRR
+rebuilds the config from its internal state rather than echoing your text, so
+**every `!` comment is stripped** — and the rendered file is mostly comments.
+Lines may also be reordered and unstated defaults may appear. Compare *meaning*,
+not text. Present and correct means:
+
+- `router bgp` + `bgp router-id` match §1
+- `timers bgp 3 9` and `maximum-paths 8`
+- one `neighbor <cluster> peer-group` + `remote-as` per cluster
+- one `neighbor <ip> peer-group <cluster>` per node in the map
+- both `prefix-list … in` / `… out` bindings
+- `ip prefix-list <CLUSTER>-IN … permit <lb_range> le 32` — **check the `le 32`
+  survived**, it's the difference between working and silently blackholing
+- **nothing left over** from a previous config — no `network` statement, no
+  stale prefix list (see the pre-paste checklist above)
+
+Two omissions are **normal**, verified on FRR 9.1.2:
+
+- **`neighbor <cluster> activate` will not appear.** `frr defaults traditional`
+  implies `bgp default ipv4-unicast`, so neighbors auto-activate in IPv4 unicast
+  and FRR drops the redundant line. Confirm it took via
+  `show bgp neighbors` → `For address family: IPv4 Unicast / <cluster>
+  peer-group member`.
+- **`hostname` reappears even though the template omits it** — FRR falls back to
+  the system hostname.
+
+⚠ **Redact the `password` line before pasting output anywhere.** It's the FRR
+master password in cleartext: `vtysh -c 'show running-config' | grep -v password`.
+
+If those aren't there, **stop**. [Bug #7859](https://redmine.pfsense.org/issues/7859)
+was a case where a config-tag rename caused raw config to be *silently ignored*,
+so this is a real failure mode, not a formality.
 
 ---
 
@@ -402,10 +460,50 @@ Source-restrict it regardless. It's the outermost of the three controls bounding
 who can peer — the others being the explicit `neighbor` lines (§4) and the peer
 group's `remote-as` check.
 
+**Verify the alias actually has members:**
+
+```sh
+pfctl -t <alias name> -T show     # must list every node IP from bgp-nodes.txt
+```
+
+⚠ **An empty alias and a correct one look identical in the rule counters.** Both
+show evaluations with zero packets, because this rule governs the *node dialing
+pfSense* — and pre-Calico nothing ever does. `pfctl -T show` is the only check
+that distinguishes them.
+
+Traffic in the other direction needs no rule: pfSense dialing out to a node on
+179 is covered by the built-in *"let out anything from firewall host itself"*.
+Seeing a state like `<peer ip>:<port> -> <node ip>:179` is good evidence that
+routing and L2 reachability to the node are fine, independent of BGP.
+
 Separately, once LB routes are being learned, traffic *to* the LB range from
 other segments needs its own pass rules. Learning a route and being permitted to
 use it are different things — a working BGP session plus a missing firewall rule
 looks exactly like a broken BGP session from a client.
+
+### ✅ Put the whole LB supernet in the "internal networks" alias
+
+**Decided 2026-08-16.** Add the **`/16` supernet** (not the per-cluster `/24`) to
+whatever alias means "internal networks" — here, `<HomeNets>`.
+
+Isolated VLANs are typically written as `pass … to ! <HomeNets>` followed by a
+catch-all `block drop`. Leaving the LB range *out* of that alias therefore grants
+those segments **unrestricted access to every LoadBalancer service** — quietly,
+via a rule written years earlier for internet access. Putting it in makes LB
+reachability **fail closed**: anything that should reach a service needs an
+explicit rule.
+
+Use the supernet so every future cluster's `<base>.<index>.0/24` inherits the
+policy automatically, instead of becoming a per-cluster checklist item.
+
+Safe to apply: an alias used only in `to ! <alias>` tests can never grant
+reachability by growing, only remove it.
+
+**Return traffic is unaffected**, including where a rule blocks the cluster
+segment from initiating to LAN. pf creates a **state pair** for routed flows —
+one state per interface — so replies match the outbound state rather than being
+re-evaluated against inbound block rules. Confirm on any existing cross-segment
+flow in `pfctl -ss` before worrying about it.
 
 ---
 
@@ -421,6 +519,13 @@ anything to peer with.
 > config showed *no* neighbors at all, and an empty `show bgp summary` was
 > success. If you're reading an old note that says that, it no longer applies
 > (§4).
+
+> **Running these:** SSH to pfSense and pick **8) Shell** (or use
+> **Diagnostics > Command Prompt**). `vtysh -c '<command>'` runs one and exits;
+> bare `vtysh` gives an interactive prompt where `?` is context help and
+> `terminal length 0` turns off `--More--` paging. ⚠ **Read-only** — vtysh can
+> configure FRR, but those edits are wiped on the next GUI Apply (§4), and the
+> rendered file is the source of truth.
 
 Pre-cluster, verify the daemon is up, the config loaded, and the neighbor list
 matches the node map:
@@ -538,6 +643,19 @@ repo already uses for Ignition.
 
 The play reads inventory and writes two local files — it does **not** touch
 pfSense or any node. Delivery is a manual paste, because pfSense CE ships no API.
+
+> ⚠ **pfSense is a render target, not a source of truth.** Editing the raw
+> config directly is tempting for a one-line change, and it works — until the
+> next render, which regenerates the whole file from the vault and reverts your
+> edit on paste. **Silently**: nothing errors, the value just goes backwards.
+>
+> The worst case is a rotated credential. Change
+> `vault_frr_master_password` on the box but not in the vault, and the next paste
+> quietly restores the old password. Whatever you change on pfSense, change in
+> the vault too — even if you don't re-render right away.
+>
+> Before any paste, diff the new render against what's running and confirm the
+> only differences are ones you intended.
 
 **Committed:** `playbooks/templates/frr.conf.j2`, `playbooks/render-frr-config.yml`.
 **Never committed:** anything under `ansible/.frr/` — `frr.conf` embeds the FRR
