@@ -337,7 +337,7 @@ arrives — that's a later milestone (§6), not this one.
 **What was added (all in `roles/flatcar_vm/` + `group_vars`):**
 - `group_vars/all/vars.yml`: `k3s_version_default` (seed asset, Renovate
   marker), `k3s_cluster_cidr`/`k3s_service_cidr` (pinned, guardrail §8),
-  `k3s_tokens`/`k3s_tls_sans_by_cluster` (vaulted). `vault.example.yml` gains
+  `k3s_tokens`/`k3s_tls_sans_by_cluster` (vaulted). `BWS-SECRETS.md` gains
   `vault_k3s_tokens`/`vault_k3s_tls_sans_by_cluster`.
 - `preflight.yml`: derives `k3s_enabled`/`k3s_role`/`k3s_taint`, resolves the
   cluster-scoped `k3s_token`/`k3s_tls_sans`, asserts the role is known and the
@@ -800,7 +800,7 @@ apply once k3s work starts.
    interface list, so that half stays a manual check.
 
    **The pfSense config is generated, not hand-written:**
-   `ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass` renders
+   `ansible-playbook playbooks/render-frr-config.yml` renders
    `ansible/.frr/frr.conf` (paste target) and `bgp-nodes.txt` (firewall alias
    members) from the node map. Both git-ignored — `frr.conf` embeds the FRR
    master password. Full runbook: `docs/pfsense-frr-bgp-setup.md`.

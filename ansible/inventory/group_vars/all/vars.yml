@@ -3,39 +3,44 @@
 # holds only:
 #   - generic, non-revealing constants (MAC OUI, Flatcar channel/version), and
 #   - the *shape* of the config, with every environment-revealing value pulled
-#     in via a {{ vault_* }} reference.
+#     in via a {{ bws.* }} reference.
 #
 # Everything sensitive — internal IPs, subnets, VLANs, gateways, hostnames,
-# storage names, the SSH public key, and the full API credential — lives
-# encrypted in vault.yml (this same all/ directory; see ../vault.example.yml).
-# Nothing here exposes the real environment; you can read the structure without
-# the vault password, but not the values.
+# storage names, the SSH public key, and the full API credential — lives in
+# **Bitwarden Secrets Manager** and is fetched at run time into the `bws` fact
+# by playbooks/tasks/load-bws-secrets.yml. There is no vault.yml. Nothing here
+# exposes the real environment; you can read the structure without any
+# credential, but not the values. Secret names to create: ../BWS-SECRETS.md.
+#
+# ⚠ These references are LAZILY templated — they resolve when used, not when
+# group_vars loads. A play that forgets to include load-bws-secrets.yml fails
+# loudly with "'bws' is undefined" rather than rendering empty strings.
 #
 # NOTE: the network *topology* is also described in the root CLAUDE.md — if the
 # goal is truly zero topology in git, that doc would need scrubbing too.
 
 # --- DNS -------------------------------------------------------------------
 # Static resolvers, injected into eth0's networkd unit (ansible/CLAUDE.md §1.1).
-dns_servers: "{{ vault_dns_servers }}"
+dns_servers: "{{ bws.dns_servers.splitlines() | map('trim') | reject('equalto', '') | list }}"
 
 # --- Networks --------------------------------------------------------------
 # eth0: DMZ / k3s cluster-facing. Plain 1500 MTU, has the default route.
 # prefix/MTU are generic constants (kept in cleartext); the revealing bits
 # (subnet, VLAN tag, bridge, gateway) come from the vault.
 dmz_network:
-  subnet_base: "{{ vault_dmz_subnet_base }}"
+  subnet_base: "{{ bws.dmz_subnet_base }}"
   prefix: 24
-  vlan: "{{ vault_dmz_vlan }}"
-  bridge: "{{ vault_dmz_bridge }}"
-  gateway: "{{ vault_dmz_gateway }}"
+  vlan: "{{ bws.dmz_vlan | int }}"
+  bridge: "{{ bws.dmz_bridge }}"
+  gateway: "{{ bws.dmz_gateway }}"
 
 # eth1: Ceph public network. Tagged on vmbr* , jumbo frames end-to-end.
 # NO gateway — this NIC must never carry a default route (Ceph mons/OSDs only).
 ceph_public_network:
-  subnet_base: "{{ vault_ceph_subnet_base }}"
+  subnet_base: "{{ bws.ceph_subnet_base }}"
   prefix: 24
-  vlan: "{{ vault_ceph_vlan }}"
-  bridge: "{{ vault_ceph_bridge }}"
+  vlan: "{{ bws.ceph_vlan | int }}"
+  bridge: "{{ bws.ceph_bridge }}"
   mtu: 8996
 
 # Proxmox's registered OUI — matches what PVE auto-generates. Public/generic
@@ -51,16 +56,16 @@ node_user: "admin"
 
 # Public key(s) authorized for the node's admin user (key-only; no passwords).
 # A public key isn't a secret, but it's identity-revealing, so it's vaulted too.
-ssh_authorized_keys: "{{ vault_ssh_authorized_keys }}"
+ssh_authorized_keys: "{{ bws.ssh_authorized_keys.splitlines() | map('trim') | reject('equalto', '') | list }}"
 
 # --- Proxmox connection ----------------------------------------------------
 # API access for the proxmox_* modules (run from the control node). Uses a
 # scoped API token, NOT root@pam (ansible/CLAUDE.md; design doc Appendix A).
 # Host, node name, storage, and the full credential are all vaulted.
-proxmox_api_host: "{{ vault_proxmox_api_host }}"
-proxmox_api_user: "{{ vault_proxmox_api_user }}"
-proxmox_api_token_id: "{{ vault_proxmox_api_token_id }}"
-proxmox_api_token_secret: "{{ vault_proxmox_api_token_secret }}"
+proxmox_api_host: "{{ bws.proxmox_api_host }}"
+proxmox_api_user: "{{ bws.proxmox_api_user }}"
+proxmox_api_token_id: "{{ bws.proxmox_api_token_id }}"
+proxmox_api_token_secret: "{{ bws.proxmox_api_token_secret }}"
 
 # PVE ships a self-signed API cert (port 8006) and the control node has no CA to
 # verify it against, so the proxmox_* API modules fail with CERTIFICATE_VERIFY_
@@ -70,7 +75,7 @@ proxmox_api_token_secret: "{{ vault_proxmox_api_token_secret }}"
 proxmox_validate_certs: false
 
 # Proxmox cluster node NAME (as PVE knows it) to create the VM on — vaulted.
-proxmox_node: "{{ vault_proxmox_node }}"
+proxmox_node: "{{ bws.proxmox_node }}"
 # Inventory host alias we SSH into for snippet upload + `qm` fallbacks. This is
 # a generic, non-revealing alias defined in inventory/hosts.yml (the real
 # address/user it points to are vaulted there) — safe in cleartext.
@@ -81,20 +86,20 @@ proxmox_ssh_host: "pve"
 # `provisioner` user (recommended — see README) we escalate with sudo, scoped
 # to just `qm` via /etc/sudoers.d/provisioner. As root, call it directly. Works
 # both ways, so the ssh user is a free choice.
-proxmox_qm: "{{ 'qm' if vault_proxmox_ssh_user == 'root' else 'sudo qm' }}"
+proxmox_qm: "{{ 'qm' if bws.proxmox_ssh_user == 'root' else 'sudo qm' }}"
 # Same idea for the snippet-dir repair in flatcar_vm (PVE resets that dir's
 # group+setgid on storage activation). ⚠ The sudoers rules are FIXED-ARGUMENT,
 # so the repair commands must match them byte-for-byte — changing
-# `vault_proxmox_snippet_dir`, the group, or the mode means updating
+# the `proxmox_snippet_dir` secret, the group, or the mode means updating
 # /etc/sudoers.d/provisioner on every PVE node too (README step 4).
-proxmox_sudo: "{{ '' if vault_proxmox_ssh_user == 'root' else 'sudo ' }}"
+proxmox_sudo: "{{ '' if bws.proxmox_ssh_user == 'root' else 'sudo ' }}"
 proxmox_snippet_group: "pve-snippets"
 proxmox_snippet_mode: "2770"
 
 # Storage targets — names reveal the environment, so they're vaulted.
-proxmox_vm_storage: "{{ vault_proxmox_vm_storage }}"
-proxmox_snippet_storage: "{{ vault_proxmox_snippet_storage }}"
-proxmox_snippet_dir: "{{ vault_proxmox_snippet_dir }}"
+proxmox_vm_storage: "{{ bws.proxmox_vm_storage }}"
+proxmox_snippet_storage: "{{ bws.proxmox_snippet_storage }}"
+proxmox_snippet_dir: "{{ bws.proxmox_snippet_dir }}"
 
 # --- Flatcar template ------------------------------------------------------
 # Generic upstream image coordinates — not environment-specific, kept cleartext.
@@ -152,21 +157,43 @@ k3s_service_cidr: "10.43.0.0/16"
 # provision-nodes.yml destroys the .ign once the node has booted (see
 # destroy_ignition_snippet).
 #
-# ⚠ `| default({})` is NOT laxity — it's what lets the preflight assert speak.
-# Without it, a missing vault_k3s_tokens raises "'vault_k3s_tokens' is undefined"
-# while Ansible evaluates the assert's own conditional, so the carefully-worded
-# fail_msg naming the migration never renders and you get a stack trace pointing
-# at THIS line instead. An empty map reaches the assert, which then fails with a
-# message you can act on. The assert is mandatory for every k3s node, so nothing
-# is silently permitted by defaulting here.
-k3s_tokens: "{{ vault_k3s_tokens | default({}) }}"
+# Assembled from ONE BWS SECRET PER CLUSTER, named `k3s_token_<cluster>`. Each
+# is a plain scalar string, so every secret stays paste-into-a-field editable —
+# no JSON hand-authored into a textarea with no validation (Appendix A).
+#
+# ⚠ A cluster with no matching secret is OMITTED rather than defaulted, so the
+# preflight assert in roles/flatcar_vm can name the missing cluster. Never make
+# this raise: an exception here surfaces as a stack trace pointing at THIS line
+# while Ansible evaluates the assert's own conditional, and the carefully-worded
+# fail_msg never renders. An incomplete map reaches the assert, which then fails
+# with a message you can act on. The assert is mandatory for every k3s node, so
+# nothing is silently permitted by being lenient here.
+k3s_tokens: >-
+  {%- set out = {} -%}
+  {%- for name in clusters -%}
+  {%- if ('k3s_token_' ~ name) in bws -%}
+  {%- set _ = out.update({name: bws['k3s_token_' ~ name]}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ out }}
 
 # Extra API-server cert SANs beyond the node IP + hostname the config always
 # includes — also keyed by cluster name, and per-cluster by nature: a stable API
 # DNS name or VIP belongs to exactly one cluster, so a fleet-wide list would put
 # cluster B's name into cluster A's certificate. Optional per cluster; a missing
 # entry means "no extra SANs".
-k3s_tls_sans_by_cluster: "{{ vault_k3s_tls_sans_by_cluster | default({}) }}"
+# Same shape: optional `k3s_tls_sans_<cluster>` secrets, newline-separated so a
+# multi-SAN list pastes in as lines rather than needing an encoding. A cluster
+# with no such secret simply gets no extra SANs.
+k3s_tls_sans_by_cluster: >-
+  {%- set out = {} -%}
+  {%- for name in clusters -%}
+  {%- if ('k3s_tls_sans_' ~ name) in bws -%}
+  {%- set _ = out.update({name: bws['k3s_tls_sans_' ~ name].splitlines()
+                                 | map('trim') | reject('equalto', '') | list}) -%}
+  {%- endif -%}
+  {%- endfor -%}
+  {{ out }}
 
 # --- Post-boot snippet cleanup (playbooks/provision-nodes.yml) -------------
 # After a node boots, provision-nodes.yml removes `cicustom` from its VM config
@@ -298,14 +325,14 @@ bgp_asn_base: 64600
 # route on admin distance, and on-subnet clients ARP for an address that
 # nothing answers (Calico does no L2 for LB IPs — that's MetalLB's L2 mode,
 # which we don't run). Environment-revealing, so vaulted.
-lb_range_base: "{{ vault_lb_range_base }}"
+lb_range_base: "{{ bws.lb_range_base }}"
 
 # FRR's internal daemon password (Services > FRR Global Settings) — NOT a BGP
 # peer password. Saving raw config replaces the generated frr.conf wholesale,
 # so this has to appear IN the rendered file, which is why that artifact is
 # git-ignored and mode 0600. A credential per the root CLAUDE.md tiers:
 # BWS-managed, never in a committed manifest.
-frr_master_password: "{{ vault_frr_master_password }}"
+frr_master_password: "{{ bws.frr_master_password }}"
 
 # --- THE per-cluster BGP derivation ----------------------------------------
 # Every cluster-scoped BGP value, computed once from that cluster's `index`.
@@ -338,3 +365,31 @@ cluster_bgp: >-
       }}) -%}
   {%- endfor -%}
   {{ out }}
+
+# --- Bitwarden Secrets Manager connection -----------------------------------
+# How playbooks/tasks/load-bws-secrets.yml reaches BWS. The values below are
+# NOT credentials — the only credential is the machine-account access token,
+# which lives in the macOS Keychain and never touches this repo.
+
+# Organization UUID. Environment-identifying but not secret, and it cannot come
+# from BWS (you need it to make the call). Set BWS_ORG_ID in your environment,
+# or override with -e bws_organization_id=...
+bws_organization_id: "{{ lookup('ansible.builtin.env', 'BWS_ORG_ID') }}"
+
+# Optional: restrict to one project. The access token is already scoped
+# read-only to a single project, so this is belt-and-braces for the case where a
+# token is later widened. Leave unset to accept everything the token can read.
+# bws_project_id: "<project uuid>"
+
+# Where secret zero lives. Keychain Access > File > New Password Item:
+#   Keychain Item Name -> bws_keychain_service
+#   Account Name       -> bws_keychain_account
+#   Password           -> the machine-account access token
+# Reading it prompts (Touch ID / login password) unless you allow-list a caller,
+# which is the point: an interactive unlock per run, like was,
+# but with a scoped expiring token instead of a passphrase.
+bws_keychain_service: "BWS_ACCESS_TOKEN"
+bws_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
+bws_keychain_command: >-
+  security find-generic-password -w -s {{ bws_keychain_service | quote }}
+  -a {{ bws_keychain_account | quote }}

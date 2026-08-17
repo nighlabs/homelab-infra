@@ -7,10 +7,10 @@
 # forms. Full procedure: docs/pfsense-frr-bgp-setup.md §5.
 #
 # Run:
-#   ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass
+#   ansible-playbook playbooks/render-frr-config.yml
 #
 # Review/diff without exposing the FRR master password:
-#   ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass \
+#   ansible-playbook playbooks/render-frr-config.yml \
 #     -e frr_redact_password=true
 #
 # Outputs (git-ignored — frr.conf embeds the FRR master password, mode 0600):
@@ -32,6 +32,11 @@
     frr_out_dir: "{{ playbook_dir }}/../.frr"
     frr_redact_password: false
   tasks:
+    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    - name: Load secrets from Bitwarden Secrets Manager
+      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+
     # clusters: → a flat, cluster-annotated `nodes` map, plus the global
     # hostname/node_number uniqueness asserts.
     - name: Load the node map

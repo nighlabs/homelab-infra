@@ -21,7 +21,7 @@
 !   ansible/inventory/nodes.yml               (clusters + nodes)
 !   ansible/inventory/group_vars/all/vars.yml (ASNs, LB ranges)
 ! then re-render with:
-!   ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass
+!   ansible-playbook playbooks/render-frr-config.yml
 ! and paste the WHOLE file back.
 !
 ! Source: inventory/nodes.yml — {{ cluster_rows | length }} cluster(s), {{ bgp_nodes | length }} node(s)

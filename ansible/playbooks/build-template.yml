@@ -12,5 +12,12 @@
       api_token_id: "{{ proxmox_api_token_id }}"
       api_token_secret: "{{ proxmox_api_token_secret }}"
       validate_certs: "{{ proxmox_validate_certs }}"
+  pre_tasks:
+    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # vault.yml). pre_tasks so it runs before the role touches a {{ bws.* }}
+    # value — a plain `tasks:` block would run AFTER roles.
+    - name: Load secrets from Bitwarden Secrets Manager
+      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+
   roles:
     - flatcar_template

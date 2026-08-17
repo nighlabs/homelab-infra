@@ -1,0 +1,229 @@
+---
+# ONE-SHOT MIGRATION HELPER — delete this play once the port is done.
+#
+# Reads the still-encrypted inventory/group_vars/all/vault.yml and writes ONE
+# FILE PER BITWARDEN SECRET into a git-ignored 0700 directory, already reshaped:
+# YAML lists become one-entry-per-line, and the per-cluster maps become one file
+# per cluster. Then each secret is a `pbcopy < .bws-port/<name>` away.
+#
+# TWO MODES.
+#
+#   Dry run — write the files, create nothing (default). Also a useful preview:
+#     uv run ansible-playbook playbooks/port-vault-to-bws.yml --ask-vault-pass
+#     pbcopy < .bws-port/proxmox_api_token_secret   # paste by hand if you prefer
+#
+#   Import — create every missing secret in BWS directly:
+#     uv run ansible-playbook playbooks/port-vault-to-bws.yml --ask-vault-pass \
+#       -e bws_import=true -e bws_project_id=<project uuid> \
+#       -e bws_write_token="$(security find-generic-password -w -s BWS_WRITE_TOKEN -a $USER)"
+#
+#   rm -rf .bws-port                                # when finished
+#
+# WHY THIS EXISTS rather than hand-copying: `proxmox_api_token_secret` and
+# `k3s_token_<cluster>` are long opaque strings where a truncated paste fails
+# confusingly and much later (a node that won't join, an API 401). Four values
+# also change shape between the two stores, which is exactly the kind of thing
+# that gets transcribed wrong once and debugged for an hour.
+#
+# ⚠ NOTHING IS PRINTED. Values go to files, never to stdout or your scrollback.
+# The summary lists names only.
+#
+# ⚠ IMPORT MODE NEEDS A WRITE-SCOPED TOKEN, which nothing else here uses.
+# Create a SEPARATE, TEMPORARY machine account with write access on the project,
+# use it for the import, then DELETE IT. Never widen the production read-only
+# token — the whole point of it being read-only is that a leak can't write.
+#
+# The import is IDEMPOTENT and RESUMABLE: it reads existing names once, then
+# creates only what's missing. That matters because BWS rate limits are
+# undocumented (throttling reported after ~6 calls in succession) and there is
+# no bulk create, so a 23-secret import can be interrupted part-way. If it
+# stops, just re-run it. `bws_import_pause` paces the calls.
+- name: Port vault.yml into per-secret files for Bitwarden Secrets Manager
+  hosts: localhost
+  gather_facts: false
+  vars:
+    port_dir: "{{ playbook_dir }}/../.bws-port"
+    nl: "\n"
+    # Straight copies — value identical, name just loses the `vault_` prefix.
+    scalar_names:
+      - proxmox_api_host
+      - proxmox_api_user
+      - proxmox_api_token_id
+      - proxmox_api_token_secret
+      - proxmox_node
+      - proxmox_ssh_addr
+      - proxmox_ssh_user
+      - proxmox_vm_storage
+      - proxmox_snippet_storage
+      - proxmox_snippet_dir
+      - dmz_subnet_base
+      - dmz_vlan
+      - dmz_bridge
+      - dmz_gateway
+      - ceph_subnet_base
+      - ceph_vlan
+      - ceph_bridge
+      - lb_range_base
+      - frr_master_password
+    # YAML lists -> one entry per line (a BWS secret has no fields, so a list
+    # has to be a string; newline-separated keeps it paste-able, unlike JSON).
+    list_names:
+      - dns_servers
+      - ssh_authorized_keys
+    # Maps keyed by cluster -> one secret per cluster, named <prefix>_<cluster>.
+    # `values_are_lists` marks the ones whose map values are themselves lists.
+    cluster_maps:
+      - {var: k3s_tokens, prefix: k3s_token, values_are_lists: false}
+      - {var: k3s_tls_sans_by_cluster, prefix: k3s_tls_sans, values_are_lists: true}
+
+  tasks:
+    # group_vars/all/vault.yml auto-loads, so --ask-vault-pass is all that's
+    # needed. If the file is already gone this fails here rather than writing a
+    # directory of empty files.
+    - name: Assert the old vault is present and decrypted
+      ansible.builtin.assert:
+        that:
+          - vault_proxmox_api_host is defined
+        fail_msg: >-
+          inventory/group_vars/all/vault.yml didn't load. Run with
+          --ask-vault-pass, and check the file still exists — this helper is
+          only useful BEFORE you delete it.
+        quiet: true
+
+    - name: Create the port directory
+      ansible.builtin.file:
+        path: "{{ port_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: Collect the straight-copy secrets
+      ansible.builtin.set_fact:
+        bws_port: "{{ bws_port | default({}) | combine({item: vars['vault_' ~ item] | string}) }}"
+      loop: "{{ scalar_names }}"
+      when: ('vault_' ~ item) in vars
+      no_log: true
+
+    - name: Collect the list-shaped secrets, one entry per line
+      ansible.builtin.set_fact:
+        bws_port: "{{ bws_port | default({}) | combine({item: vars['vault_' ~ item] | join(nl)}) }}"
+      loop: "{{ list_names }}"
+      when: ('vault_' ~ item) in vars
+      no_log: true
+
+    # Flatten {cluster: value} into <prefix>_<cluster> entries. An empty map
+    # (e.g. vault_k3s_tls_sans_by_cluster: {}) correctly produces no files —
+    # vars.yml omits clusters with no matching secret, so that's the right
+    # outcome, not a gap. Nested loop, hence the include.
+    - name: Collect the per-cluster secrets
+      ansible.builtin.include_tasks: tasks/port-cluster-map.yml
+      loop: "{{ cluster_maps }}"
+      loop_control:
+        loop_var: cmap
+        label: "{{ cmap.var }}"
+
+    - name: Write one file per secret
+      ansible.builtin.copy:
+        # No trailing newline: `pbcopy < file` would otherwise carry it into the
+        # BWS value field, which matters for opaque tokens.
+        content: "{{ item.value }}"
+        dest: "{{ port_dir }}/{{ item.key }}"
+        mode: "0600"
+      loop: "{{ bws_port | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      no_log: true
+
+    # Anything in the vault that this play doesn't know about would otherwise be
+    # dropped silently — which is exactly how a secret goes missing and surfaces
+    # weeks later. Name them instead.
+    - name: Find vault variables this helper did not port
+      vars:
+        ported: >-
+          {{ (scalar_names + list_names)
+             | map('regex_replace', '^', 'vault_') | list
+             + (cluster_maps | map(attribute='var') | map('regex_replace', '^', 'vault_') | list) }}
+        found: "{{ lookup('ansible.builtin.varnames', '^vault_', wantlist=True) }}"
+      ansible.builtin.set_fact:
+        unported: "{{ found | difference(ported) }}"
+
+    - name: Warn about anything left behind
+      ansible.builtin.debug:
+        msg: >-
+          ⚠ These vault variables were NOT ported and have no BWS secret:
+          {{ unported | join(', ') }}. Either they are obsolete (fine — confirm,
+          then ignore), or BWS-SECRETS.md and group_vars/all/vars.yml need
+          updating. Do not delete vault.yml until you've decided.
+      when: unported | length > 0
+
+    # --- Optional: create the secrets in BWS directly -----------------------
+    - name: Create the secrets in Bitwarden
+      when: bws_import | default(false) | bool
+      block:
+        - name: Assert the import inputs are present
+          ansible.builtin.assert:
+            that:
+              - bws_write_token is defined and (bws_write_token | trim | length) > 0
+              - bws_project_id is defined and (bws_project_id | trim | length) > 0
+              - bws_organization_id is defined and (bws_organization_id | trim | length) > 0
+            fail_msg: >-
+              Import mode needs -e bws_write_token=... (a WRITE-scoped token from
+              a temporary machine account, NOT the read-only runtime one),
+              -e bws_project_id=<uuid>, and BWS_ORG_ID / -e bws_organization_id.
+            quiet: true
+
+        # One read, so the per-secret creates below need no lookups of their own.
+        - name: Read the secrets that already exist
+          bws_secrets:
+            access_token: "{{ bws_write_token }}"
+            organization_id: "{{ bws_organization_id }}"
+            project_id: "{{ bws_project_id }}"
+          register: bws_existing
+          no_log: true
+
+        - name: Report what is already there
+          ansible.builtin.debug:
+            msg: >-
+              {{ bws_existing.count }} secret(s) already in the project
+              {{ '(' ~ (bws_existing.names | join(', ')) ~ ')' if bws_existing.count > 0 else '' }}
+              — those will be SKIPPED, not overwritten.
+
+        # `pause` spaces the calls out: creation is one API call per secret (no
+        # bulk create), and the rate limit is unpublished. Cheap insurance on a
+        # one-shot run; raise bws_import_pause if it still throttles.
+        - name: Create each missing secret
+          bws_secret:
+            access_token: "{{ bws_write_token }}"
+            organization_id: "{{ bws_organization_id }}"
+            project_id: "{{ bws_project_id }}"
+            key: "{{ item.key }}"
+            value: "{{ item.value }}"
+            note: "Ported from ansible vault.yml"
+            existing_names: "{{ bws_existing.names }}"
+          loop: "{{ bws_port | dict2items }}"
+          loop_control:
+            label: "{{ item.key }}"
+            pause: "{{ bws_import_pause | default(1) }}"
+          register: bws_created
+          no_log: true
+
+        - name: Import summary
+          ansible.builtin.debug:
+            msg: >-
+              Created {{ bws_created.results | selectattr('created') | list | length }},
+              skipped {{ bws_created.results | rejectattr('created') | list | length }}
+              (already present). Now verify with
+              `uv run ansible-playbook playbooks/render-frr-config.yml -v`, then
+              DELETE the temporary write machine account.
+
+    - name: What to do next
+      ansible.builtin.debug:
+        msg: >-
+          Wrote {{ bws_port | length }} secret file(s) to {{ port_dir }} (0600):
+          {{ bws_port.keys() | sort | join(', ') }}.
+          Create each in Bitwarden with that exact name —
+          `pbcopy < {{ port_dir }}/<name>` puts the value on the clipboard with
+          no trailing newline. Verify with
+          `uv run ansible-playbook playbooks/render-frr-config.yml -v`, then
+          `rm -rf {{ port_dir }}` AND delete
+          inventory/group_vars/all/vault.yml (Ansible auto-loads it and every
+          run will demand a passphrase until it's gone).

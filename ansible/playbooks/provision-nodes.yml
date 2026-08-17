@@ -3,8 +3,8 @@
 # snoop-a2o). Clones the template, pins MACs, renders + delivers Ignition,
 # attaches the data disk, boots. No k3s — that's the next task.
 #
-# Run:  ansible-playbook playbooks/provision-nodes.yml --ask-vault-pass
-# One:  ansible-playbook playbooks/provision-nodes.yml -e node_filter=snoop-a2o --ask-vault-pass
+# Run:  ansible-playbook playbooks/provision-nodes.yml
+# One:  ansible-playbook playbooks/provision-nodes.yml -e node_filter=snoop-a2o
 - name: Provision Flatcar VM shells
   hosts: localhost
   gather_facts: false
@@ -20,6 +20,11 @@
       api_token_secret: "{{ proxmox_api_token_secret }}"
       validate_certs: "{{ proxmox_validate_certs }}"
   tasks:
+    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    - name: Load secrets from Bitwarden Secrets Manager
+      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+
     # clusters: → a flat, cluster-annotated `nodes` map (+ the global uniqueness
     # asserts). A VM is provisioned identically regardless of which cluster it
     # joins, so the loop below doesn't care about the grouping.

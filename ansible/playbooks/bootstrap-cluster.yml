@@ -7,7 +7,7 @@
 # here. Safe to re-run: the SSH/k3s waits are idempotent and the Helm prime
 # converges to the pinned release.
 #
-# Run:  uv run ansible-playbook playbooks/bootstrap-cluster.yml --ask-vault-pass
+# Run:  uv run ansible-playbook playbooks/bootstrap-cluster.yml
 #
 # Prereqs on the control node (see README "One-time setup"): the `helm` CLI on
 # PATH, the kubernetes.core collection (requirements.yml), and the `kubernetes`
@@ -24,6 +24,11 @@
     # never hold the kubeconfig, so they're excluded here.
     server_roles: ["all-in-one", "server", "control-plane"]
   tasks:
+    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    - name: Load secrets from Bitwarden Secrets Manager
+      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+
     # clusters: → a flat `nodes` map, each node annotated with its `cluster`.
     - name: Load the node map
       ansible.builtin.include_tasks: tasks/load-node-map.yml
@@ -272,6 +277,11 @@
       "${bgp_peer_ip}": "{{ bgp_peer_ip }}"
       "${bgp_peer_asn}": "{{ bgp_peer_asn }}"
   tasks:
+    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    - name: Load secrets from Bitwarden Secrets Manager
+      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+
     - name: Assert the committed Calico pod CIDR matches k3s_cluster_cidr
       vars:
         calico_values: "{{ lookup('ansible.builtin.file', calico_values_file) | from_yaml }}"

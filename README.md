@@ -75,10 +75,10 @@ there. The short version, from the repo root:
 uv sync
 cd ansible
 uv run ansible-galaxy collection install -r requirements.yml
-cp inventory/group_vars/vault.example.yml inventory/group_vars/all/vault.yml
+cp inventory/group_vars/BWS-SECRETS.md inventory/group_vars/all/vault.yml
 # fill in the vault, then:
 uv run ansible-vault encrypt inventory/group_vars/all/vault.yml
-uv run ansible-playbook site.yml --ask-vault-pass
+uv run ansible-playbook site.yml
 ```
 
 `site.yml` builds the Flatcar template, provisions every node in

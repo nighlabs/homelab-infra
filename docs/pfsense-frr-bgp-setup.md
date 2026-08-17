@@ -398,7 +398,7 @@ before assuming.
 ### Then
 
 0. Render it (§9):
-   `ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass`
+   `ansible-playbook playbooks/render-frr-config.yml`
 1. Paste **the whole of** `ansible/.frr/frr.conf` into **Saved frr.conf** and
    save. Always paste the entire file — it's generated, so a partial edit is
    silently reverted on the next render.
@@ -634,7 +634,7 @@ restore is a known-good path rather than undo-by-memory.
 
 ```sh
 cd ansible
-ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass
+ansible-playbook playbooks/render-frr-config.yml
 ```
 
 Writes two git-ignored files to `ansible/.frr/`:
@@ -670,7 +670,7 @@ master password, so it's written `0600` into a `0700` directory and ignored in
 `ansible/.gitignore`. To share or diff a render safely:
 
 ```sh
-ansible-playbook playbooks/render-frr-config.yml --ask-vault-pass \
+ansible-playbook playbooks/render-frr-config.yml \
   -e frr_redact_password=true
 ```
 
