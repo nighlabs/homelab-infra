@@ -74,18 +74,23 @@
 
     # --- Derive the per-cluster and per-node rows ----------------------------
 
+    # Flatten `cluster_bgp` (group_vars/all/vars.yml — the ONE place the ASN and
+    # LB-range arithmetic lives) into the row shape the template iterates. The
+    # derivation deliberately is NOT repeated here: this play configures pfSense
+    # and bootstrap-cluster.yml configures Calico, and if the two ends of the
+    # session disagreed the symptom would be a peering that never establishes
+    # with both files looking correct in isolation.
     - name: Build the per-cluster BGP rows
       vars:
         row:
           name: "{{ item.key }}"
-          index: "{{ item.value.index | int }}"
-          asn: "{{ (bgp_asn_base | int) + (item.value.index | int) }}"
-          lb_range: "{{ lb_range_base }}.{{ item.value.index }}.0/24"
-          # Leading three octets of the LB /24, for the collision asserts below.
-          lb_net: "{{ lb_range_base }}.{{ item.value.index }}"
+          index: "{{ item.value.index }}"
+          asn: "{{ item.value.asn }}"
+          lb_range: "{{ item.value.lb_range }}"
+          lb_net: "{{ item.value.lb_net }}"
       ansible.builtin.set_fact:
         cluster_rows: "{{ (cluster_rows | default([])) + [row] }}"
-      loop: "{{ clusters | dict2items }}"
+      loop: "{{ cluster_bgp | dict2items }}"
       loop_control:
         label: "{{ item.key }}"
 

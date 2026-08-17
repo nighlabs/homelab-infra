@@ -1,0 +1,65 @@
+# The pool LoadBalancer IPs are ALLOCATED from. This is a different mechanism to
+# BGPConfiguration.serviceLoadBalancerIPs, which controls ADVERTISEMENT — the
+# same range must appear in both, and neither implies the other. Miss this one
+# and Services sit `pending` forever; miss the other and they get an IP nothing
+# can route to.
+#
+# LoadBalancer IPAM is OSS from Calico v3.30 (our v3.29.1 pin literally could not
+# allocate, only advertise — that's why the version bump was a prerequisite, see
+# ansible/CLAUDE.md §7 item 15).
+#
+# ⚠ This pool depends on kube-controllers-ipamconfigs-rbac.yaml, the #12890
+# workaround. Without it, allocation fails while BGP advertises perfectly
+# normally — so the symptom is `pending` LB IPs with a completely healthy-looking
+# BGP session. Do not ship one without the other.
+#
+# Standalone IPPool CR, NOT part of the Installation's calicoNetwork.ipPools
+# (values.yaml): that field is for pod networking. This is the documented shape
+# for LoadBalancer pools.
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: loadbalancer-pool
+spec:
+  # Same range as BGPConfiguration.serviceLoadBalancerIPs. Blinded — an address.
+  cidr: ${lb_range}
+
+  # LoadBalancer ONLY. Without this restriction the pool would also be a
+  # candidate for pod addresses, which would hand workloads IPs out of a range
+  # pfSense routes to the cluster as service VIPs.
+  allowedUses:
+    - LoadBalancer
+
+  # Calico assigns from this pool without the Service naming it. (Manual would
+  # reserve the pool for hand-specified addresses ONLY, requiring every Service
+  # to request one.)
+  #
+  # Automatic does NOT prevent pinning an address. A Service can still ask for a
+  # specific IP — useful where something off-cluster is configured against a
+  # fixed address (a Cloudflare Tunnel origin, a DNS record, a firewall rule):
+  #
+  #   metadata:
+  #     annotations:
+  #       "projectcalico.org/loadBalancerIPs": '["172.29.1.10"]'
+  #
+  # Note it's a Calico ANNOTATION holding a JSON array, not `spec.loadBalancerIP`
+  # (which Kubernetes deprecated and Calico's docs don't use). ⚠ There is no
+  # fallback: if the requested address isn't free, Calico assigns nothing and the
+  # Service sits pending — it does not quietly pick another. Worth reserving a
+  # low block of the /24 by convention for pinned addresses so automatic
+  # allocation never collides with one you meant to keep.
+  assignmentMode: Automatic
+
+  # Default (26). Immutable after creation, so it is stated rather than inherited
+  # — a later default change must not silently apply to a rebuilt cluster.
+  # Block granularity carries no real meaning for a LoadBalancer-only pool, which
+  # allocates per Service rather than distributing blocks across nodes.
+  blockSize: 26
+
+  # Explicitly OFF. natOutgoing masquerades traffic *sourced from* addresses in
+  # the pool — but LoadBalancer IPs are destinations, never pod source addresses,
+  # so there is nothing here to masquerade. (Calico's own docs example sets this
+  # true; that is copied from a workload pool and is not right for this use.)
+  natOutgoing: false
+
+  disabled: false

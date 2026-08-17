@@ -1,0 +1,47 @@
+# Filter for the pfSense peering. Attached via BGPPeer.spec.filters (bgppeer.yaml).
+#
+# ⚠ THE CATCH-ALL RULES ARE LOAD-BEARING, NOT DECORATION. Calico's documented
+# behaviour is: "If an address does not match any explicit BGP filter rule, the
+# default action is Accept." So a filter that merely *accepts* the LB range still
+# exports EVERYTHING ELSE — including the pod CIDR. The explicit
+# `In 0.0.0.0/0 -> Reject` rules are what make this a whitelist. Rules are
+# first-match-wins, evaluated in order, so they must stay last.
+#
+# This filter is NOT the only control. pfSense carries an independent inbound
+# prefix list permitting only the LB range (docs/pfsense-frr-bgp-setup.md §4).
+# This one is enforced by the side we'd be guarding against misconfiguring, so it
+# isn't trusted alone. If 10.42.0.0/16 ever appears in `vtysh -c 'show ip bgp'`,
+# BOTH controls failed — see ansible/CLAUDE.md §7 item 8.
+#
+# Filters attach to BGPPeers, and the node-to-node mesh is not a BGPPeer, so this
+# has NO effect on pod routing between nodes. It only shapes what crosses the
+# pfSense session.
+apiVersion: projectcalico.org/v3
+kind: BGPFilter
+metadata:
+  name: pfsense-lb-only
+spec:
+  # OUTBOUND (cluster -> pfSense): advertise the LoadBalancer range, nothing else.
+  #
+  # `matchOperator: In` means "the route's prefix falls within this CIDR", which
+  # deliberately covers BOTH advertisement shapes Calico can produce: the whole
+  # block under externalTrafficPolicy Cluster, and a /32 per Service under Local.
+  # That mirrors `le 32` on the pfSense prefix list — same reasoning, other end.
+  exportV4:
+    - action: Accept
+      matchOperator: In
+      cidr: ${lb_range}
+    # Catch-all. Without this, the pod CIDR is exported by default.
+    - action: Reject
+      matchOperator: In
+      cidr: 0.0.0.0/0
+
+  # INBOUND (pfSense -> cluster): learn nothing. Nodes get their default route
+  # statically from Ignition (repo rule: no DHCP in cluster networking), so there
+  # is nothing pfSense could usefully tell us, and this keeps the LAN routing
+  # table from ever entering the cluster. pfSense's `<CLUSTER>-OUT deny any`
+  # prefix list is the matching control on its side.
+  importV4:
+    - action: Reject
+      matchOperator: In
+      cidr: 0.0.0.0/0

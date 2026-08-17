@@ -16,8 +16,10 @@ deployment/<cluster>/     # Flux entrypoints: the per-cluster Kustomization CRs
 crds/                     # CRDs that must be Established BEFORE controllers:
   calico/                   #   vendored, server-side applied (see below)
 infrastructure/           # controllers, in dependency order (design §6):
-  calico/                   #   calico (CNI + BGP) -> cert-manager ->
-  kustomization.yaml        #   ceph-csi-operator -> ESO + Bitwarden SDK -> ...
+  calico/                   #   INSTALLS calico (operator chart + values)
+  calico-bgp/               #   CONFIGURES it: BGP CRs, LB IPAM pool, #12890 RBAC
+  kustomization.yaml        #   then cert-manager -> ceph-csi-operator ->
+                          #   ESO + Bitwarden SDK -> ...
                           #   (no metallb — Calico BGP owns LB, see below)
 apps/                     # workloads only: litellm, qdrant, open-webui, ...
                           #   (empty until the infra layer is up)
@@ -128,19 +130,27 @@ spec:
 needed before ESO exists — see root `CLAUDE.md`). Values then rotate without a
 commit, and diffs stay fully readable.
 
-> **Refined 2026-08-16 — only the address-shaped values need blinding.** With the
-> values settled (`ansible/CLAUDE.md` §7 item 6), the split is:
+> **⚠ Substitute EVERY shared value, not just the secret-shaped ones
+> (2026-08-16).** An earlier draft of this section argued the two ASNs could be
+> literals because a private-range AS number reveals nothing. That reasoning is
+> sound and *answers the wrong question*: blinding asks "does this need hiding?",
+> but the reason these are variables is **single-sourcing**. Every one of them is
+> defined once in Ansible and consumed by both sides of the peering, so a literal
+> in Git is a second copy that can drift.
 >
-> | Value | In Git as | Why |
+> | Value | In Git as | Defined in |
 > |---|---|---|
-> | `peerIP` | `${bgp_peer_ip}` | an address — blind it |
-> | LB range | `${lb_range}` | an address — blind it |
-> | `BGPPeer.spec.asNumber` (pfSense, `64512`) | literal | a private-range AS number reveals nothing |
-> | `BGPConfiguration.spec.asNumber` (cluster, `64601`) | literal | same |
+> | `peerIP` | `${bgp_peer_ip}` | `dmz_network.gateway` (vaulted) |
+> | LB range | `${lb_range}` | `lb_range_base` + cluster `index` |
+> | `BGPPeer.spec.asNumber` | `${bgp_peer_asn}` | `bgp_peer_asn` |
+> | `BGPConfiguration.spec.asNumber` | `${cluster_asn}` | `bgp_asn_base` + cluster `index` |
 >
-> Both ASNs are already cleartext in `ansible/inventory/group_vars/all/vars.yml`,
-> so blinding them here would be theater — and it costs readability at the exact
-> place the empty-string substitution trap below bites hardest.
+> The bottom two are **derived**, which is what makes a literal actively
+> dangerous rather than merely redundant: change a cluster's `index`, or add a
+> second cluster, and Git still says `64601` while Ansible and pfSense have moved
+> on. The session simply never establishes and nothing in the diff looks wrong.
+> This matches the root `CLAUDE.md` tier table, which lists "BGP peer IP/**ASN**,
+> LB range" under post-build substitution.
 >
 > ⚠ **The LB range appears in TWO places on the Calico side**, and they are
 > different mechanisms: the pool LB IPs are *allocated* from (Calico 3.32's
@@ -161,6 +171,13 @@ commit, and diffs stay fully readable.
 - `$${var}` escapes a literal; `$var` is untouched; substitution into a Secret
   needs `.stringData`. Disable per-resource with the annotation
   `kustomize.toolkit.fluxcd.io/substitute: disabled`.
+- **`${...}` in a YAML comment is safe — with one exception.** kustomize strips
+  comments when it re-emits resources, so prose like "an undefined `${var}`
+  reconciles as empty" never reaches the cluster. **But a file pulled in by
+  `configMapGenerator` is embedded as *data*, comments and all** — so a `${...}`
+  written in a comment inside `values.yaml` WOULD survive, get substituted, and
+  under `StrictPostBuildSubstitutions` fail the whole reconcile. Verified with
+  `kubectl kustomize`; re-check if that pattern spreads to other controllers.
 - **Keep substituted resources out of kustomize `Components`** —
   [kustomize-controller#1506](https://github.com/fluxcd/kustomize-controller/issues/1506)
   reports flaky `substituteFrom` behavior there. (Components are the same blind
@@ -182,9 +199,34 @@ commit, and diffs stay fully readable.
 ## Calico BGP — CRs, not Helm values
 
 `values.yaml` stays the shared Helm values source. `BGPConfiguration`,
-`BGPPeer`, and `BGPFilter` are **Calico CRs**, so they're plain manifests in
-`infrastructure/calico/` referenced by its `kustomization.yaml` — they can't go
-through `valuesFrom`.
+`BGPPeer`, and `BGPFilter` are **Calico CRs**, so they're plain manifests — they
+can't go through `valuesFrom`.
+
+> **⚠ They live in `infrastructure/calico-bgp/`, NOT `infrastructure/calico/`
+> (2026-08-16).** Forced by kustomize, and verified rather than assumed:
+> `calico/kustomization.yaml` sets `namespace: tigera-operator` for the
+> HelmRelease and generated ConfigMap, and **the namespace transformer stamps a
+> namespace on every resource it can't prove is cluster-scoped.** It ships
+> schemas for core kinds — hence the ClusterRole/ClusterRoleBinding come out
+> clean — but not for CRDs, so `BGPConfiguration`/`BGPPeer`/`BGPFilter`/`IPPool`
+> all emerged carrying `namespace: tigera-operator` despite being cluster-scoped.
+>
+> The obvious fix fails too: a JSON6902 `op: remove` on `/metadata/namespace`
+> errors with *"Unable to remove nonexistent key"*, because **patches run before
+> the namespace transformer**. A sibling directory outside the transformer's
+> scope is the robust answer, and the split says something true —
+> `calico/` installs Calico, `calico-bgp/` configures it.
+>
+> **Generalizes:** any future cluster-scoped CR added under a kustomization with
+> a `namespace:` will hit this. Check with `kubectl kustomize` rather than
+> trusting that the applier ignores a stray namespace.
+
+⚠ **These are `projectcalico.org/v3` resources** — served by the aggregated
+**calico-apiserver**, not by the CRDs in `crds/`. So they need Calico *running*,
+not merely its CRDs Established. Ansible primes them before Flux ever sees them,
+so Flux's first reconcile is an adoption; if that ordering ever changes,
+`calico-bgp` needs its own Flux Kustomization with `dependsOn` on the
+HelmRelease.
 
 - `values.yaml` moves to `bgp: Enabled` + **no encapsulation** (from
   `VXLANCrossSubnet`). Calico's VXLAN path uses no BGP at all, so this makes BGP
@@ -194,6 +236,14 @@ through `valuesFrom`.
 - `BGPFilter` (via `BGPPeer.spec.filters`) exports **only the LB range** and
   explicitly rejects the rest, so pfSense never learns the pod CIDR. Filters
   attach to `BGPPeer`s and the mesh isn't one, so the dataplane is unaffected.
+  - **⚠ The catch-all Reject rules are load-bearing.** Calico: *"If an address
+    does not match any explicit BGP filter rule, the default action is
+    `Accept`."* A filter that only *accepts* the LB range therefore still exports
+    the pod CIDR. `In 0.0.0.0/0 -> Reject` last (rules are first-match-wins) is
+    what makes it a whitelist rather than a suggestion.
+  - `matchOperator: In` covers **both** advertisement shapes — the whole block
+    under `externalTrafficPolicy: Cluster` and a /32 per Service under `Local`.
+    Same reasoning as `le 32` on the pfSense prefix list, other end of the wire.
   - **Not the only control.** pfSense carries an independent inbound prefix list
     permitting just the LB range (`ansible/CLAUDE.md` §7 item 8,
     `docs/pfsense-frr-bgp-setup.md` §6). The `BGPFilter` is enforced by the side

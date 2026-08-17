@@ -39,15 +39,67 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > change**, contrary to the original "one rebuild instead of two" plan: the BGP
 > work is blocked on pfSense values, while the version bump had no external
 > dependency, so batching them would have held a ready change hostage AND put
-> two variables in one rebuild. `values.yaml` is therefore still
-> `VXLANCrossSubnet` + `bgp: Disabled`.
+> two variables in one rebuild. ~~`values.yaml` is therefore still
+> `VXLANCrossSubnet` + `bgp: Disabled`.~~ **SUPERSEDED 2026-08-16 — it is now
+> `encapsulation: None` + `bgp: Enabled`; see the DONE block below.**
 >
-> **⚠ The #12890 LoadBalancer-IPAM RBAC workaround is NOT yet applied.** That is
+> ~~**⚠ The #12890 LoadBalancer-IPAM RBAC workaround is NOT yet applied.** That is
 > fine *only* because nothing allocates LoadBalancer IPs yet — it becomes
 > load-bearing the moment the BGP work starts, and a gap there stalls the
 > Gateway → cert-manager → ESO chain with LB IPs stuck `pending` while BGP looks
-> healthy. **Apply it with the BGP change, not after** (item 15). The old
-> "MetalLB secrets-ordering trap" is **resolved** — see §6 step 5.
+> healthy. **Apply it with the BGP change, not after** (item 15).~~
+> **SUPERSEDED 2026-08-16 — applied and verified working; it did land *with* the
+> BGP change as required.** The old "MetalLB secrets-ordering trap" is
+> **resolved** — see §6 step 5.
+>
+> **✅✅ DONE + VERIFIED LIVE 2026-08-16 — THE CALICO BGP MIGRATION IS COMPLETE.**
+> Proven end-to-end on a **from-scratch rebuild** of `snoop-a2o` (VM destroyed and
+> reprovisioned, not an in-place change — so no VXLAN residue and the first-boot
+> path is what got tested). §7 items 6, 8 and 13 are closed; item 15's workaround
+> is confirmed working rather than merely applied.
+>
+> | Evidence | |
+> |---|---|
+> | Dataplane | `bgp: Enabled`, `linuxDataplane: BPF`, pod pool **`Never / Never`** (no IPIP, no VXLAN) |
+> | Session | `Global_172_16_1_1 BGP master up **Established**`, stable |
+> | Allocation | test Service got `172.29.1.128` immediately (**#12890 workaround works**) |
+> | **Reachability** | **`HTTP 200` in 10 ms from the LAN segment, hop 1 = pfSense** |
+> | Export | BIRD exports **exactly** `172.29.1.0/24`; pfSense shows `PfxRcd 1`, `Displayed 1 routes` |
+> | Pod CIDR containment | **absent from `show ip bgp`** — confirmed on BOTH sides independently |
+> | Reverse direction | `PfxSnt 0` — pfSense advertises nothing to the cluster |
+>
+> **The two controls were each independently confirmed**, which is the point of
+> having them: Calico's BIRD says the pod CIDR is not exported, and pfSense says
+> it is not received. Either one alone would have been the device we were
+> guarding against misconfiguring (item 8).
+>
+> **✅ BOTH advertisement modes exercised — `le 32` is verified, not assumed.**
+> A first pass only produced the `/24` block (`Cluster` policy), which would have
+> left the `le 32` prefix-list clause untested. So a second Service was run with
+> `externalTrafficPolicy: Local` alongside it:
+>
+> | Service | Policy | Calico exports | pfSense `show ip bgp` |
+> |---|---|---|---|
+> | `.129` | `Cluster` | *(no own route — rides the block)* | `172.29.1.0/24` |
+> | `.130` | `Local` | `172.29.1.130/32` | `172.29.1.130/32` ✅ **accepted** |
+>
+> The `/32` was **accepted, not dropped** — proving `le 32` does real work. A bare
+> `permit <lb_range>` would have matched the exact `/24` only and sent that route
+> to `seq 20 deny any`. Both routes withdrew cleanly on teardown.
+>
+> ⚠ **This is deliberately the one check `curl` cannot make.** At one node the
+> `/32` is redundant for reachability — `.130` stays reachable via the block
+> either way — so a broken filter would be **invisible to any connectivity test**
+> and visible only in the routing table. At two nodes it stops being cosmetic:
+> the `/32` is what steers traffic to the node actually holding the backend, and
+> without it ECMP scatters across nodes that have no local pod and `Local` drops
+> it. Do not "simplify" `le 32` away.
+>
+> **✅ Source IP preservation re-verified (item 17's whole justification).** Under
+> `externalTrafficPolicy: Cluster`, the pod logged the real off-cluster client
+> (`172.16.0.188`), **not** the node address (`172.16.1.50`). With kube-proxy that
+> SNAT would be unrecoverable at L7. This is why §10 of the runbook now says use
+> `Cluster`, reversing its original `Local` advice.
 >
 > **✅ DONE 2026-08-16 — §7 item 6 is RESOLVED and the pfSense config generator
 > is written.** Cluster ASN `64601` (`bgp_asn_base + index`), pfSense AS
@@ -759,9 +811,15 @@ apply once k3s work starts.
    test split-DNS behavior (including the Unbound rebinding-protection
    whitelist) before relying on it for the "internal view."
 
-8. **FRR eBGP policy requirement (RFC 8212) — ✅ DECIDED 2026-08-02: configure
-   real policy, do NOT disable the requirement.** (Originally written for
-   MetalLB; now applies to *Calico's* session.)
+8. **FRR eBGP policy requirement (RFC 8212) — ✅ DECIDED 2026-08-02, ✅ VERIFIED
+   LIVE 2026-08-16: configure real policy, do NOT disable the requirement.**
+   (Originally written for MetalLB; now applies to *Calico's* session.)
+
+   **Option B works — routes move with the requirement left ON.** FRR reports
+   `Inbound path policy configured` / `Outbound path policy configured`, the
+   session reached `Established`, and `PfxRcd 1` proves prefixes actually
+   traverse it rather than being silently discarded. `no bgp
+   ebgp-requires-policy` was never needed and is not present.
 
    FRR 7.4+ implements RFC 8212: an eBGP session with **no** inbound/outbound
    policy discards all routes **in both directions**. The session still reports
@@ -834,7 +892,8 @@ apply once k3s work starts.
     fails intermittently, check this before assuming it's a cluster-side
     bug.
 
-13. **RESOLVED 2026-08-02 — Calico BGP replaces MetalLB, for both LB
+13. **RESOLVED 2026-08-02, ✅ IMPLEMENTED + VERIFIED 2026-08-16 — Calico BGP
+    replaces MetalLB, for both LB
     advertisement AND the pod dataplane.** The upstream question this item was
     waiting on ("do we want the pod dataplane on BGP/no-encap?") was answered
     **yes**. Consequences, all now tracked above: `values.yaml` moves to
@@ -1062,6 +1121,14 @@ apply once k3s work starts.
       Consequence for future work: the pod-isolation enforcement discussed in §6
       step 5 should use Calico `GlobalNetworkPolicy` / `ClusterNetworkPolicy`,
       never the deprecated AdminNetworkPolicy path.
+
+    **✅ VERIFIED LIVE 2026-08-16 — the workaround works and was necessary.**
+    On the from-scratch rebuild the assert returned `yes`, and LoadBalancer
+    allocation succeeded immediately (test Service got an address from the pool
+    with no `pending` phase). The ClusterRole is present as
+    `calico-kube-controllers-ipamconfigs-workaround`. Note this does NOT prove
+    upstream is still broken — that check is the removal criterion below, i.e.
+    remove the workaround and see whether `can-i` still says `yes`.
 
     **Verification — now an assertion, not a probe.** After the prime, this must
     return `yes`:

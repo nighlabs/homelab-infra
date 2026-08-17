@@ -3,4 +3,10 @@ kind: Kustomization
 # Infrastructure controllers, in dependency order as they arrive (design §6):
 # calico (CNI) first; then metallb, cert-manager, ceph-csi-operator, ESO, ...
 resources:
+  # Installs Calico (operator chart + shared values).
   - calico
+  # Configures it: BGP CRs, the LoadBalancer IPAM pool, and the #12890 RBAC
+  # workaround. Separate directory because ../calico/ applies a `namespace:`
+  # transformer that would wrongly stamp these cluster-scoped CRs — see that
+  # directory's kustomization.yaml header.
+  - calico-bgp

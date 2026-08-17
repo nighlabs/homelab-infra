@@ -240,6 +240,12 @@
 - name: Install Calico via the tigera-operator Helm chart
   hosts: k3s_primaries
   gather_facts: false
+  # ⚠ Required for `cluster_bgp` (group_vars/all/vars.yml), which derives each
+  # cluster's ASN and LB range from its `index` in this file. vars_files are
+  # PLAY-scoped, so Play A loading the node map does nothing for this play — and
+  # the failure would be a runtime "clusters is undefined", not a syntax error.
+  vars_files:
+    - ../inventory/nodes.yml
   vars:
     # The ONE Calico values source, shared with the Flux HelmRelease (which reads
     # it via a generated ConfigMap). Priming from the same file guarantees the
@@ -252,6 +258,19 @@
     # eBPF dataplane prerequisites, primed from the SAME committed manifests Flux
     # reconciles (§7 item 17). Never hand-maintain a second copy here.
     calico_manifest_dir: "{{ playbook_dir }}/../../gitops/infrastructure/calico"
+    # BGP + LoadBalancer CRs, primed the same way. Separate directory because
+    # ../calico/'s kustomization applies a `namespace:` transformer that would
+    # wrongly stamp these cluster-scoped CRs — see that dir's kustomization.yaml.
+    calico_bgp_manifest_dir: "{{ playbook_dir }}/../../gitops/infrastructure/calico-bgp"
+    # The per-cluster values the committed manifests carry as ${...} placeholders.
+    # Ansible substitutes them here from the vault; Flux substitutes the SAME
+    # placeholders later from the cluster-topology Secret seeded below. One
+    # source (the committed file), two consumers — exactly like values.yaml.
+    bgp_substitutions:
+      "${lb_range}": "{{ cluster_bgp[cluster_name].lb_range }}"
+      "${cluster_asn}": "{{ cluster_bgp[cluster_name].asn }}"
+      "${bgp_peer_ip}": "{{ bgp_peer_ip }}"
+      "${bgp_peer_asn}": "{{ bgp_peer_asn }}"
   tasks:
     - name: Assert the committed Calico pod CIDR matches k3s_cluster_cidr
       vars:
@@ -364,6 +383,22 @@
         wait: true
         timeout: 10m0s
 
+    # ⚠ WORKAROUND for projectcalico/calico#12890 — see §7 item 15 and the header
+    # in the manifest itself. Applied HERE, immediately after the operator and
+    # before anything can try to allocate a LoadBalancer IP, because the failure
+    # it prevents is invisible from the BGP side: LB IPs sit `pending` while
+    # routes advertise perfectly normally.
+    #
+    # Plain RBAC — no Calico CRDs or apiserver involved — so it has no ordering
+    # dependency beyond "a cluster exists". No ${...} placeholders either, hence
+    # a straight `src:` rather than the substitution treatment below.
+    - name: Prime the #12890 LoadBalancer-IPAM RBAC workaround
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        src: "{{ calico_bgp_manifest_dir }}/kube-controllers-ipamconfigs-rbac.yaml"
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+
     # Node only reports Ready once the CNI (calico-node) is up on it — so this is
     # the real signal Calico took. Count Ready=True conditions across all nodes.
     - name: Wait for the node(s) to report Ready
@@ -380,6 +415,146 @@
         == (node_info.resources | length)
       retries: 30
       delay: 10
+
+    # --- BGP / LoadBalancer (ansible/CLAUDE.md §7 items 6, 8, 13) ------------
+    #
+    # ⚠ THE BGP CRs ARE `projectcalico.org/v3`, SERVED BY THE AGGREGATED
+    # calico-apiserver — not by the CRDs primed earlier. `helm --wait` returns
+    # once the OPERATOR is up; the operator then creates calico-apiserver
+    # asynchronously, so applying these straight after helm races it and fails
+    # with "no matches for kind BGPPeer in version projectcalico.org/v3".
+    # Gate on the APIService actually reporting Available.
+    - name: Wait for calico-apiserver to serve projectcalico.org/v3
+      delegate_to: localhost
+      kubernetes.core.k8s_info:
+        api_version: apiregistration.k8s.io/v1
+        kind: APIService
+        name: v3.projectcalico.org
+        kubeconfig: "{{ kubeconfig_local }}"
+      register: calico_apiservice
+      until: >-
+        calico_apiservice.resources | length > 0 and
+        (calico_apiservice.resources[0].status.conditions | default([])
+         | selectattr('type', 'equalto', 'Available')
+         | selectattr('status', 'equalto', 'True') | list | length) > 0
+      retries: 30
+      delay: 10
+
+    # Primed from the SAME committed manifests Flux reconciles, with the ${...}
+    # placeholders substituted from the vault — the identical pattern the
+    # kubernetes-services-endpoint ConfigMap uses above. This is what keeps one
+    # source of truth: Ansible substitutes now (no Flux yet), Flux substitutes
+    # the same placeholders later from the cluster-topology Secret, and both
+    # produce byte-identical objects so Flux adopts rather than fights.
+    #
+    # ORDER IS LOAD-BEARING:
+    #   bgpfilter        — bgppeer's `filters:` reference is inert without it,
+    #                      and "inert" here means the pod CIDR IS exported
+    #                      (Calico's default action for an unmatched route is
+    #                      Accept — see the manifest header).
+    #   bgpconfiguration — cluster ASN + the mesh + what gets advertised.
+    #   bgppeer          — the pfSense session itself.
+    #   ippool           — allocation. Last: nothing should be able to claim an
+    #                      address before the filter governing its advertisement
+    #                      exists.
+    - name: Prime the Calico BGP + LoadBalancer CRs
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        definition: >-
+          {{ lookup('ansible.builtin.file', calico_bgp_manifest_dir ~ '/' ~ item)
+             | replace('${lb_range}', bgp_substitutions['${lb_range}'])
+             | replace('${cluster_asn}', bgp_substitutions['${cluster_asn}'])
+             | replace('${bgp_peer_ip}', bgp_substitutions['${bgp_peer_ip}'])
+             | replace('${bgp_peer_asn}', bgp_substitutions['${bgp_peer_asn}'])
+             | from_yaml_all | list }}
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+      loop:
+        - bgpfilter.yaml
+        - bgpconfiguration.yaml
+        - bgppeer.yaml
+        - ippool-loadbalancer.yaml
+
+    # Assert, don't hope. A `no` here means the workaround didn't land and every
+    # LoadBalancer IP will sit `pending` — while BGP advertises routes normally,
+    # so the BGP side gives no hint at all. §7 item 15 calls this out as the one
+    # check worth making explicit rather than leaving to a manual probe.
+    #
+    # 🔁 If this ever passes with the workaround REMOVED, upstream fixed #12890
+    # and the manifest can go. That's its documented removal criterion.
+    # §7 item 15 documents this check as:
+    #   kubectl auth can-i get ipamconfigs \
+    #     --as=system:serviceaccount:calico-system:calico-kube-controllers
+    # A SubjectAccessReview is the same question asked through the API instead of
+    # the CLI — deliberately, because README's prerequisite table states kubectl
+    # is for the manual Verify steps and that NO play invokes it. Shelling out
+    # here would quietly promote "recommended" to "required".
+    #
+    # Group is crd.projectcalico.org: that's the one the #12890 error is raised
+    # on. The workaround ClusterRole grants both groups; this asserts the one
+    # that actually broke.
+    - name: Verify the #12890 RBAC grant took effect
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: authorization.k8s.io/v1
+          kind: SubjectAccessReview
+          spec:
+            user: system:serviceaccount:calico-system:calico-kube-controllers
+            resourceAttributes:
+              group: crd.projectcalico.org
+              resource: ipamconfigs
+              verb: get
+      register: ipamconfigs_sar
+      changed_when: false
+      failed_when: not (ipamconfigs_sar.result.status.allowed | default(false))
+
+    # --- Seed the cluster-topology Secret (Flux postBuild source) ------------
+    # Tier 2 of the root CLAUDE.md secrets model: "anything needed before ESO
+    # exists is Ansible-seeded". ESO CANNOT supply this — the Bitwarden SDK
+    # Server needs a cert-manager cert, which needs a Gateway, which needs a
+    # LoadBalancer IP, which is what this Secret's values configure. That cycle
+    # is documented and deliberate; don't try to close it by moving ESO up.
+    #
+    # Nothing reads this until Flux exists — it's seeded now so the Flux
+    # bootstrap has one less ordering dependency, and it's idempotent.
+    #
+    # ⚠ Every ${...} placeholder in gitops/ must have a key here. A missing one
+    # substitutes to the EMPTY STRING and reconciles as HEALTHY unless
+    # kustomize-controller runs with StrictPostBuildSubstitutions (see
+    # gitops/CLAUDE.md). Current set — grep to re-check after adding manifests:
+    #   grep -rhoE '\$\{[a-z0-9_]+\}' gitops/ | sort -u
+    - name: Ensure the flux-system namespace exists (for cluster-topology)
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: flux-system
+
+    - name: Seed the cluster-topology Secret
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cluster-topology
+            namespace: flux-system
+          # stringData, not data: values are plaintext topology, not base64.
+          stringData:
+            k3s_api_ip: "{{ node_eth0_ip }}"
+            bgp_peer_ip: "{{ bgp_peer_ip }}"
+            bgp_peer_asn: "{{ bgp_peer_asn | string }}"
+            cluster_asn: "{{ cluster_bgp[cluster_name].asn | string }}"
+            lb_range: "{{ cluster_bgp[cluster_name].lb_range }}"
 
     - name: Report the bootstrapped node(s)
       delegate_to: localhost

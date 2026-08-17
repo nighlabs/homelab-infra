@@ -1,0 +1,40 @@
+# The pfSense/FRR peering. Exists ONLY to advertise LoadBalancer IPs off-cluster
+# — pod routing between nodes is handled by the node-to-node mesh
+# (BGPConfiguration.nodeToNodeMeshEnabled) and needs no BGPPeer at all.
+#
+# GLOBAL peer: `node` and `nodeSelector` are both omitted, which is what makes
+# every node in the cluster establish a session with pfSense. That matches the
+# pfSense side, which lists each node as an explicit `neighbor` in one
+# per-cluster peer group (docs/pfsense-frr-bgp-setup.md §4) — so adding a node
+# needs no change HERE, only a re-render and paste there.
+#
+# ⚠ Ansible-primed, then Flux-adopted — like Calico itself. The dataplane depends
+# on BGP once encapsulation is off, so this cannot wait for the Flux bootstrap
+# (gitops/CLAUDE.md, "Calico BGP — CRs, not Helm values").
+apiVersion: projectcalico.org/v3
+kind: BGPPeer
+metadata:
+  name: pfsense
+spec:
+  # pfSense's DMZ interface address — the same value as the nodes' default
+  # gateway, and the address FRR uses as its router-id. An address, so it stays
+  # blinded and arrives via the Ansible-seeded `cluster-topology` Secret.
+  #
+  # ⚠ An undefined ${var} substitutes to the EMPTY STRING and reconciles
+  # SUCCESSFULLY — `peerIP: ""` applied and reported healthy. The
+  # StrictPostBuildSubstitutions feature gate on kustomize-controller is what
+  # turns that into a failure; it is not optional here.
+  peerIP: ${bgp_peer_ip}
+
+  # pfSense's AS. One value for the whole router regardless of how many clusters
+  # peer with it — it's one device, one AS. Substituted for the same reason as
+  # the cluster ASN in bgpconfiguration.yaml: it is defined once in
+  # group_vars/all/vars.yml and consumed by both sides of the peering, so it must
+  # not be transcribed into Git where it can drift out of agreement with the
+  # rendered frr.conf.
+  asNumber: ${bgp_peer_asn}
+
+  # Whitelist what crosses this session. Without it the pod CIDR is exported by
+  # default — see the header in bgpfilter.yaml, the default action is Accept.
+  filters:
+    - pfsense-lb-only

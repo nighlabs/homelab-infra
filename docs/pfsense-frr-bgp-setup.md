@@ -334,6 +334,13 @@ which then establishes a perfectly healthy-looking session and blackholes. `le
 32` covers both modes and costs nothing, so there's no reason to pick one and
 bet on it.
 
+> **✅ VERIFIED LIVE 2026-08-16 — both modes, on one cluster.** A `Cluster`
+> Service produced only the `/24` block (no route of its own); a `Local` Service
+> produced `172.29.x.130/32`, and pfSense **accepted it** — `show ip bgp` listed
+> both. ⚠ Note the `/32` is redundant for *reachability* at a single node, so a
+> broken filter here is invisible to `curl` and shows up only in the routing
+> table. Test it with `show ip bgp`, never with a connectivity check.
+
 **`<CLUSTER>-OUT` denies everything.** The k3s nodes get their default route
 statically from Ignition (repo rule: no DHCP in cluster networking), so they
 need to learn nothing from pfSense. This also means the LAN table can never leak

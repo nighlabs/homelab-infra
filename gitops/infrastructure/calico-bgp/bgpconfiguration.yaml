@@ -1,0 +1,49 @@
+# Cluster-wide BGP defaults. Every node inherits `asNumber` from here — there is
+# no per-node AS assignment anywhere, and there must not be: the per-node
+# override (Node.spec.bgp.asNumber) would turn the in-cluster mesh from iBGP into
+# eBGP and force `bgp bestpath as-path multipath-relax` on pfSense before ECMP
+# would work at all (docs/pfsense-frr-bgp-setup.md §1, §4).
+#
+# The resource MUST be named `default` — Calico only reads the one called that.
+apiVersion: projectcalico.org/v3
+kind: BGPConfiguration
+metadata:
+  name: default
+spec:
+  # Cluster ASN — substituted, NOT a literal. This value is DERIVED in Ansible
+  # as `bgp_asn_base + <cluster index>` (group_vars/all/vars.yml +
+  # inventory/nodes.yml). Writing 64601 here would duplicate that derivation in a
+  # second place, so a cluster whose index changed — or a second cluster with its
+  # own index — would silently disagree with what Ansible computed and what
+  # pfSense expects. The failure mode is a session that never establishes, with
+  # nothing in Git looking wrong.
+  #
+  # Blinding is NOT the reason (an AS number in the private range reveals
+  # nothing). Single-sourcing a derived value is.
+  #
+  # ⚠ Calico's own DEFAULT for this field is 64512 — which is pfSense's ASN.
+  # Setting it explicitly is what keeps the session eBGP; if a node ever fell
+  # back to the default the session would be iBGP and behave differently. Which
+  # is also why the empty-string substitution trap matters so much here: an
+  # unset ${cluster_asn} does NOT fall back to 64601, it reconciles as empty.
+  asNumber: ${cluster_asn}
+
+  # All k3s nodes share one subnet, so the default full mesh distributes pod
+  # CIDRs between them with no BGPPeer involved. Stated explicitly because with
+  # no encapsulation this mesh IS the pod dataplane — it stopped being a
+  # background detail the moment VXLAN was switched off (ansible/CLAUDE.md §7
+  # item 13). Inert at one node; load-bearing the instant node 2 joins.
+  nodeToNodeMeshEnabled: true
+
+  # Advertise LoadBalancer service IPs. This is ADVERTISEMENT only — allocation
+  # is a separate mechanism (ippool-loadbalancer.yaml), and the same range has to
+  # appear in both. They are not interchangeable and neither implies the other.
+  serviceLoadBalancerIPs:
+    - cidr: ${lb_range}
+
+  # NOT set, deliberately:
+  #   serviceClusterIPs   — 10.43.0.0/16 stays inside the cluster. Advertising it
+  #                         would put every ClusterIP in pfSense's table for no
+  #                         benefit, and pfSense's inbound prefix list would
+  #                         reject it anyway.
+  #   serviceExternalIPs  — nothing uses externalIPs.

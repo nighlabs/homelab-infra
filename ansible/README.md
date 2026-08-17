@@ -467,6 +467,65 @@ from NotReady to **Ready**. From the control node, using the fetched kubeconfig:
 - **Idempotency:** re-run `bootstrap-cluster.yml` → no changes (release present,
   node already Ready)
 
+### BGP / LoadBalancer
+
+The pfSense side must already be configured and parked —
+`docs/pfsense-frr-bgp-setup.md`. It needs **no change for a rebuild**: the node's
+address derives from `node_number`, so a destroy-and-recreate comes back on the
+same IP and pfSense's `neighbor` line stays valid.
+
+⚠ **Session state is not proof of anything.** Both of this design's silent
+failure modes — RFC 8212 policy refusal and a prefix list without `le 32` —
+present as a perfectly healthy `Established` session with nothing flowing. The
+last two checks are the ones that actually matter.
+
+From the control node:
+
+```sh
+# Dataplane is no-encap and BGP is on
+kubectl get ippool default-ipv4-ippool -o jsonpath='{.spec.ipipMode}{" "}{.spec.vxlanMode}'   # Never Never
+kubectl get installation default -o jsonpath='{.spec.calicoNetwork.bgp}'                      # Enabled
+
+# The CRs were primed
+kubectl get bgpconfiguration default -o jsonpath='{.spec.asNumber}'      # the cluster ASN
+kubectl get bgppeer pfsense -o jsonpath='{.spec.peerIP}{" "}{.spec.asNumber}'
+kubectl get bgpfilter pfsense-lb-only -o yaml | grep -A4 exportV4
+kubectl get ippool loadbalancer-pool -o jsonpath='{.spec.allowedUses}'   # ["LoadBalancer"]
+
+# #12890 workaround landed — a `no` here means every LB IP will sit pending
+# while BGP looks perfectly healthy
+kubectl auth can-i get ipamconfigs \
+  --as=system:serviceaccount:calico-system:calico-kube-controllers        # yes
+```
+
+On pfSense (`vtysh`, see the runbook §7):
+
+- `show bgp summary` → the node **`Established`**, not `Active`/`Connect`
+- `show ip bgp` → contains the LB range and **no pod CIDR**. If `10.42.0.0/16`
+  appears, *both* the `BGPFilter` and pfSense's inbound prefix list failed.
+- `show ip bgp neighbors <node ip> advertised-routes` → **empty** (we advertise
+  nothing to the cluster)
+
+**The two checks that actually prove it works** — a throwaway Service:
+
+```sh
+kubectl create deploy bgptest --image=nginx --port=80
+kubectl expose deploy bgptest --type=LoadBalancer --port=80
+
+# 1. ALLOCATION (Calico LB IPAM + the #12890 workaround)
+kubectl get svc bgptest -w        # EXTERNAL-IP leaves <pending> for one in the LB range
+
+# 2. REACHABILITY (BGP + the prefix lists + the firewall rules)
+curl -sS http://<that IP>/        # from a DIFFERENT segment, not the node
+
+kubectl delete deploy/bgptest svc/bgptest
+```
+
+`pending` forever = allocation (suspect #12890 or the pool). Allocated but
+unreachable = advertisement, filtering, or a missing firewall rule to the LB
+range — learning a route and being permitted to use it are different things
+(runbook §6).
+
 ## Troubleshooting
 
 **API/`proxmox_kvm` tasks fail with `No route to host` (`EHOSTUNREACH`) on port
