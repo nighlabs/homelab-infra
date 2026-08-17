@@ -10,16 +10,17 @@ k3s, §6 Calico/Flux) for the definitions of done.
 ## Layout
 
 ```
-ansible.cfg              # inventory + roles paths, vault settings
+ansible.cfg              # inventory/roles/library paths, BWS notes
 requirements.yml         # community.proxmox collection (+ butane on PATH)
 inventory/
   hosts.yml              # localhost + the PVE host (SSH, for snippet/qm)
   nodes.yml              # node map — SOURCE OF TRUTH for node identity/addressing
   group_vars/            # adjacent to the inventory so it loads for every playbook
     all/                 # a DIRECTORY -> every file loads for group `all`
-      vars.yml           # structure + {{ vault_* }} refs (nothing sensitive)
-      vault.yml          # (git-ignored) real encrypted values — you create this
-    vault.example.yml    # template; sits OUTSIDE all/ so it never auto-loads
+      vars.yml           # structure + {{ bws.* }} refs (nothing sensitive)
+BWS-SECRETS.md           # WHAT TO CREATE IN BITWARDEN — the secret manifest
+library/
+  bws_secrets.py         # bulk BWS fetch (one API call, not one per secret)
 roles/
   flatcar_template/      # download proxmoxve image -> import -> template (idempotent)
   flatcar_vm/            # render Butane -> Ignition, clone, pin MACs, disk, cicustom, boot
@@ -53,7 +54,7 @@ this. If a future Helm major breaks the Calico prime, `helm_binary` in
 
 **Python packages** — pulled by `uv sync` from `pyproject.toml`/`uv.lock`:
 `ansible-core` (provides `ansible-playbook` / `-galaxy` / `-vault`), `proxmoxer`,
-`requests`, `kubernetes`.
+`requests`, `kubernetes`, `bitwarden-sdk`.
 
 **Ansible collections** — pulled by `ansible-galaxy … -r requirements.yml` into
 the in-repo `.ansible/`: `community.proxmox`, `kubernetes.core`.
@@ -74,18 +75,22 @@ the rest from `ansible/`.
    `community.proxmox` into the in-repo `.ansible/` path (isolated, like the venv).
 3. Install the **external binaries** from **Control-node prerequisites** above
    (`butane`, `helm`; `kubectl` recommended) — they're not pip/uv-managed.
-4. `cp inventory/group_vars/vault.example.yml inventory/group_vars/all/vault.yml`
-   and fill in the real values — the Proxmox API credential (create it per
-   **[Proxmox API token & user](#proxmox-api-token--user-one-time-on-a-pve-node)**
-   below) **and** the environment specifics (IPs, subnets/VLANs, gateways,
-   hostnames, storage names, SSH public key). Then `uv run ansible-vault encrypt
-   inventory/group_vars/all/vault.yml`. (It goes *inside* `all/` so it loads;
-   the `.example` stays outside so it doesn't.)
+4. **Set up Bitwarden Secrets Manager — see [`BWS-SECRETS.md`](BWS-SECRETS.md).**
+   That file is the complete manifest: the project + read-only machine account
+   to create, the access token to put in your macOS **Keychain**, `BWS_ORG_ID`,
+   and every secret name with its expected format. It includes the Proxmox API
+   credential (create it per **[Proxmox API token & user](#proxmox-api-token--user-one-time-on-a-pve-node)**
+   below) and the environment specifics (IPs, subnets/VLANs, gateways,
+   hostnames, storage names, SSH public key).
+
+   **There is no `vault.yml` and no vault passphrase.** Secrets are fetched at
+   run time in a single API call; secret zero is the Keychain item. Why:
+   `docs/mac-studio-inference-stack-2.md`, Appendix A, "Control-node secrets".
 5. `inventory/group_vars/all/vars.yml` needs no editing for secrets — it's just
-   structure plus `{{ vault_* }}` references. Only generic, non-revealing
+   structure plus `{{ bws.* }}` references. Only generic, non-revealing
    defaults (MAC OUI, Flatcar channel/version) remain in cleartext there.
 6. `inventory/hosts.yml` needs no editing — the PVE host's address and login
-   user are `{{ vault_* }}` references too (fill them in the vault above).
+   user resolve from BWS too.
 
 ## Proxmox API token & user (one-time, on a PVE node)
 
@@ -115,8 +120,8 @@ pveum acl modify / -user ansible@pve -role Provisioning
 pveum user token add ansible@pve provisioning --privsep 0
 ```
 
-Step 4 prints the token **value** exactly once — copy it into
-`vault_proxmox_api_token_secret`. It can't be retrieved later; if lost, delete
+Step 4 prints the token **value** exactly once — copy it into the
+`proxmox_api_token_secret` secret in BWS. It can't be retrieved later; if lost, delete
 and recreate the token.
 
 **Fuss-free alternative:** skip the custom role (steps 2–3) and grant the
@@ -189,7 +194,7 @@ rm -f /tmp/prov.sudoers
 # 4. Let provisioner write the Ignition snippet WITHOUT sudo (keeps the sudoers
 #    to just `qm`). Proxmox references snippets by a FLAT volid
 #    (`<storage>:snippets/<file>` — no subdirectories), so the file must land
-#    directly in the snippets dir (= vault_proxmox_snippet_dir). Keep that dir
+#    directly in the snippets dir (= the proxmox_snippet_dir secret). Keep that dir
 #    root-owned and give provisioner write via a shared group — no extra
 #    package, and works regardless of whether CephFS has ACL support:
 mkdir -p /mnt/pve/cephfs/snippets            # ensure it exists (root:root)
@@ -237,16 +242,16 @@ at `snippets/<subdir>/<file>`.)
 > so a leftover snippet hides it until the next new node. That is why it went
 > unnoticed until a rebuild, and why it was a standing blocker for worker nodes.
 
-Then set `vault_proxmox_ssh_user: "provisioner"` in your vault (the default in
-`vault.example.yml`). The roles invoke `qm` via the `proxmox_qm` helper
+Then set the `proxmox_ssh_user` secret to `provisioner` in BWS (the default in
+`BWS-SECRETS.md`). The roles invoke `qm` via the `proxmox_qm` helper
 (`inventory/group_vars/all/vars.yml`), which resolves to `sudo qm` for a
 non-root user and plain `qm` for root — so it works either way.
 
-Verify it end-to-end (needs `--ask-vault-pass` if the vault is encrypted):
+Verify it end-to-end:
 
 ```bash
 ssh provisioner@<pve-host> 'sudo qm list'   # scoped sudo works, no password
-uv run ansible proxmox -m raw -a 'sudo qm list' --ask-vault-pass
+uv run ansible proxmox -m raw -a 'sudo qm list'
 ```
 
 With this in place you can set `PermitRootLogin no` in the PVE host's `sshd`
@@ -271,11 +276,11 @@ Prefix ansible commands with `uv run` so they use the pinned venv (or activate i
 once with `source .venv/bin/activate` and drop the prefix):
 
 ```bash
-uv run ansible-playbook site.yml --ask-vault-pass              # template + nodes + Calico
+uv run ansible-playbook site.yml              # template + nodes + Calico
 uv run ansible-playbook playbooks/provision-nodes.yml \
-    -e node_filter=snoop-a2o --ask-vault-pass                  # just provision one node
+    -e node_filter=snoop-a2o                  # just provision one node
 uv run ansible-playbook playbooks/bootstrap-cluster.yml \
-    --ask-vault-pass                                           # wait for k3s + prime Calico
+                                              # wait for k3s + prime Calico
 ```
 
 `site.yml` runs all three in order: build the template → provision the node
@@ -303,7 +308,7 @@ answering means the config was consumed. And once it has been, the snippet is
 dead weight of the worst kind: it embeds the **k3s join token**, Ignition reads
 it exactly once (`ignition.firstboot` is cleared on that boot), and it sits on
 storage every hypervisor in the cluster can reach. The token's other two copies —
-the vault, and `/etc/rancher/k3s/config.yaml` on the node — are both load-bearing;
+BWS, and `/etc/rancher/k3s/config.yaml` on the node — are both load-bearing;
 this one isn't.
 
 > **⚠ The order is load-bearing: `cicustom` comes off the VM config BEFORE the
@@ -376,7 +381,7 @@ orphaned `ansible/.kube/<old>.config` — both are yours to delete.
 Add one entry under the cluster's `nodes:` in `inventory/nodes.yml` with a unique
 `node_number` (1..254); the DMZ IP (`<dmz_subnet_base>.<n>`), Ceph-public IP
 (`<ceph_subnet_base>.<n>`), MACs, and `vmid` (1000+n) are all derived from it
-(subnet bases come from the vault).
+(subnet bases come from BWS).
 
 `node_number` and hostname uniqueness is **global — across every cluster**, not
 per-cluster: all clusters share the DMZ/Ceph subnets and the Proxmox vmid space,
@@ -399,7 +404,7 @@ After boot, over SSH to the node's DMZ IP (`<dmz_subnet_base>.<n>`):
 - `ip a` — static addresses on both NICs; `eth1` MTU **8996**, not 1500
 - `ip link show` — NIC MACs match the derived `<mac_oui>:00:<n hex>:0{0,1}`
 - `ip route show dev eth1` — only the connected subnet, **no default route**
-- `resolvectl status` / `getent hosts <name>` — DNS via the vaulted resolver
+- `resolvectl status` / `getent hosts <name>` — DNS via the resolver from BWS
 - `hostnamectl` — matches the node map key
 - `df -h` / `mount` — data disk (vdb) mounted at `/var/lib/rancher` (k3s's
   default data-dir root; k3s state lands here, off the OS disk)

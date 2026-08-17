@@ -1,11 +1,14 @@
-# Real (encrypted) vault and any local vault password file — never commit the
-# password; the encrypted vault.yml itself is safe but kept out by default
-# until you decide otherwise.
-# Real (encrypted) vault lives in the group_vars/all/ DIRECTORY so it loads for
-# group `all` alongside vars.yml. Ignore it wherever it lands, defensively.
+# ⚠ RETIRED — secrets now come from Bitwarden Secrets Manager at run time and
+# there is no vault.yml (Appendix A, "Control-node secrets"). These patterns
+# stay as a backstop so a leftover file from before the migration, or one
+# created out of habit, can never be committed.
 inventory/group_vars/all/vault.yml
 inventory/group_vars/**/vault.yml
 .vault-pass
+
+# One-shot vault->BWS migration output (playbooks/port-vault-to-bws.yml).
+# One plaintext file per secret, 0600 in a 0700 dir. Delete once ported.
+.bws-port/
 
 # Transpiled artifacts / build scratch
 *.ign

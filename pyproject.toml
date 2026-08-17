@@ -5,7 +5,7 @@
 # (.python-version), the venv (.venv/), and the lockfile (uv.lock).
 #
 # Bootstrap:  uv sync
-# Run:        uv run ansible-playbook ansible/site.yml --ask-vault-pass
+# Run:        uv run ansible-playbook ansible/site.yml
 #
 # This covers ONLY the Python deps. The external binaries (butane, helm, …) and
 # Ansible collections (community.proxmox, kubernetes.core) are installed
@@ -29,6 +29,12 @@ dependencies = [
     # playbooks/bootstrap-cluster.yml to prime Calico and wait for node Ready.
     # (The `helm` CLI is a separate Go binary — see the header note.)
     "kubernetes>=30.1",
+    # Bitwarden Secrets Manager SDK — used by library/bws_secrets.py to fetch
+    # every secret in one call at run time (there is no vault.yml; see Appendix A
+    # "Control-node secrets" in docs/mac-studio-inference-stack-2.md).
+    # ⚠ Pinned to a major, deliberately: bitwarden/sm-ansible#59 is an open
+    # SDK-compatibility issue, so this must not float.
+    "bitwarden-sdk>=1.0.0,<2.0.0",
 ]
 
 # Keep uv from trying to build/install this repo itself as a package — it's a
