@@ -63,3 +63,38 @@ spec:
   natOutgoing: false
 
   disabled: false
+
+# --- ✅ DECIDED 2026-08-16: leave assignIPs at AllServices ------------------
+#
+# `KubeControllersConfiguration.spec.controllers.loadBalancer.assignIPs` is left
+# at its DEFAULT, `AllServices` — Calico assigns an address to every
+# LoadBalancer Service in the cluster. Correct today for one reason only:
+# **Calico is the only thing here doing LoadBalancer IPAM.** There is no MetalLB
+# (root CLAUDE.md guardrail), so there is nothing for it to race.
+#
+# 🔁 TRIGGER — REVISIT THIS THE MOMENT A SECOND LoadBalancer IPAM PROVIDER IS
+# ADDED. Not "if it misbehaves": before it ships. Anything that hands out
+# LoadBalancer addresses counts — MetalLB, a cloud controller, kube-vip, another
+# Calico pool with a different owner.
+#
+# The collision is narrower than it first looks, which is worth knowing so the
+# fix isn't over-applied: **Calico skips any Service whose
+# `spec.loadBalancerClass` is set to something other than `calico`, regardless of
+# assignIPs.** So a well-behaved provider that claims its own class is already
+# safe. The actual conflict is a provider that watches *unclassed* LoadBalancer
+# Services — then both controllers assign to the same Service and the winner is
+# whoever wrote last. Symptom: an EXTERNAL-IP that changes on its own, or an
+# address from the wrong pool that pfSense has no route to.
+#
+# THE FIX, when that day comes:
+#   1. kubectl patch kubecontrollersconfiguration default --type=merge \
+#        --patch '{"spec":{"controllers":{"loadBalancer":{"assignIPs":"RequestedServicesOnly"}}}}'
+#   2. Add `spec.loadBalancerClass: calico` to every Service that should get an
+#      address from THIS pool. Under RequestedServicesOnly, a Service without it
+#      gets nothing — so step 2 is not optional, and skipping it turns every
+#      existing LoadBalancer Service `pending` at once.
+#
+# ⚠ UNVERIFIED: `KubeControllersConfiguration` is operator-managed in an
+# operator-installed Calico. Whether a Flux-managed copy survives or gets
+# reverted by tigera-operator was never tested — check that before committing
+# the change to Git rather than assuming it reconciles cleanly.
