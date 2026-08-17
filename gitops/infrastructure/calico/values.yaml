@@ -26,16 +26,35 @@ installation:
     # nodes emit packets sourced from each other's IPs. It's a runtime
     # FelixConfiguration patch if we ever want it, so nothing here blocks that.
     linuxDataplane: BPF
-    # Pure-VXLAN dataplane — no Calico BGP. (MetalLB does its own BGP later for
-    # LoadBalancer IPs; that's independent of pod networking.) With VXLAN pools,
-    # BGP must be explicitly Disabled or the operator flags a config conflict.
-    bgp: Disabled
+    # ⚠ BGP IS THE POD DATAPLANE NOW (changed 2026-08-16; ansible/CLAUDE.md §7
+    # item 13). Calico's VXLAN implementation uses no BGP at all, so this is not
+    # "enabling a feature alongside the existing dataplane" — it takes BGP from
+    # *not running* to *the sole mechanism for pod routing between nodes*.
+    #
+    # With one all-in-one node the mesh has no peers to form, so the flip is
+    # trivially safe today. The first moment mesh routing carries real traffic is
+    # when node 2 joins — plan that join as a dataplane event, not a capacity add.
+    #
+    # The node-to-node mesh (BGPConfiguration.nodeToNodeMeshEnabled, in
+    # ../calico-bgp/) is what distributes pod CIDRs. The pfSense BGPPeer is
+    # unrelated to that — it exists only to advertise LoadBalancer IPs off-cluster.
+    bgp: Enabled
     ipPools:
       # cidr MUST equal k3s_cluster_cidr (group_vars/all/vars.yml) — Calico's pool
       # has to match k3s's cluster-cidr (design §4.1, guardrail §8). bootstrap-
       # cluster.yml asserts this equality before priming, so the two can't drift.
       - cidr: 10.42.0.0/16
-        encapsulation: VXLANCrossSubnet
+        # No encapsulation: pod traffic goes on the wire as-is, routed by BGP.
+        # Drops the ~50-byte VXLAN header and its per-packet encap/decap cost —
+        # the actual reason for the migration. Requires every node on one subnet
+        # (they are — §6 step 5) or a fabric that routes the pod CIDR; otherwise
+        # cross-subnet pod traffic silently blackholes, which is exactly what
+        # VXLANCrossSubnet used to paper over.
+        encapsulation: None
+        # Still Enabled: pod->internet traffic must be SNATed to the node IP,
+        # because nothing outside the cluster has a route back to 10.42.0.0/16.
+        # The BGPFilter deliberately keeps the pod CIDR off pfSense, so this is
+        # not something BGP can substitute for.
         natOutgoing: Enabled
         nodeSelector: all()
     # Pin Calico to the node's InternalIP — which k3s already advertises as the

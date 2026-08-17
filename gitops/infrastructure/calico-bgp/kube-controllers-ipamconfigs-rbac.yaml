@@ -1,0 +1,61 @@
+# ⚠ WORKAROUND for projectcalico/calico#12890 — REMOVE WHEN FIXED.
+# Full analysis and removal criteria: ansible/CLAUDE.md §7 item 15.
+#
+# WHAT'S BROKEN: PR #11839 (milestone v3.32.0) renamed the ClusterRole grant to
+# `ipamconfigurations` while the deployed CRD is still `ipamconfigs`. So
+# calico-kube-controllers cannot read the resource it needs to allocate
+# LoadBalancer IPs. A half-finished CRD migration, not a flake — which is also
+# why v3.31 is unaffected: the rename isn't in it.
+#
+# ⚠ NOT FIXED IN v3.32.1. The only RBAC change on release-v3.32 since the report
+# is an unrelated kubevirt grant (#12996). This is required, not precautionary.
+#
+# WHY IT MATTERS DISPROPORTIONATELY: the failure is silent on the side you'd
+# look at. LoadBalancer IPs sit `pending` while BGP advertises routes perfectly
+# normally — the BGP session gives no hint whatsoever. And because the
+# Gateway -> cert-manager -> ESO chain all sits behind a LoadBalancer IP, a gap
+# here stalls the entire bootstrap rather than degrading one service.
+#
+# Hence Ansible-primed alongside Calico, not left for Flux. Idempotent either way.
+#
+# Both API groups are granted. The observed error is on crd.projectcalico.org,
+# but this is the confirmed-working set from the issue thread, reproduced by two
+# independent reporters. The verb list is likewise broader than the observed
+# failure strictly needs (the log only shows a failed `get`) — kept as posted,
+# because inventing a narrower untested variant during a CNI migration is the
+# wrong moment to economise. Tighten to get,list,watch later as its own change.
+#
+# 🔁 RE-CHECK ON EVERY CALICO BUMP. Drop this once either the shipped
+# calico-kube-controllers ClusterRole grants `ipamconfigs`, or the CRD is
+# actually renamed to `ipamconfigurations` so upstream's grant matches. Verify by
+# REMOVING it and confirming this still returns `yes`:
+#
+#   kubectl auth can-i get ipamconfigs \
+#     --as=system:serviceaccount:calico-system:calico-kube-controllers
+#
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calico-kube-controllers-ipamconfigs-workaround
+rules:
+  - apiGroups: [projectcalico.org, crd.projectcalico.org]
+    resources: [ipamconfigs]
+    verbs: [get, list, create, update, delete, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calico-kube-controllers-ipamconfigs-workaround
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calico-kube-controllers-ipamconfigs-workaround
+subjects:
+  # ⚠ calico-system, NOT tigera-operator. calico-kube-controllers runs in
+  # calico-system (the operator deploys it there); tigera-operator holds only the
+  # operator itself. See the namespace note in kustomization.yaml — kustomize's
+  # namespace transformer rewrites ServiceAccount subjects, so this file is
+  # deliberately excluded from it.
+  - kind: ServiceAccount
+    name: calico-kube-controllers
+    namespace: calico-system

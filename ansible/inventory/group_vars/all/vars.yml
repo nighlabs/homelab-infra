@@ -151,7 +151,15 @@ k3s_service_cidr: "10.43.0.0/16"
 # node.cluster. ⚠ Baked into each node's Ignition, which is why
 # provision-nodes.yml destroys the .ign once the node has booted (see
 # destroy_ignition_snippet).
-k3s_tokens: "{{ vault_k3s_tokens }}"
+#
+# ⚠ `| default({})` is NOT laxity — it's what lets the preflight assert speak.
+# Without it, a missing vault_k3s_tokens raises "'vault_k3s_tokens' is undefined"
+# while Ansible evaluates the assert's own conditional, so the carefully-worded
+# fail_msg naming the migration never renders and you get a stack trace pointing
+# at THIS line instead. An empty map reaches the assert, which then fails with a
+# message you can act on. The assert is mandatory for every k3s node, so nothing
+# is silently permitted by defaulting here.
+k3s_tokens: "{{ vault_k3s_tokens | default({}) }}"
 
 # Extra API-server cert SANs beyond the node IP + hostname the config always
 # includes — also keyed by cluster name, and per-cluster by nature: a stable API
@@ -298,3 +306,35 @@ lb_range_base: "{{ vault_lb_range_base }}"
 # git-ignored and mode 0600. A credential per the root CLAUDE.md tiers:
 # BWS-managed, never in a committed manifest.
 frr_master_password: "{{ vault_frr_master_password }}"
+
+# --- THE per-cluster BGP derivation ----------------------------------------
+# Every cluster-scoped BGP value, computed once from that cluster's `index`.
+# Keyed by cluster name:
+#
+#   cluster_bgp.homelab.asn       -> 64601   (bgp_asn_base + index)
+#   cluster_bgp.homelab.lb_range  -> <base>.1.0/24
+#   cluster_bgp.homelab.lb_net    -> <base>.1        (leading octets, for asserts)
+#
+# ⚠ THIS IS THE ONLY PLACE THE ARITHMETIC LIVES. Both consumers index into it —
+# playbooks/render-frr-config.yml (pfSense side) and
+# playbooks/bootstrap-cluster.yml (Calico side). They configure the two ends of
+# the same BGP session, so a derivation transcribed into both would produce a
+# session that never establishes, with nothing in either file looking wrong.
+# That is the same reason the gitops manifests use ${cluster_asn}/${lb_range}
+# rather than literals (gitops/CLAUDE.md, "Topology blinding").
+#
+# Lazily templated on purpose: `clusters` comes from inventory/nodes.yml, which
+# plays pull in via vars_files — it does not exist when group_vars is loaded.
+# Ansible resolves this at USE time, so it works anywhere `clusters` is defined
+# and fails loudly (undefined) anywhere it isn't.
+cluster_bgp: >-
+  {%- set out = {} -%}
+  {%- for name, c in clusters.items() -%}
+  {%- set _ = out.update({name: {
+        'index': c.index | int,
+        'asn': (bgp_asn_base | int) + (c.index | int),
+        'lb_range': lb_range_base ~ '.' ~ c.index ~ '.0/24',
+        'lb_net': lb_range_base ~ '.' ~ c.index,
+      }}) -%}
+  {%- endfor -%}
+  {{ out }}

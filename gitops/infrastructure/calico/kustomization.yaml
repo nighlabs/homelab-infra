@@ -20,6 +20,13 @@ resources:
   - kubernetes-services-endpoint.yaml
   - helmrepository.yaml
   - helmrelease.yaml
+#
+# NOTE: the BGP / LoadBalancer CRs are NOT here — they live in the sibling
+# ../calico-bgp/ and are referenced from ../kustomization.yaml. That is forced by
+# the `namespace:` transformer above: it stamps a namespace on everything it
+# can't prove is cluster-scoped, and it only has schemas for core kinds. The
+# Calico CRs are CRDs, so they'd come out carrying `namespace: tigera-operator`
+# despite being cluster-scoped. See ../calico-bgp/kustomization.yaml.
 # Generate the calico-values ConfigMap from the canonical values.yaml so the
 # HelmRelease's valuesFrom has a stable target. disableNameSuffixHash is REQUIRED
 # — without it kustomize appends a content hash to the name and the valuesFrom
@@ -30,3 +37,4 @@ configMapGenerator:
       - values.yaml
 generatorOptions:
   disableNameSuffixHash: true
+

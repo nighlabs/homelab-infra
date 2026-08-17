@@ -1,0 +1,43 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Calico's BGP + LoadBalancer configuration: cluster-scoped CRs plus the one RBAC
+# workaround LoadBalancer allocation currently needs.
+#
+# ⚠ WHY THIS ISN'T IN ../calico/ (it looks like it belongs there, and it doesn't).
+# That kustomization sets `namespace: tigera-operator` to place the HelmRelease
+# and the generated calico-values ConfigMap. kustomize's namespace transformer
+# stamps a namespace on every resource it cannot PROVE is cluster-scoped — it
+# ships schemas for core kinds (which is why ClusterRole/ClusterRoleBinding come
+# out clean) but not for CRDs. BGPConfiguration, BGPPeer, BGPFilter and IPPool
+# are all cluster-scoped CRs, and they came out carrying
+# `namespace: tigera-operator`. Verified with `kubectl kustomize`, not assumed.
+#
+# The obvious fix — a JSON6902 `op: remove` on /metadata/namespace — does NOT
+# work: patches run BEFORE the namespace transformer, so the key doesn't exist
+# yet and the build fails with "Unable to remove nonexistent key". Also verified.
+# A directory outside the transformer's scope is the robust answer, and the
+# split is honest anyway: ../calico/ INSTALLS Calico, this CONFIGURES it.
+#
+# ⚠ These are `projectcalico.org/v3` resources, served by the aggregated
+# calico-apiserver, NOT by the CRDs in gitops/crds/. So they need Calico itself
+# running — not merely its CRDs Established. In practice they're Ansible-primed
+# before Flux ever sees them (see below), so Flux's first reconcile is an
+# adoption of existing objects. If that ever changes, this needs its own Flux
+# Kustomization with `dependsOn` the Calico HelmRelease.
+#
+# ⚠ Ansible-primed, then Flux-adopted — same pattern as Calico itself. With
+# encapsulation off, BGP IS the pod dataplane, so none of this can wait for the
+# Flux bootstrap. The RBAC workaround has the same urgency for a different
+# reason: LoadBalancer allocation gates the Gateway -> cert-manager -> ESO chain.
+resources:
+  # Order is presentation only (kustomize sorts on apply), but the filter is
+  # listed first because bgppeer.yaml's `filters:` reference is meaningless
+  # without it — and a missing filter means the pod CIDR is exported by default.
+  - bgpfilter.yaml
+  - bgpconfiguration.yaml
+  - bgppeer.yaml
+  # Allocation. Distinct mechanism from the advertisement configured in
+  # bgpconfiguration.yaml — the same range must appear in both.
+  - ippool-loadbalancer.yaml
+  # Temporary: projectcalico/calico#12890. Has removal criteria in its header.
+  - kube-controllers-ipamconfigs-rbac.yaml
