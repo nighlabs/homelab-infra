@@ -52,6 +52,46 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > BGP change as required.** The old "MetalLB secrets-ordering trap" is
 > **resolved** — see §6 step 5.
 >
+> **✅ DONE 2026-08-17 — SECRETS MIGRATED TO BITWARDEN SECRETS MANAGER.
+> `vault.yml` IS RETIRED.** Ansible now reads BWS at run time (one bulk API
+> call), secret zero is a macOS Keychain item, and nothing secret remains in the
+> repo directory. Manifest of what exists in BWS: `ansible/BWS-SECRETS.md`.
+> Decision + every alternative rejected: **Appendix A, "Control-node secrets"**.
+>
+> Two contradicting statements were reconciled in the process — the design doc
+> said Ansible Vault was the root of trust, the root `CLAUDE.md` later said BWS
+> was and `vault.yml` a cache. The arrow had reversed and nothing recorded it.
+>
+> New/changed: `library/bws_secrets.py` (bulk read) + `library/bws_secret.py`
+> (create, migration only), `playbooks/tasks/load-bws-secrets.yml` included once
+> per play, `vars.yml` on `{{ bws.* }}`, `bitwarden-sdk` pinned. The one-shot
+> port playbook has been deleted — it did its job.
+>
+> ⚠ **Things that will bite anyone repeating this:** the stock
+> `bitwarden.secrets.lookup` is UUID-per-call with no name lookup (hence the
+> custom module); BWS rate limits are undocumented; a BWS secret has NO fields,
+> so nothing may be stored as JSON; and `security` cannot see the Passwords app
+> (different keychain), with Keychain Access.app removed in macOS 26.
+>
+> **Project/account layout (Appendix A):** `homelab-infra` is read by the
+> control node only. App secrets get a SEPARATE project read by ESO — sharing
+> one would make a cluster compromise reach the Proxmox token and SSH keys.
+> ⚠ **Cluster-bound ≠ ESO-managed:** the BGP/topology values stay Ansible-seeded
+> as `cluster-topology` **permanently**, because ESO needs a LoadBalancer IP that
+> BGP produces.
+>
+> **▶ NEXT: Flux bootstrap on a GitRepository** (step 2 of 1→2→4→3). Three items
+> already come due there: **§7 item 14** (scoped kubeconfig for Flux, explicitly
+> deferred to this milestone); **`StrictPostBuildSubstitutions=true`** on
+> kustomize-controller, enabled WITH the bootstrap — there are four `${...}` in
+> the tree and without the gate a typo reconciles green as `peerIP: ""`; and
+> **adoption is the real risk** — Flux must take over the Ansible-primed
+> HelmRelease, the BGP CRs and the server-side-applied CRDs without a diff war.
+> Then step 4 (GHA builds + cosign-signs the OCI artifact), then step 3 (point
+> Flux at it with `spec.verify`). ⚠ Do NOT fold "stop vendoring the Calico CRDs"
+> into step 4 — `bootstrap-cluster.yml` primes from the vendored file, so that's
+> a separate step 5.
+
 > **✅✅ DONE + VERIFIED LIVE 2026-08-16 — THE CALICO BGP MIGRATION IS COMPLETE.**
 > Proven end-to-end on a **from-scratch rebuild** of `snoop-a2o` (VM destroyed and
 > reprovisioned, not an in-place change — so no VXLAN residue and the first-boot
