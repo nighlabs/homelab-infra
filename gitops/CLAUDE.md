@@ -255,6 +255,23 @@ HelmRelease.
   Ansible-primed, because LB allocation gates the Gateway → cert-manager → ESO
   chain, so a gap here stalls the bootstrap. Carries an explicit `REMOVE when
   fixed` comment; re-check on every Calico bump.
+- **🔁 `assignIPs` is left at `AllServices` (decided 2026-08-16) — REVISIT IF A
+  SECOND LoadBalancer IPAM PROVIDER IS EVER ADDED.** Calico assigns an address to
+  every LoadBalancer Service, which is right *only* because it's the sole LB IPAM
+  here. Adding MetalLB, a cloud controller, kube-vip, or anything else that hands
+  out LoadBalancer addresses makes this a conflict — and the trigger is **adding
+  the provider**, not waiting for a symptom.
+  - The conflict is narrower than it looks: Calico **skips** any Service whose
+    `spec.loadBalancerClass` is something other than `calico`, regardless of
+    `assignIPs`. A provider that claims its own class is already safe. The real
+    collision is a provider that watches *unclassed* Services — then both assign
+    and last-writer-wins, showing up as an EXTERNAL-IP that changes by itself or
+    an address from the wrong pool that pfSense has no route to.
+  - Fix and its footgun (setting `RequestedServicesOnly` without adding
+    `loadBalancerClass: calico` turns every existing LB Service `pending` at
+    once), plus an unverified note about operator ownership of
+    `KubeControllersConfiguration`: see the header in
+    `infrastructure/calico-bgp/ippool-loadbalancer.yaml`.
 
 ## Conventions
 
