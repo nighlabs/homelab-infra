@@ -22,12 +22,52 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    project only (never your personal vault), and **set an expiry**.
 3. **Access token** — generate one for that machine account. ⚠ Bitwarden cannot
    show it again; it is never stored in their database.
-4. **Keychain** — store the token. *Keychain Access → File → New Password Item*:
-   - **Keychain Item Name:** `BWS_ACCESS_TOKEN`
-   - **Account Name:** your macOS username
-   - **Password:** the access token
+4. **Keychain** — store the token:
 
-   Verify: `security find-generic-password -w -s BWS_ACCESS_TOKEN -a "$USER"`
+   ```sh
+   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U
+   # omitting the value after -w prompts, so the token stays out of shell history
+   security find-generic-password -w -s BWS_ACCESS_TOKEN -a "$USER"   # verify
+   ```
+
+   ⚠ **Not the Passwords app, and not Keychain Access.** Those are two different
+   stores: Passwords.app manages the *synced iCloud Keychain*, while the
+   `security` CLI reads the *local* `login.keychain-db`. Items created by one are
+   invisible to the other. macOS nudging you toward Passwords is irrelevant here.
+   (Keychain Access.app was **removed in macOS 26** — Bitwarden's own docs still
+   tell you to use it. Verified on 26.6.1: the `security` round trip works.)
+
+   **Silent read, or prompt on every read — your choice.** As written above,
+   `security` trusts itself for items it created, so reads are silent. To require
+   authorization instead, create the item with an EMPTY trusted-application list:
+
+   ```sh
+   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U -T ""
+   ```
+
+   Nothing is pre-authorized, so each read raises the macOS keychain
+   authorization dialog. Verified on 26.6.1: with `-T ""` the read blocks on the
+   dialog; without it, it returns immediately.
+
+   ⚠ **That dialog asks for your login password — there is no Touch ID.** It's
+   the legacy SecurityAgent keychain-ACL prompt, and `security` has no biometry
+   option (its help lists only `-A` and `-T`). Touch ID would need
+   `SecAccessControlCreateWithFlags` on the Secure-Enclave-backed data-protection
+   keychain, set programmatically and probably from a code-signed binary — which
+   buys ergonomics only, since `-T ""` already gives the authorization-per-read
+   property.
+
+   ⚠ **Cost: one prompt per PLAY, not per run.** `load-bws-secrets.yml` is
+   included once per play, so `render-frr-config.yml` or `provision-nodes.yml`
+   prompt once, but `bootstrap-cluster.yml` prompts twice and a full `site.yml`
+   **four times**. And in the dialog, click **Allow**, not *Always Allow* —
+   the latter adds the caller to the ACL and permanently defeats the point.
+
+   ⚠ **This is NOT the Passwords app**, and that app can't be used here. Two
+   separate reasons: it manages the *synced iCloud Keychain* while `security`
+   only searches the local file-based list (`security list-keychains`), and it
+   only creates website/app logins and passkeys — there is no "arbitrary named
+   secret" for `find-generic-password -s NAME` to match.
 5. **Organization ID** — export it. Not a credential (it can't come from BWS,
    since you need it to make the call), but environment-identifying, so it isn't
    committed:
