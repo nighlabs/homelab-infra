@@ -199,7 +199,21 @@ def run_module():
         data = _unwrap(client.secrets().sync(p["organization_id"], None))
         entries = _secrets_from_sync(data)
     except Exception as exc:
-        module.fail_json(msg="BWS sync() failed: %s" % exc)
+        hint = ""
+        # Auth already succeeded by this point, so a 404 is the ORG id not
+        # resolving — not a permissions problem (that would be 403). The usual
+        # cause is passing the PROJECT uuid here; both are uuids and they get
+        # supplied one line apart.
+        if "404" in str(exc) or "not found" in str(exc).lower():
+            hint = (
+                " — the access token authenticated fine, so this is almost"
+                " certainly a wrong organization_id ('%s'). Note that is the"
+                " ORGANIZATION uuid, NOT the project uuid: find it in the web"
+                " vault URL when viewing the organization"
+                " (/organizations/<uuid>/...). Set it via BWS_ORG_ID or"
+                " -e bws_organization_id=..." % p["organization_id"]
+            )
+        module.fail_json(msg="BWS sync() failed: %s%s" % (exc, hint))
 
     # Fallback: list() ids then get_by_ids() values — two calls instead of one,
     # still bounded. Only used if sync()'s payload shape isn't what we expect,

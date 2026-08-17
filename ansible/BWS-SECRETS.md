@@ -74,6 +74,18 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    ```sh
    export BWS_ORG_ID='<your organization uuid>'
    ```
+
+   ⚠ **This is the ORGANIZATION uuid, NOT the project uuid.** Both are uuids and
+   you supply them one line apart during the import, which makes them easy to
+   swap. Find the org id in the **web vault URL** while viewing the organization:
+   `…/organizations/<this-uuid>/…`. The project uuid lives separately, inside
+   Secrets Manager under Projects.
+
+   Getting it wrong fails as **`404 Resource not found` on `sync()`** *after*
+   authentication succeeds — which is the tell: auth working but the call
+   404ing means the org id, not the token. A permissions problem would be `403`.
+   (Hit for real during the migration; the module now says so in the error.)
+
    Override the Keychain/env defaults per-run with `-e bws_access_token=…` /
    `-e bws_organization_id=…` if you ever need to.
 
@@ -221,7 +233,8 @@ tells you whether the secret is missing from BWS or just misspelled here.
 |---|---|
 | `No BWS access token` | Keychain item missing or named differently; check the `-s`/`-a` values in step 1.4 |
 | `Access token is not in a valid format` | Truncated paste, or a Password Manager token rather than a Secrets Manager machine-account token |
-| `BWS sync() failed` | `BWS_ORG_ID` unset or wrong, or the machine account has no read grant on the project |
+| `BWS sync() failed … 404 Resource not found` | Wrong `bws_organization_id` — most often the **project** uuid pasted in its place. Auth succeeded, so it isn't the token. |
+| `BWS sync() failed … 403` | The machine account has no grant on the project (different from a 404) |
 | `'bws' is undefined` | A play that didn't include `tasks/load-bws-secrets.yml` |
 | `'dict object' has no attribute 'x'` | Secret missing or misnamed — compare against the `-v` list above |
 | `Duplicate secret name(s)` | The same name exists twice in scope; the module refuses rather than picking a winner |

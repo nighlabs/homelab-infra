@@ -2,8 +2,12 @@
 # there is no vault.yml (Appendix A, "Control-node secrets"). These patterns
 # stay as a backstop so a leftover file from before the migration, or one
 # created out of habit, can never be committed.
-inventory/group_vars/all/vault.yml
-inventory/group_vars/**/vault.yml
+# Glob the suffix too: a rename-aside during the migration (vault.yml.bkp,
+# .bak, .old) is exactly the "leftover file" case, and the un-suffixed patterns
+# missed it — leaving an encrypted blob of every credential untracked in the
+# tree, one `git add -A` from being committed permanently.
+inventory/group_vars/all/vault.yml*
+inventory/group_vars/**/vault.yml*
 .vault-pass
 
 # One-shot vault->BWS migration output (playbooks/port-vault-to-bws.yml).
