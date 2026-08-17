@@ -52,15 +52,24 @@ the durable store for everything; the split is about *who reads it when*:
 
 | Tier | Example | Mechanism |
 |---|---|---|
-| **Credentials** | Proxmox API token, k3s join token | BWS → `vault.yml` (a materialized *cache*, git-ignored) |
+| **Credentials** | Proxmox API token, k3s join token | **BWS, read at run time** by the `bitwarden.secrets` lookup — no `vault.yml` |
 | **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from the vault |
 | **Runtime app secrets** | app passwords, API keys | ESO + Bitwarden SDK Server, per design §6 |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range | Flux `postBuild.substituteFrom` a `Secret` — *placeholders* in Git |
 
 - **Never commit a credential in any form, including ciphertext.** Encrypted
   secrets in Git are permanent, unrotatable without a commit, and unauditable.
-  BWS gives rotation, revocation, and audit; use it. `vault.yml` is
-  reproducible *from* BWS, so it's a cache, not the original.
+  BWS gives rotation, revocation, and audit; use it.
+- **✅ DECIDED 2026-08-17 — `vault.yml` is retired; Ansible reads BWS at run
+  time.** An earlier revision of this table called `vault.yml` "a materialized
+  cache" of BWS. That's overturned: a cache means two secrets to hold (vault
+  passphrase *and* BWS token) and two sources that diverge silently — a stale
+  cache is byte-indistinguishable from a fresh one. **Secret zero is
+  irreducible but relocates**: the BWS access token can never come from BWS, so
+  it lives in the **macOS Keychain**, read at task time. Nothing secret then
+  remains in the repo directory. Full rationale, the alternatives rejected, and
+  why offline provisioning is a non-scenario: **Appendix A, "Control-node
+  secrets"** in `docs/mac-studio-inference-stack-2.md`.
 - **Topology is blinded with `${var}` placeholders + post-build substitution**,
   not SOPS. Nothing encrypted is committed, values change without a commit, and
   diffs stay readable. Reach for **SOPS/age only** where substitution can't go
