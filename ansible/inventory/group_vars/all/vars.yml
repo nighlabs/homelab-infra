@@ -381,13 +381,30 @@ bws_organization_id: "{{ lookup('ansible.builtin.env', 'BWS_ORG_ID') }}"
 # token is later widened. Leave unset to accept everything the token can read.
 # bws_project_id: "<project uuid>"
 
-# Where secret zero lives. Keychain Access > File > New Password Item:
-#   Keychain Item Name -> bws_keychain_service
-#   Account Name       -> bws_keychain_account
-#   Password           -> the machine-account access token
-# Reading it prompts (Touch ID / login password) unless you allow-list a caller,
-# which is the point: an interactive unlock per run, like was,
-# but with a scoped expiring token instead of a passphrase.
+# Where secret zero lives. Create it with:
+#   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U
+# (omitting the value after -w prompts, keeping it out of shell history)
+#
+# ⚠ The LOCAL login keychain, NOT the Passwords app — they are separate stores.
+# Passwords.app manages the synced iCloud Keychain; the `security` CLI reads
+# login.keychain-db. Items in one are invisible to the other, so macOS nudging
+# you toward Passwords changes nothing here. Keychain Access.app was REMOVED in
+# macOS 26 (verified on 26.6.1), so the CLI is the only way in — Bitwarden's own
+# docs still tell you to use that app.
+#
+# Reads WITHOUT a prompt by default: `security` is trusted for items it created.
+# Add `-T ""` when creating the item (empty trusted-app list) and every read
+# raises the macOS keychain authorization dialog instead — verified on 26.6.1.
+# ⚠ That dialog wants your LOGIN PASSWORD; there is no Touch ID. `security` has
+# no biometry flag, and biometric items live in the Secure-Enclave-backed
+# data-protection keychain, which this CLI does not reach.
+#
+# ⚠ That is one prompt PER PLAY, not per run: this file is included once per
+# play, so a full site.yml prompts 4 times. And click Allow, never *Always
+# Allow*, or the caller joins the ACL and the prompt stops for good.
+#
+# Either way the credential is scoped read-only to one project and carries an
+# expiry, rather than being a long-lived passphrase over every secret at once.
 bws_keychain_service: "BWS_ACCESS_TOKEN"
 bws_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
 bws_keychain_command: >-
