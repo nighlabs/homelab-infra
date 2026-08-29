@@ -607,6 +607,30 @@ uv run python -c "import socket; socket.create_connection(('1.1.1.1',443),5); pr
 uv run python -c "import socket; socket.create_connection(('<pve-ip>',8006),5); print('local OK')"
 ```
 
+⚠ **The `<pve-ip>` line must target an ON-LINK host, and that is the whole
+trick.** Local Network Privacy gates only **same-link** traffic, so a host
+reached *through the gateway* is never gated and is worthless as a control —
+using a routed host to "rule out TCC" cannot detect the denial it is meant to
+rule out (done for real on 2026-08-29; it cost an hour and produced a confident
+wrong diagnosis). Check first:
+
+```
+route -n get <ip>     # a `gateway:` line => routed => useless as a control
+```
+
+Then confirm with an **Apple-signed binary against the same host:port**, since
+those are exempt:
+
+```
+nc -z -G 5 <pve-ip> 8006                                        # succeeds
+curl -sk -o /dev/null -w '%{http_code}\n' \
+     https://<pve-ip>:8006/api2/json/version                    # 401
+```
+
+Python raising `Errno 65` while `nc` succeeds and `curl` returns **401**
+(reached Proxmox, merely unauthenticated) is TCC, conclusively. If `nc` fails
+too, it is *not* TCC — then look at the network.
+
 - **Public OK, local FAILS → macOS Local Network Privacy** (macOS 15+/26). The
   terminal app you launched Ansible from lacks **Local Network** access, so its
   child `python` is blocked from the LAN (Apple's `curl`/`nc` are exempt, which
