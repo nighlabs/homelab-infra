@@ -3,9 +3,10 @@
 Current scope: build a **rebuildable** Flatcar VM shell — two NICs, a separate
 data disk, key-only SSH — via Ignition delivered through Proxmox's config-drive
 (`cicustom`); bake **k3s** in via the Flatcar k3s sysext; then wait for k3s to
-boot and prime **Calico** so the node goes Ready. Flux bootstrap (which adopts
-the primed Calico) is the next milestone. See `ansible/CLAUDE.md` (§1 shell, §2
-k3s, §6 Calico/Flux) for the definitions of done.
+boot and prime **Calico** so the node goes Ready; then **bootstrap Flux**, which
+adopts that primed Calico and takes ownership of the cluster (verified live
+2026-08-29). See `ansible/CLAUDE.md` (§1 shell, §2 k3s, §6 Calico/Flux) for the
+definitions of done.
 
 ## Layout
 
@@ -27,7 +28,9 @@ roles/
 playbooks/
   build-template.yml     # build the Flatcar template
   provision-nodes.yml    # provision every node in nodes.yml
-site.yml                 # both, in order
+  bootstrap-cluster.yml  # wait for k3s, fetch kubeconfig, prime Calico + BGP
+  flux-bootstrap.yml     # install Flux; it then adopts the primed Calico
+site.yml                 # all four, in dependency order
 ```
 
 ## Control-node prerequisites
