@@ -298,9 +298,14 @@ HelmRelease.
 
 ## Not here yet
 
-- ~~**Flux itself**~~ — **WRITTEN 2026-08-17 in `ansible/playbooks/flux-bootstrap.yml`,
-  not yet run against a cluster.** The `deployment/` entrypoints stop being inert
-  the moment it does. Notes that matter from this side:
+- ~~**Flux itself**~~ — **LIVE as of 2026-08-29** via
+  `ansible/playbooks/flux-bootstrap.yml`. The `deployment/` entrypoints are no
+  longer inert: all four Kustomizations reconcile, and Flux adopted the
+  Ansible-primed Calico release (helm rev 1→2, "Helm upgrade succeeded",
+  `Installation.spec` unchanged, zero pod restarts) plus the BGP CRs, which now
+  carry `kustomize.toolkit.fluxcd.io/name=infrastructure`. **The
+  "Ansible primes, Flux adopts" pattern below is no longer a plan — it is
+  verified.** Notes that matter from this side:
   - **The operator is Ansible-owned and is NOT primed-for-adoption.** Nothing in
     `gitops/` manages the flux-operator, so unlike Calico there is no second
     writer and no HelmRelease here for it. Self-management (a HelmRelease for the

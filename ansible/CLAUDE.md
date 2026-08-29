@@ -11,12 +11,10 @@ When in doubt about *why* a choice was made, check that doc's Appendix A
 decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
-> **Current task:** **Flux bootstrap** (Flux Operator + `FluxInstance`) — the
-> second half of §6 step 4. **The playbook exists and Flux installs cleanly, but
-> ADOPTION HAS NOT BEEN TESTED YET** — two first-run failures (both fixed, both
-> caught before Git sync) stopped it short. Next: roll back the
-> `pre-flux-adoption` snapshot and run it once, clean. Everything
-> before it is done:
+> **Current task:** **step 4 of 1→2→4→3 — a GHA that builds + cosign-signs the
+> gitops tree as an OCI artifact**, then step 3 (repoint Flux at it with
+> `spec.verify`). **The Flux bootstrap is DONE and the adoption is VERIFIED LIVE
+> (2026-08-29)** — see the block below. Everything before it is done:
 > **§1 (VM shell), §2 (k3s all-in-one server), and the Calico prime (§6 step 4,
 > first half) are all COMPLETE and verified live** on `snoop-a2o` (§1 done
 > 2026-07-07: full §1.4 DoD incl. unattended reboot + from-scratch rebuild; §2:
@@ -84,27 +82,37 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > as `cluster-topology` **permanently**, because ESO needs a LoadBalancer IP that
 > BGP produces.
 >
-> **🔶 FIRST RUN ATTEMPTED 2026-08-29 — Flux bootstrap on a GitRepository**
-> (step 2 of 1→2→4→3). `playbooks/flux-bootstrap.yml` +
+> **✅✅ DONE + VERIFIED LIVE 2026-08-29 — THE FLUX BOOTSTRAP IS COMPLETE AND THE
+> ADOPTION IS PROVEN.** (step 2 of 1→2→4→3). `playbooks/flux-bootstrap.yml` +
 > `playbooks/tasks/flux-bootstrap-cluster.yml`, wired into `site.yml` as the
-> fourth import. **Flux installs cleanly; ADOPTION IS STILL UNTESTED** — the run
-> stopped before Git sync both times, for two different reasons, both now fixed.
-> Pins: **flux-operator chart `0.58.0`** (⚠ no leading `v`; the OCI chart tags are
+> fourth import. Proven on a **rolled-back `pre-flux-adoption` snapshot**, i.e. a
+> genuine first bootstrap rather than a re-run — the Flux CRDs were absent
+> (`NotFound`, not merely empty) before the play started, so phase 1 actually ran.
+> `ok=25 changed=3 failed=0`.
+>
+> | Evidence | |
+> |---|---|
+> | Adoption, not collision | helm `v1` **superseded** → `v2` **deployed**, message *"Helm upgrade succeeded"* — helm-controller UPGRADED the CLI-installed release |
+> | No diff war | `Installation.spec` **byte-identical** to the pre-run snapshot |
+> | No churn | **zero** pod restart deltas across all namespaces; no baseline pod deleted |
+> | Ownership moved | `BGPPeer` now carries `kustomize.toolkit.fluxcd.io/name=infrastructure` |
+> | All tiers | `crds`/`infrastructure`/`apps`/`flux-system` **Ready** at `d8d090d` |
+> | Substitution resolved | `peerIP=${bgp_peer_ip}`, `clusterASN=64601`, `lb=${lb_range}` — real values, not `""` |
+> | **Dataplane intact** | test Service got **`x.x.x.131`** and returned **`HTTP 200` in 8.7 ms** from off-segment, routed via pfSense BGP |
+>
+> The last row is the one that matters: allocation proves Calico's LB IPAM and the
+> #12890 workaround survived the handover, and reachability proves the BGP session
+> and prefix lists did too. Flux running **v2.9.4**.
+>
+> **The two first-run failures below were both caught BEFORE Git sync**, which is
+> the phase split earning its keep — a failed bootstrap left the cluster provably
+> untouched both times. Pins: **flux-operator chart `0.58.0`** (⚠ no leading `v`; the OCI chart tags are
 > bare semver while the GitHub release is `v0.58.0`) installing **Flux `2.9.x`** —
 > minor pin, patches automatic, exactly the k3s sysupdate posture.
 >
 > **The design in one line: helm-install the operator, apply ONE `FluxInstance`,
 > let it generate the `flux-system` GitRepository + Kustomization that the
 > already-committed `gitops/deployment/<cluster>/` entrypoints reference.**
->
-> **✅ What the first run PROVED:** the operator installs, the FluxInstance
-> reconciles, all four controllers come up, the GitRepository clones and goes
-> Ready, and **the two-phase design did exactly its job** — the gate assert failed
-> in phase 1, before `spec.sync` existed, so nothing was ever reconciled from Git.
-> Verified against a pre-run snapshot afterwards: helm still **revision 1**,
-> `Installation.spec` byte-identical, **zero** pod restarts, BGP CRs intact. A
-> failed bootstrap left the cluster untouched, which is the property the whole
-> phase split exists to buy.
 >
 > **❌ Failure 1 — the gate assert was wrong, not the cluster.** The operator
 > already emits `--feature-gates=ObjectLevelWorkloadIdentity=false`, so appending
@@ -157,14 +165,13 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 >   earlier key referencing a later sibling fails outright. Hence the kustomize
 >   patch is inlined rather than held in its own variable.
 >
-> **▶ NEXT: roll back the `pre-flux-adoption` snapshot (VM 1050, 2026-08-29
-> 14:13:43, with RAM) and run it once, clean.** The snapshot is the right teardown
-> here — far safer than deleting the FluxInstance, which would cascade a prune
-> through the three tiers and **uninstall Calico**. Rolling back also restores the
-> pre-Flux state without re-running `bootstrap-cluster.yml`: same VM state, so the
-> kubeconfig and the `cluster-topology` Secret both survive. Re-running *without*
-> a rollback would take the `when: not exists` path and skip phase 1 entirely —
-> i.e. test the re-run path, not a first bootstrap.
+> **Snapshot/teardown note, kept because it will be needed again:** rolling back a
+> Proxmox snapshot is the RIGHT way to get back to a pre-Flux cluster. Deleting the
+> FluxInstance is NOT — the operator owns the generated `flux-system`
+> Kustomization, whose `prune: true` cascades to all three tiers, and
+> `infrastructure` pruning its inventory **uninstalls Calico**. A rollback with RAM
+> also preserves the kubeconfig and the `cluster-topology` Secret, so
+> `bootstrap-cluster.yml` does not need re-running.
 >
 > **⚠ Anything that reaches the Proxmox API cannot run from the control node as
 > of 2026-08-29** — Python gets `No route to host` on the mgmt IP while reaching
@@ -172,7 +179,8 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > Network denial in README troubleshooting; the management subnet simply isn't
 > routable from the Mac right now. `flux-bootstrap.yml` and
 > `bootstrap-cluster.yml` are unaffected (DMZ only); `provision-nodes.yml` and a
-> full `site.yml` rebuild are blocked until it is.
+> full `site.yml` rebuild are blocked until it is. **A from-scratch `site.yml` run
+> is therefore the one part of this milestone's DoD still outstanding.**
 >
 > Then step 4 (GHA builds + cosign-signs the OCI artifact), then step 3 (point
 > Flux at it with `spec.verify`). ⚠ Do NOT fold "stop vendoring the Calico CRDs"
