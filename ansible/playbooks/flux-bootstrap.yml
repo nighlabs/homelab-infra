@@ -1,0 +1,53 @@
+---
+# Flux bootstrap — the second half of ansible/CLAUDE.md §6 step 4, and the last
+# thing Ansible does to a cluster. Everything after this point arrives through
+# Flux from Git.
+#
+# What it does, per cluster:
+#   1. helm-installs the flux-operator into flux-system.
+#   2. Applies ONE FluxInstance CR, which is what actually installs the Flux
+#      controllers and (once verified) points them at this Git repo.
+#   3. Waits for the three committed entrypoint Kustomizations — crds ->
+#      infrastructure -> apps — to reconcile, which is where Flux ADOPTS the
+#      Calico CRDs / Helm release / BGP CRs that bootstrap-cluster.yml primed.
+#
+# Run:  uv run ansible-playbook playbooks/flux-bootstrap.yml
+#
+# ⚠ REQUIRES bootstrap-cluster.yml TO HAVE RUN FIRST (it is the step before this
+# one in site.yml). Two things it leaves behind are hard prerequisites here: the
+# per-cluster kubeconfig at ansible/.kube/<cluster>.config, and the
+# `cluster-topology` Secret that Flux's postBuild substitution reads. Both are
+# asserted with actionable messages rather than failing obscurely.
+#
+# NOTE: this play needs NO credentials — no BWS, no keychain prompt. Every value
+# it uses is either a committed constant (group_vars "Flux" section) or comes
+# from the cluster itself via the kubeconfig. That is why there is no
+# load-bws-secrets.yml include here; adding one would introduce a keychain
+# prompt for nothing.
+#
+# Prereqs on the control node: the `helm` CLI on PATH (>=3.8 for OCI charts),
+# kubernetes.core, and the `kubernetes` Python lib — the same set
+# bootstrap-cluster.yml needs. See README "Control-node prerequisites".
+
+- name: Bootstrap Flux
+  hosts: localhost
+  gather_facts: false
+  # `clusters` (the node map) is what this loops over. vars_files are PLAY-scoped,
+  # so this can't be inherited from another play — a standalone run of this
+  # playbook has to load it itself, which is the whole point of doing the
+  # per-cluster work on localhost rather than over an in-memory SSH inventory:
+  # nothing here touches a node, so nothing here needs one to be reachable.
+  vars_files:
+    - ../inventory/nodes.yml
+  tasks:
+    # One include per cluster, with `cluster_name` as the loop variable — that
+    # single fact is what makes `kubeconfig_local` and `flux_sync_path` (both
+    # lazily templated in group_vars) resolve to the right cluster inside the
+    # included file. Doing it as an include rather than looping every task keeps
+    # the per-cluster context in exactly one place; a task that forgot its
+    # `cluster_name` would otherwise reach for the wrong cluster's kubeconfig.
+    - name: Bootstrap Flux on each cluster
+      ansible.builtin.include_tasks: tasks/flux-bootstrap-cluster.yml
+      loop: "{{ clusters.keys() | list }}"
+      loop_control:
+        loop_var: cluster_name

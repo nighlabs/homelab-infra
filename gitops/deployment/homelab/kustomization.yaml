@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# The per-cluster Flux entrypoint. This is the directory the FluxInstance's
+# `spec.sync` points at (playbooks/flux-bootstrap.yml), so it is the ONE path
+# Flux is told about — everything else in gitops/ is reached through the three
+# Kustomization CRs below.
+#
+# ⚠ THE DIRECTORY NAME IS THE CLUSTER KEY from ansible/inventory/nodes.yml
+# (`homelab`), not a node name. `flux_sync_path` derives the sync path as
+# `gitops/deployment/{{ cluster_name }}`, so renaming this directory silently
+# points Flux at a path that doesn't exist — the GitRepository stays Ready
+# (the repo cloned fine) while the flux-system Kustomization fails on a missing
+# path. Rename the cluster key and this together, or neither.
+#
+# kustomize-controller would auto-generate an equivalent kustomization.yaml if
+# this file were absent, which is exactly why it's here: with it, adding a
+# fourth tier is a visible one-line diff instead of a directory listing quietly
+# changing what Flux applies.
+resources:
+  - crds.yaml
+  - infrastructure.yaml
+  - apps.yaml

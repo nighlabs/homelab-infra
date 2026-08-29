@@ -276,19 +276,35 @@ Prefix ansible commands with `uv run` so they use the pinned venv (or activate i
 once with `source .venv/bin/activate` and drop the prefix):
 
 ```bash
-uv run ansible-playbook site.yml              # template + nodes + Calico
+uv run ansible-playbook site.yml              # template + nodes + Calico + Flux
 uv run ansible-playbook playbooks/provision-nodes.yml \
     -e node_filter=snoop-a2o                  # just provision one node
 uv run ansible-playbook playbooks/bootstrap-cluster.yml \
                                               # wait for k3s + prime Calico
+uv run ansible-playbook playbooks/flux-bootstrap.yml \
+                                              # install Flux, hand over the cluster
 ```
 
-`site.yml` runs all three in order: build the template → provision the node
+`site.yml` runs all four in order: build the template → provision the node
 shells (k3s bakes in via Ignition) → `bootstrap-cluster.yml` waits for k3s to
 boot, fetches the kubeconfig to `ansible/.kube/<cluster>.config` (git-ignored),
-and primes **Calico** so the node goes Ready. Flux then *adopts* that same Calico
-release — the pinned definition lives in `../gitops/infrastructure/calico/` (Flux
-bootstrap itself is the next milestone; see `CLAUDE.md` §6).
+and primes **Calico** so the node goes Ready → `flux-bootstrap.yml` installs Flux,
+which *adopts* that same Calico release. The pinned definition lives in
+`../gitops/infrastructure/calico/`.
+
+`flux-bootstrap.yml` is the last thing Ansible does to a cluster; after it,
+**changes arrive through Git, not through Ansible**. It helm-installs the
+flux-operator, applies one `FluxInstance` CR, and waits for the three committed
+entrypoint Kustomizations (`crds` → `infrastructure` → `apps`) to go Ready.
+
+Two things about it that are easy to trip over:
+
+- It **requires `bootstrap-cluster.yml` to have run first** — it needs that play's
+  kubeconfig *and* its `cluster-topology` Secret. Both are asserted with messages
+  that say so, but it can't recover either on its own: this play never touches a
+  node.
+- It needs **no credentials at all** — no BWS, no keychain prompt. Everything it
+  uses is a committed constant or comes from the cluster via the kubeconfig.
 
 `bootstrap-cluster.yml` is **per-cluster**: it elects one bootstrap primary per
 cluster in `inventory/nodes.yml` and primes each cluster's Calico against that
@@ -530,6 +546,52 @@ kubectl delete deploy/bgptest svc/bgptest
 unreachable = advertisement, filtering, or a missing firewall rule to the LB
 range — learning a route and being permitted to use it are different things
 (runbook §6).
+
+### Flux (`flux-bootstrap.yml`)
+
+The play asserts most of this itself and fails with the reason; these are for
+checking a cluster by hand, or for working out *why* it failed.
+
+```sh
+# The operator, then the instance it manages
+kubectl -n flux-system get deploy flux-operator                  # Available
+kubectl -n flux-system get fluxinstance flux                     # READY True
+kubectl -n flux-system get pods                                  # 4 controllers Running
+
+# ⚠ The gate. Without it a missing cluster-topology key becomes "" and
+# reconciles GREEN — this is the check with no symptom to notice.
+kubectl -n flux-system get deploy kustomize-controller \
+  -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep feature-gates
+# -> exactly ONE line, containing StrictPostBuildSubstitutions=true
+
+# Source + the three tiers
+kubectl -n flux-system get gitrepository flux-system             # READY True
+kubectl -n flux-system get kustomizations                        # crds/infrastructure/apps READY True
+
+# Substitution actually resolved — the real test of the whole postBuild chain
+kubectl get bgppeer pfsense -o jsonpath='{.spec.peerIP}'         # a real IP, NOT empty
+```
+
+**Adoption** is what a first run is really testing — Flux taking over three
+things Ansible primed, without a diff war:
+
+```sh
+kubectl -n tigera-operator get helmrelease tigera-operator       # READY True
+helm -n tigera-operator list                                     # same release, revision bumped by 1 at most
+kubectl get nodes                                                # still Ready
+kubectl -n calico-system get pods                                # no restart storm
+```
+
+A healthy adoption is *boring*: the HelmRelease goes Ready, Calico pods don't
+restart, and the BGP session stays up. If the HelmRelease sticks not-Ready,
+compare `gitops/infrastructure/calico/values.yaml` against the live release
+(`helm -n tigera-operator get values tigera-operator`) — they must be identical,
+which is the entire point of the shared values file.
+
+**Idempotency:** re-run `flux-bootstrap.yml` → no changes, and critically the
+`GitRepository` and the three Kustomizations are **not** recreated. Phase 1 of
+the FluxInstance apply is skipped once the instance exists precisely so a re-run
+can't strip `spec.sync` and cascade a prune through everything Flux owns.
 
 ## Troubleshooting
 

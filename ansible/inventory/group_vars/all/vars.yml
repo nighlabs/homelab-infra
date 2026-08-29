@@ -278,8 +278,121 @@ calico_version: "v3.32.1"
 # HelmRelease, and values.yaml — i.e. a per-cluster gitops layout
 # (`clusters/<name>/`, the standard Flux pattern), which is a restructure worth
 # doing when a second cluster actually exists rather than in advance of one.
-# Note `gitops/deployment/snoop-a2o/` is currently named for the NODE; that tier
-# is the natural seam for per-cluster divergence when the time comes.
+# `gitops/deployment/<cluster>/` is that natural seam, and as of 2026-08-17 it is
+# actually keyed by CLUSTER (`homelab`) rather than by node — the Flux bootstrap
+# derives its sync path from `cluster_name`, so the rename was forced by making
+# the path derived instead of hand-kept. The rest of the per-cluster split
+# (`clusters/<name>/` for the CRD tier, HelmRelease and values) is still ahead.
+
+# --- Flux (playbooks/flux-bootstrap.yml) -----------------------------------
+# Flux is installed the "operator" way (design §6 step 4): Ansible helm-installs
+# the flux-operator, then applies ONE FluxInstance CR that declares which Flux
+# distribution, components and Git source the cluster runs. Everything about
+# Flux's own shape lives in that CR, NOT in the chart's values — so there are no
+# operator chart values here on purpose.
+#
+# ⚠ THE OPERATOR IS ANSIBLE-OWNED AND STAYS THAT WAY (for now). Unlike Calico,
+# it is NOT primed-then-adopted: nothing in gitops/ manages the flux-operator, so
+# there is no HelmRelease for Flux to fight over. Self-management is a real
+# pattern (a HelmRelease for the operator, reconciled by the Flux the operator
+# installed) and a real footgun — an in-flight upgrade can delete the controller
+# performing it. Revisit deliberately, not by drifting into it.
+
+# Where the Flux-managed tree lives on the control node. Ansible reads it for two
+# purposes only: priming the manifests Flux will later adopt
+# (playbooks/bootstrap-cluster.yml) and checking that every ${...} placeholder in
+# it has a cluster-topology key (playbooks/tasks/flux-bootstrap-cluster.yml).
+# Flux itself reads the same tree from Git, never from here.
+gitops_dir: "{{ playbook_dir }}/../../gitops"
+
+# flux-operator Helm chart version (Renovate marker). ⚠ NO leading `v` — the OCI
+# chart tags are bare semver (`0.58.0`) while the GitHub releases and the chart's
+# appVersion are `v0.58.0`. Pinning "v0.58.0" here fails the pull, not the play.
+flux_operator_version: "0.58.0"
+flux_operator_chart_ref: "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operator"
+
+# Namespace for BOTH the operator and the FluxInstance — the operator only
+# reconciles a FluxInstance named `flux` in its OWN namespace, so these can't
+# diverge. `flux-system` also matches what `flux bootstrap` uses, which is what
+# makes the generated source/Kustomization names line up with the
+# `sourceRef: {kind: GitRepository, name: flux-system}` already committed in
+# gitops/deployment/<cluster>/. bootstrap-cluster.yml already creates this
+# namespace (for the cluster-topology Secret), so it exists before Flux does.
+flux_namespace: "flux-system"
+
+# Which Flux distribution the operator installs. A MINOR PIN with automatic
+# patch upgrades — the same posture as k3s's sysupdate MatchPattern (§2): patches
+# apply unattended, minors are a deliberate edit. Renovate marker.
+#
+# ⚠ Downgrading a minor is NOT supported by the operator (it errors with
+# "downgrading ... is not supported, reinstall needed"), so a minor bump is a
+# one-way door on a live cluster — which is fine here only because the cluster is
+# still disposable. Same rule as k3s: bump + re-provision while that's true.
+flux_distribution_version: "2.9.x"
+flux_distribution_registry: "ghcr.io/fluxcd"
+# Optional but set deliberately: with an artifact URL the operator re-checks
+# upstream for CVE patches and digest updates within the pinned minor, instead of
+# being limited to what's baked into the operator image. Unset it for an
+# air-gapped control plane; here, network access is a given.
+flux_distribution_artifact: "oci://ghcr.io/controlplaneio-fluxcd/flux-operator-manifests"
+
+# Only what's actually used. image-reflector/image-automation would give
+# in-cluster image-tag bumps, which we don't want — versions are pinned in Git and
+# bumped by Renovate on a PR, so an in-cluster mutator would be a second writer.
+# notification-controller stays: Flux's alerting/eventing hangs off it, and it's
+# in the operator's default set anyway.
+flux_components:
+  - source-controller
+  - kustomize-controller
+  - helm-controller
+  - notification-controller
+
+# Vertical scaling profile. `small` (concurrency 5, 1000m/512Mi per controller)
+# not the `medium` the docs example uses — this is one 4-core/8 GB node also
+# running the entire control plane, and `medium` doubles the CPU limit and the
+# memory limit on kustomize-controller AND helm-controller.
+flux_cluster_size: "small"
+
+# ⚠ There is deliberately NO `spec.storage` on the FluxInstance. That field asks
+# for a PersistentVolumeClaim for source-controller's artifact cache, and there
+# is no StorageClass in this cluster yet — ceph-csi is four steps further down
+# the §6 dependency chain. Setting it would leave source-controller Pending on an
+# unbindable PVC, which presents as "Flux installed but nothing ever syncs".
+# Revisit once ceph-csi + StorageClasses are up, if the emptyDir cache proves
+# too small.
+
+# The Git source Flux syncs from. PUBLIC repo, so there is NO pull secret and
+# nothing to seed — if this ever goes private, add a BWS secret and set
+# `pullSecret:` on spec.sync (see BWS-SECRETS.md).
+flux_git_url: "https://github.com/nighlabs/homelab-infra.git"
+flux_git_ref: "refs/heads/main"
+
+# The bare branch name, DERIVED from flux_git_ref so the two can't disagree.
+# Used only by flux-bootstrap.yml's preflight, which checks that the sync path
+# actually exists on the branch Flux clones — because Flux reads the REMOTE and
+# every local check (kubectl kustomize, a file listing) passes happily while the
+# remote is missing the path entirely. Ask how that was discovered.
+flux_git_branch: "{{ flux_git_ref | regex_replace('^refs/heads/', '') }}"
+
+# The per-cluster entrypoint directory, DERIVED from the cluster name — which is
+# why gitops/deployment/ subdirectories are named for the cluster key in
+# inventory/nodes.yml (`homelab`) and not for a node. The three Kustomization CRs
+# in there are what Flux reads first; everything else in gitops/ is reached
+# through them.
+flux_sync_path: "gitops/deployment/{{ cluster_name }}"
+# How often source-controller re-checks Git. 1m is the operator's own default;
+# stated explicitly because it's the knob you actually reach for.
+flux_sync_interval: "1m"
+
+# ⚠ MUST STAY TRUE. Without this gate, an undefined ${var} in a postBuild
+# substitution becomes the EMPTY STRING and the Kustomization reconciles
+# SUCCESSFULLY — so a typo'd or missing cluster-topology key yields a live
+# `BGPPeer` with `peerIP: ""`, reported Healthy. There are five distinct
+# placeholders in gitops/ today. flux-bootstrap.yml patches the flag onto
+# kustomize-controller and then ASSERTS it landed, because a patch that silently
+# fails to apply leaves exactly the state this is guarding against.
+# Exposed as a variable only so the assert and the patch read from one place.
+flux_strict_substitutions: true
 
 # --- BGP / LoadBalancer ----------------------------------------------------
 # Calico BGP owns BOTH LoadBalancer IP advertisement and the pod dataplane;

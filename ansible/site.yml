@@ -1,6 +1,13 @@
 ---
 # Full bring-up: build the template, provision the node shells (k3s bakes in via
-# Ignition), then wait for k3s to boot and prime Calico so the node goes Ready.
+# Ignition), wait for k3s to boot and prime Calico so the node goes Ready, then
+# hand the cluster to Flux.
+#
+# The order is the dependency chain, not a preference — flux-bootstrap.yml needs
+# the kubeconfig and the cluster-topology Secret that bootstrap-cluster.yml
+# leaves behind, and Flux's first reconcile is an adoption of what that play
+# primed. Each playbook is still runnable on its own against an existing cluster.
 - ansible.builtin.import_playbook: playbooks/build-template.yml
 - ansible.builtin.import_playbook: playbooks/provision-nodes.yml
 - ansible.builtin.import_playbook: playbooks/bootstrap-cluster.yml
+- ansible.builtin.import_playbook: playbooks/flux-bootstrap.yml

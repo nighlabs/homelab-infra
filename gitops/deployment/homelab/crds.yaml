@@ -1,6 +1,6 @@
-# Flux entrypoint for the CRD tier. INERT until the Flux bootstrap milestone,
-# like its infrastructure/apps siblings (the `flux-system` GitRepository it
-# references is created by the FluxInstance then).
+# Flux entrypoint for the CRD tier. Reconciled by the `flux-system` Kustomization
+# the FluxInstance generates from `spec.sync`, same as its infrastructure/apps
+# siblings.
 #
 # This exists because Calico v3.32 removed CRDs from the tigera-operator chart
 # and they must be applied server-side — see gitops/crds/calico/crds.yaml.
@@ -28,9 +28,16 @@ spec:
   # 3 MB of CRDs, server-side applied; the default 5m is tight on a cold API
   # server, and a timeout here blocks the whole infrastructure tier.
   timeout: 10m
-  # TODO (Flux bootstrap): switch to the signed OCIRepository source alongside
-  # the other tiers — and see gitops/CLAUDE.md "Not here yet", which records the
-  # plan to render these CRDs at OCI build time so the 3 MB stops living in Git.
+  # ⚠ NO postBuild HERE, deliberately — and it is load-bearing under the
+  # StrictPostBuildSubstitutions feature gate. kustomize-controller runs variable
+  # substitution ONLY when `spec.postBuild` is set (it is guarded by a
+  # `Spec.PostBuild != nil` check), so leaving it unset is what keeps 3 MB of
+  # generated CRD text — descriptions, examples, regex patterns, anything that
+  # might contain a `${...}` — from being scanned and hard-failing the tier that
+  # everything else dependsOn. This tier has no topology in it and needs none.
+  # TODO (step 3): switch to the signed OCIRepository source alongside the other
+  # tiers — and see gitops/CLAUDE.md "Not here yet", which records the plan to
+  # render these CRDs at OCI build time so the 3 MB stops living in Git.
   sourceRef:
     kind: GitRepository
     name: flux-system

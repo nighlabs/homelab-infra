@@ -1,0 +1,513 @@
+---
+# Per-cluster Flux bootstrap. Included once per cluster by flux-bootstrap.yml
+# with `cluster_name` as the loop variable; everything below resolves off that
+# one fact (kubeconfig_local, flux_sync_path).
+#
+# ORDER IS LOAD-BEARING and the reason this file reads oddly in the middle:
+# the FluxInstance is applied in TWO passes, WITHOUT `spec.sync` first. See the
+# "phase 1" task for why — in short, the strict-substitution feature gate has to
+# be verified present BEFORE Flux is allowed to reconcile anything from Git,
+# because the failure it guards against damages a working cluster rather than
+# just failing loudly.
+
+- name: "[{{ cluster_name }}] Assert the cluster kubeconfig exists"
+  ansible.builtin.stat:
+    path: "{{ kubeconfig_local }}"
+  register: flux_kubeconfig_stat
+
+- name: "[{{ cluster_name }}] Fail with something actionable if it doesn't"
+  ansible.builtin.assert:
+    that:
+      - flux_kubeconfig_stat.stat.exists
+    fail_msg: >-
+      No kubeconfig at {{ kubeconfig_local }} for cluster '{{ cluster_name }}'.
+      Run playbooks/bootstrap-cluster.yml first (or site.yml, which runs both in
+      order) — it fetches the kubeconfig from the cluster's k3s server, rewrites
+      the server URL to the DMZ IP, and seeds the cluster-topology Secret this
+      play needs. Nothing here can recover that on its own: this play never
+      touches a node.
+    quiet: true
+
+# --- Does the source Flux will read actually contain the sync path? ---------
+# ⚠ FLUX READS THE REMOTE, NOT YOUR WORKING TREE. This is the single easiest
+# mistake to make in this repo, it was made on the first real run (2026-08-29),
+# and every local check passes right through it: `kubectl kustomize
+# gitops/deployment/<cluster>` proves the build works ON DISK and says nothing
+# about what is on the branch Flux clones.
+#
+# The failure it produces is deliberately misleading. The GitRepository goes
+# **Ready** — the clone succeeded, the repo is fine — and only the flux-system
+# Kustomization fails, with "kustomization path not found: stat
+# /tmp/kustomization-<n>/<path>". Then the FluxInstance sits not-Ready for the
+# full reconcile timeout, so the play spends ten minutes retrying a condition
+# that a one-line check answers instantly.
+- name: "[{{ cluster_name }}] Refresh the remote ref Flux syncs from"
+  ansible.builtin.command:
+    cmd: "git fetch --quiet origin {{ flux_git_branch }}"
+    chdir: "{{ gitops_dir }}/.."
+  changed_when: false
+  check_mode: false
+
+- name: "[{{ cluster_name }}] Look for the sync path on the remote branch"
+  ansible.builtin.command:
+    cmd: "git ls-tree --name-only origin/{{ flux_git_branch }} -- {{ flux_sync_path }}/"
+    chdir: "{{ gitops_dir }}/.."
+  register: flux_remote_path
+  changed_when: false
+  check_mode: false
+
+- name: "[{{ cluster_name }}] Assert the sync path exists on the remote"
+  ansible.builtin.assert:
+    that:
+      - (flux_remote_path.stdout | trim | length) > 0
+    fail_msg: >-
+      `{{ flux_sync_path }}` does not exist on origin/{{ flux_git_branch }} of
+      {{ flux_git_url }} — which is the ONLY thing Flux reads. It may well exist
+      in your working tree; that is irrelevant to Flux and is exactly how this
+      goes unnoticed. Commit and push the gitops/ changes (or point
+      `flux_git_ref` at the branch that has them) and re-run. Without this the
+      symptom is a Ready GitRepository next to a flux-system Kustomization
+      stuck on "kustomization path not found".
+    quiet: true
+
+# Softer sibling of the check above: the path can exist on the remote while the
+# CONTENT is stale, which no path check can catch. Uncommitted work under
+# gitops/ is the usual cause, so say so plainly rather than let Flux silently
+# reconcile an older revision than the one you just edited.
+- name: "[{{ cluster_name }}] Check for uncommitted gitops/ changes"
+  ansible.builtin.command:
+    cmd: "git status --porcelain -- {{ gitops_dir }}"
+    chdir: "{{ gitops_dir }}/.."
+  register: flux_gitops_dirty
+  changed_when: false
+  check_mode: false
+
+- name: "[{{ cluster_name }}] Warn if gitops/ has changes Flux cannot see"
+  ansible.builtin.debug:
+    msg: >-
+      ⚠ gitops/ has uncommitted changes — Flux reconciles
+      origin/{{ flux_git_branch }} and will NOT see them:
+      {{ flux_gitops_dirty.stdout_lines | join('; ') }}
+  when: (flux_gitops_dirty.stdout | trim | length) > 0
+
+# --- The flux-operator ------------------------------------------------------
+# Ansible-owned, NOT primed-for-adoption like Calico — nothing in gitops/ manages
+# the operator, so there is no second writer. See the group_vars "Flux" section.
+- name: "[{{ cluster_name }}] Install/upgrade the flux-operator"
+  kubernetes.core.helm:
+    name: flux-operator
+    # OCI chart: chart_ref carries the full oci:// URL and there is NO
+    # chart_repo_url. Needs helm >= 3.8 on PATH.
+    chart_ref: "{{ flux_operator_chart_ref }}"
+    chart_version: "{{ flux_operator_version }}"
+    release_namespace: "{{ flux_namespace }}"
+    create_namespace: true
+    # No values overrides on purpose: every knob that matters lives in the
+    # FluxInstance below, so the chart runs stock and there is no second place
+    # to look for Flux's configuration.
+    kubeconfig: "{{ kubeconfig_local }}"
+    binary_path: "{{ helm_binary | default(omit) }}"
+    wait: true
+    timeout: 5m0s
+
+# helm --wait returns when the operator Deployment is Available, which is not
+# quite the same as "the FluxInstance CRD is servable". Gate on Established, the
+# same way the Calico CRD prime does — otherwise the apply below can lose a race
+# with CRD registration and fail with "no matches for kind FluxInstance".
+- name: "[{{ cluster_name }}] Wait for the FluxInstance CRD to be Established"
+  kubernetes.core.k8s_info:
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: fluxinstances.fluxcd.controlplane.io
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_instance_crd
+  until: >-
+    flux_instance_crd.resources | length > 0 and
+    (flux_instance_crd.resources[0].status.conditions | default([])
+     | selectattr('type', 'equalto', 'Established')
+     | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 20
+  delay: 5
+
+# --- The FluxInstance -------------------------------------------------------
+# ONE CR describes the whole Flux install: which distribution, which components,
+# how it's sized, and what it syncs. The operator name/namespace are fixed by the
+# operator itself — it only reconciles a FluxInstance named `flux` in its own
+# namespace.
+#
+# Deliberately NOT a committed manifest under gitops/: this is the bootstrap
+# tier, and a FluxInstance reconciled by the Flux it installs is the
+# self-management footgun called out in group_vars. It lives here, inline, for
+# the same reason the cluster-topology Secret does — one file to read for
+# "what did Ansible put on this cluster".
+#
+# ⚠ The two facts below must not reference each other. Keys within a single
+# set_fact are NOT resolved in declaration order — an earlier key referencing a
+# later one fails with "'<name>' is undefined", which is how the kustomize patch
+# came to be inlined rather than held in its own variable.
+- name: "[{{ cluster_name }}] Build the FluxInstance definition"
+  ansible.builtin.set_fact:
+    flux_instance_base:
+      apiVersion: fluxcd.controlplane.io/v1
+      kind: FluxInstance
+      metadata:
+        name: flux
+        namespace: "{{ flux_namespace }}"
+      spec:
+        distribution:
+          version: "{{ flux_distribution_version }}"
+          registry: "{{ flux_distribution_registry }}"
+          artifact: "{{ flux_distribution_artifact }}"
+        components: "{{ flux_components }}"
+        cluster:
+          type: kubernetes
+          size: "{{ flux_cluster_size }}"
+          multitenant: false
+          # Restricts ingress to the flux-system namespace from other namespaces.
+          # Enforced by Calico here (eBPF dataplane, no kube-proxy), so it is a
+          # real control and not decoration.
+          networkPolicy: true
+          domain: cluster.local
+        # ⚠ NO `storage:` — see the group_vars note. It would request a PVC and
+        # there is no StorageClass in this cluster until ceph-csi lands.
+        #
+        # The strict-substitution gate. Applied as a patch onto the Flux
+        # manifests the operator builds, because it is a kustomize-controller
+        # COMMAND-LINE flag — there is no FluxInstance field for it.
+        #
+        # `op: add` with a trailing `-` APPENDS to args, which produces a
+        # SECOND --feature-gates argument alongside the operator's own
+        # (`ObjectLevelWorkloadIdentity=false`). That is fine and deliberate:
+        # the flag is a component-base MapStringBool, so repeated occurrences
+        # MERGE rather than override — verified live 2026-08-29 via
+        # kustomize-controller's startup log, which reports loading both gates.
+        # Appending is therefore the version-proof way to add a gate without
+        # having to know or restate the operator's existing set. The assert
+        # further down checks the EFFECTIVE value, not the argument count.
+        kustomize:
+          patches:
+            - target:
+                kind: Deployment
+                name: kustomize-controller
+              patch: |
+                - op: add
+                  path: /spec/template/spec/containers/0/args/-
+                  value: --feature-gates=StrictPostBuildSubstitutions={{ flux_strict_substitutions | bool | lower }}
+    # Applied as a second pass, once the gate is verified. `spec.sync` is what
+    # makes the operator generate the GitRepository + Kustomization named after
+    # this namespace (`flux-system`) — which is the source name the committed
+    # entrypoints in gitops/deployment/<cluster>/ already reference.
+    #
+    # No `pullSecret`: the repo is public. If it ever goes private, add a BWS
+    # secret, seed it here, and set pullSecret to its name.
+    flux_sync_spec:
+      kind: GitRepository
+      url: "{{ flux_git_url }}"
+      ref: "{{ flux_git_ref }}"
+      path: "{{ flux_sync_path }}"
+      interval: "{{ flux_sync_interval }}"
+
+- name: "[{{ cluster_name }}] Check whether a FluxInstance already exists"
+  kubernetes.core.k8s_info:
+    api_version: fluxcd.controlplane.io/v1
+    kind: FluxInstance
+    name: flux
+    namespace: "{{ flux_namespace }}"
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_instance_existing
+
+# PHASE 1 — install the controllers with NO Git source, on first bootstrap only.
+#
+# Why not just apply the finished FluxInstance once: the strict-substitution gate
+# arrives as a patch, and a patch that fails to apply is silent. Without the gate,
+# the infrastructure tier's first reconcile substitutes every missing
+# cluster-topology key to the EMPTY STRING and reports Healthy — which would
+# apply `peerIP: ""` OVER the working BGPPeer that bootstrap-cluster.yml primed,
+# tearing down a live BGP session and every LoadBalancer IP with it. An assert
+# that fires a few seconds later reports the damage; it doesn't prevent it. So:
+# controllers first, gate verified, and only then a Git source.
+#
+# ⚠ `when: not exists` is NOT an optimization. `apply: true` prunes fields absent
+# from the manifest, so running this unconditionally would strip `spec.sync` from
+# an established instance — deleting the flux-system Kustomization, whose
+# `prune: true` would then cascade to the three entrypoint Kustomizations and
+# everything they own. A re-run must never do that, so phase 1 is first-bootstrap
+# only and phase 2 below runs every time.
+- name: "[{{ cluster_name }}] Apply the FluxInstance — phase 1, no Git source"
+  kubernetes.core.k8s:
+    definition: "{{ flux_instance_base }}"
+    state: present
+    apply: true
+    kubeconfig: "{{ kubeconfig_local }}"
+  when: flux_instance_existing.resources | length == 0
+
+- name: "[{{ cluster_name }}] Wait for the Flux controllers to be installed"
+  kubernetes.core.k8s_info:
+    api_version: fluxcd.controlplane.io/v1
+    kind: FluxInstance
+    name: flux
+    namespace: "{{ flux_namespace }}"
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_instance_status
+  until: >-
+    flux_instance_status.resources | length > 0 and
+    (flux_instance_status.resources[0].status.conditions | default([])
+     | selectattr('type', 'equalto', 'Ready')
+     | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 40
+  delay: 15
+
+# --- Verify the gate BEFORE anything reconciles from Git ---------------------
+# Assert, don't hope (§7 item 15's lesson, applied to a different silent failure).
+# A missing gate is invisible: substitution still "works", it just fills every
+# unresolved placeholder with "" and reports success.
+- name: "[{{ cluster_name }}] Read the kustomize-controller Deployment"
+  kubernetes.core.k8s_info:
+    api_version: apps/v1
+    kind: Deployment
+    name: kustomize-controller
+    namespace: "{{ flux_namespace }}"
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_kc_deploy
+  until: flux_kc_deploy.resources | length > 0
+  retries: 20
+  delay: 5
+
+# ⚠ MODELS THE FLAG'S REAL SEMANTICS, DOES NOT COUNT ARGUMENTS. The operator
+# already emits its own `--feature-gates=ObjectLevelWorkloadIdentity=false`, so
+# appending ours yields TWO --feature-gates arguments — and an earlier draft of
+# this assert failed the run on that, on the assumption that a repeated flag
+# OVERRIDES and the last one wins.
+#
+# That assumption was wrong, and the controller settled it: `--feature-gates` is
+# a component-base MapStringBool, whose first Set() clears the defaults and whose
+# subsequent Set() calls MERGE into the same map. kustomize-controller's own
+# startup log confirms it loads BOTH gates:
+#   "loading feature gate","ObjectLevelWorkloadIdentity":false
+#   "loading feature gate","StrictPostBuildSubstitutions":true
+# So appending is the correct way to add a gate without knowing the operator's
+# existing set, and the number of arguments is simply not the question.
+#
+# What IS the question is the effective value, so that is what this computes:
+# flatten every --feature-gates argument into k=v pairs in order and fold them
+# into a map, last writer winning per key — exactly what the flag parser does.
+# This stays correct if the operator adds, removes, or reorders its own gates.
+- name: "[{{ cluster_name }}] Assert the StrictPostBuildSubstitutions gate landed"
+  vars:
+    kc_args: "{{ flux_kc_deploy.resources[0].spec.template.spec.containers[0].args | default([]) }}"
+    fg_args: "{{ kc_args | select('match', '^--feature-gates=') | list }}"
+    fg_map: >-
+      {%- set m = {} -%}
+      {%- for pair in fg_args | map('regex_replace', '^--feature-gates=', '')
+                              | join(',') | split(',') -%}
+      {%- if '=' in pair -%}
+      {%- set _ = m.update({(pair.split('=')[0] | trim): (pair.split('=')[1] | trim | lower)}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ m }}
+  ansible.builtin.assert:
+    that:
+      - fg_map.get('StrictPostBuildSubstitutions', 'absent') == 'true'
+    fail_msg: >-
+      kustomize-controller's effective feature gates are {{ fg_map }} —
+      StrictPostBuildSubstitutions is not enabled. Raw arguments:
+      {{ fg_args | join(' ') | default('(no --feature-gates argument at all)', true) }}.
+      Without the gate an undefined ${var} in a postBuild substitution becomes the
+      empty string and the Kustomization reconciles as HEALTHY — so a missing
+      cluster-topology key would apply a BGPPeer with peerIP: "" over the working
+      one. The FluxInstance's spec.kustomize.patches is what sets this flag;
+      check that the patch target still matches (a Deployment named
+      kustomize-controller, args on container 0) for this flux-operator version.
+      Flux has NOT been pointed at Git yet, so nothing has been reconciled — fix
+      the patch and re-run.
+    quiet: true
+
+# --- Verify the substitution source is complete ------------------------------
+# Every ${...} placeholder Flux will substitute must have a key in
+# cluster-topology. Under the gate above a missing key is a hard reconcile
+# failure rather than silent corruption, so this is about failing HERE with the
+# name of the missing key instead of in a Kustomization's status message.
+#
+# gitops/crds is EXCLUDED deliberately — its Kustomization has no postBuild, so
+# nothing there is ever substituted (and it is 3 MB of generated CRD text that
+# would be pointless to scan). Keep this list in step with which entrypoints in
+# gitops/deployment/<cluster>/ actually carry a `postBuild:` block.
+- name: "[{{ cluster_name }}] Find the manifests Flux substitutes into"
+  ansible.builtin.find:
+    paths:
+      - "{{ gitops_dir }}/infrastructure"
+      - "{{ gitops_dir }}/apps"
+      - "{{ gitops_dir }}/deployment/{{ cluster_name }}"
+    patterns:
+      - "*.yaml"
+      - "*.yml"
+    recurse: true
+  register: flux_sub_files
+
+# Parsing each file as YAML and searching the re-emitted JSON is deliberate: it
+# discards comments exactly the way kustomize does when it re-emits resources, so
+# prose like "an undefined ${var} reconciles as empty" doesn't register as a
+# required key. (Two such comments exist today; both are correctly ignored.)
+#
+# ⚠ Known limitation, documented rather than papered over: a `${...}` written in
+# a COMMENT inside a file consumed by a configMapGenerator — values.yaml — DOES
+# reach the cluster as ConfigMap data and would be missed here. gitops/CLAUDE.md
+# covers that case; the strict gate is the backstop that catches it at reconcile.
+#
+# ⚠ ONE expression with a Jinja loop, NOT a set_fact accumulating over an Ansible
+# loop — the same idiom as `k3s_tokens`/`cluster_bgp` in group_vars, and for a
+# reason that cost a debugging round: under ansible-core's lazy templating a
+# task-level `vars:` entry that references `item` does NOT re-resolve per
+# iteration, so the accumulate version ran happily over all 18 files and produced
+# an EMPTY list. It would have asserted "nothing missing" against a cluster
+# whose topology Secret was empty. Verified this form returns all five.
+# Assigning once also means there is no cross-cluster state to reset.
+- name: "[{{ cluster_name }}] Collect the ${...} placeholders they carry"
+  ansible.builtin.set_fact:
+    flux_required_subs: >-
+      {%- set out = [] -%}
+      {%- for f in flux_sub_files.files | map(attribute='path') | list -%}
+      {%- set _ = out.extend(lookup('ansible.builtin.file', f)
+                             | from_yaml_all | list | to_json
+                             | regex_findall('\\$\\{([a-zA-Z0-9_]+)\\}')) -%}
+      {%- endfor -%}
+      {{ out | unique | sort }}
+
+- name: "[{{ cluster_name }}] Read the cluster-topology Secret"
+  kubernetes.core.k8s_info:
+    kind: Secret
+    name: cluster-topology
+    namespace: "{{ flux_namespace }}"
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_topology_secret
+  # Keys are what matter and they're plaintext, but the values are in the result
+  # either way — don't log it.
+  no_log: true
+
+- name: "[{{ cluster_name }}] Assert cluster-topology covers every placeholder"
+  vars:
+    have: "{{ (flux_topology_secret.resources[0].data | default({})).keys() | list }}"
+    need: "{{ flux_required_subs }}"
+    missing: "{{ flux_required_subs | difference(have) }}"
+  ansible.builtin.assert:
+    that:
+      - flux_topology_secret.resources | length == 1
+      - missing | length == 0
+    fail_msg: >-
+      cluster-topology in {{ flux_namespace }} does not cover every ${...}
+      placeholder under gitops/. Missing key(s): {{ missing | join(', ') }}.
+      Needed: {{ need | join(', ') }}. That Secret is seeded by
+      playbooks/bootstrap-cluster.yml ("Seed the cluster-topology Secret") — add
+      the key there so it is reproducible, never with a one-off kubectl. If the
+      Secret is absent entirely, bootstrap-cluster.yml has not run against this
+      cluster.
+    quiet: true
+
+# --- PHASE 2 — point Flux at Git --------------------------------------------
+# Gate verified, substitution source complete: now let it sync. This apply is the
+# one that runs on EVERY invocation (phase 1 is first-bootstrap only), so it is
+# also what reconciles any change to the FluxInstance itself — a components list,
+# a distribution bump, a different ref.
+- name: "[{{ cluster_name }}] Apply the FluxInstance — phase 2, enable Git sync"
+  kubernetes.core.k8s:
+    definition: >-
+      {{ flux_instance_base | combine({'spec':
+           flux_instance_base.spec | combine({'sync': flux_sync_spec})}) }}
+    state: present
+    apply: true
+    kubeconfig: "{{ kubeconfig_local }}"
+
+- name: "[{{ cluster_name }}] Wait for the flux-system GitRepository to be Ready"
+  kubernetes.core.k8s_info:
+    api_version: source.toolkit.fluxcd.io/v1
+    kind: GitRepository
+    name: "{{ flux_namespace }}"
+    namespace: "{{ flux_namespace }}"
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_gitrepo
+  until: >-
+    flux_gitrepo.resources | length > 0 and
+    (flux_gitrepo.resources[0].status.conditions | default([])
+     | selectattr('type', 'equalto', 'Ready')
+     | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 30
+  delay: 10
+
+# The tiers, in the order their dependsOn chain resolves them. Each is waited on
+# separately so a failure names the tier — "infrastructure not Ready" and "apps
+# not Ready" mean very different things, and `crds` failing means the other two
+# never even started.
+#
+# This is where ADOPTION happens, and it is the step to watch on a first run:
+# Flux takes over the Calico CRDs (server-side applied by Ansible under a
+# different field manager), the tigera-operator Helm release (installed by the
+# helm CLI), and the projectcalico.org/v3 BGP CRs. All three were primed from
+# these same committed files, so the desired state matches and the takeover
+# should be quiet. See README "Verify" for what to check if it isn't.
+- name: "[{{ cluster_name }}] Wait for each Flux Kustomization tier to be Ready"
+  kubernetes.core.k8s_info:
+    api_version: kustomize.toolkit.fluxcd.io/v1
+    kind: Kustomization
+    name: "{{ item }}"
+    namespace: "{{ flux_namespace }}"
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_kustomization
+  until: >-
+    flux_kustomization.resources | length > 0 and
+    (flux_kustomization.resources[0].status.conditions | default([])
+     | selectattr('type', 'equalto', 'Ready')
+     | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 40
+  delay: 15
+  loop:
+    - crds
+    - infrastructure
+    - apps
+
+# Adoption check with teeth. The HelmRelease being Ready proves helm-controller
+# took over the release rather than colliding with it; the node still being Ready
+# proves the takeover didn't disrupt the CNI underneath it. A diff war would show
+# up as either the HelmRelease stuck not-Ready or Calico pods restarting.
+- name: "[{{ cluster_name }}] Confirm Flux adopted the Calico HelmRelease"
+  kubernetes.core.k8s_info:
+    api_version: helm.toolkit.fluxcd.io/v2
+    kind: HelmRelease
+    name: tigera-operator
+    namespace: tigera-operator
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_calico_hr
+  until: >-
+    flux_calico_hr.resources | length > 0 and
+    (flux_calico_hr.resources[0].status.conditions | default([])
+     | selectattr('type', 'equalto', 'Ready')
+     | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 30
+  delay: 10
+
+- name: "[{{ cluster_name }}] Confirm the node(s) are still Ready after adoption"
+  kubernetes.core.k8s_info:
+    kind: Node
+    kubeconfig: "{{ kubeconfig_local }}"
+  register: flux_node_info
+  until: >-
+    flux_node_info.resources | length > 0 and
+    (flux_node_info.resources | map(attribute='status.conditions', default=[]) | flatten
+     | selectattr('type', 'equalto', 'Ready')
+     | selectattr('status', 'equalto', 'True') | list | length)
+    == (flux_node_info.resources | length)
+  retries: 20
+  delay: 10
+
+- name: "[{{ cluster_name }}] Report"
+  ansible.builtin.debug:
+    msg: >-
+      Cluster `{{ cluster_name }}`: Flux {{ flux_distribution_version }} installed via
+      flux-operator {{ flux_operator_version }}, syncing
+      {{ flux_git_url }} ({{ flux_git_ref }}) at {{ flux_sync_path }}.
+      Strict post-build substitutions ON; cluster-topology covers
+      {{ flux_required_subs | length }} placeholder(s)
+      ({{ flux_required_subs | join(', ') }}).
+      Calico HelmRelease adopted (helm revision
+      {{ flux_calico_hr.resources[0].status.history[0].version | default('unknown') }});
+      {{ flux_node_info.resources | length }} node(s) Ready.
+      From here on, change the cluster through Git — not through Ansible.

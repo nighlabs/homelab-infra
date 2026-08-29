@@ -1,10 +1,10 @@
 # CLAUDE.md — gitops/ (Flux-managed cluster contents)
 
 Flux-managed cluster state. Bootstrapped by Ansible (see `ansible/CLAUDE.md` §6,
-step 4) — the same run that provisions the nodes primes Calico and (next
-milestone) installs the Flux Operator + `FluxInstance` pointed at this repo.
-Standing repo-wide guardrails (no Terraform, no second Ceph, no CGNAT CIDRs, no
-DHCP) apply here too — see the root `CLAUDE.md`.
+step 4) — the same run that provisions the nodes primes Calico, then
+`playbooks/flux-bootstrap.yml` installs the flux-operator + a `FluxInstance`
+pointed at this repo. Standing repo-wide guardrails (no Terraform, no second
+Ceph, no CGNAT CIDRs, no DHCP) apply here too — see the root `CLAUDE.md`.
 
 ## Layout (4-tier)
 
@@ -30,9 +30,23 @@ apps/                     # workloads only: litellm, qdrant, open-webui, ...
   convention** — don't route other controllers' CRDs here just because they have
   some. See "The CRD tier" below for why Calico is special.
 - **`deployment/`** holds the Flux `Kustomization` CRs (the entrypoints Flux
-  reconciles), NOT the workloads. One subdir per cluster (today: `snoop-a2o`).
-  These reference the `flux-system` `GitRepository` created by the
-  `FluxInstance` at Flux bootstrap — so they're **inert until that milestone**.
+  reconciles), NOT the workloads. One subdir per cluster, and **the directory
+  name IS the cluster key from `ansible/inventory/nodes.yml`** — today `homelab`
+  (renamed from `snoop-a2o`, a node name, on 2026-08-17). That is not cosmetic:
+  `flux_sync_path` derives the FluxInstance's sync path as
+  `gitops/deployment/{{ cluster_name }}`, so a rename here silently points Flux
+  at a path that doesn't exist — and the failure is asymmetric, because the
+  `GitRepository` still goes Ready (the clone worked) while only the
+  `flux-system` Kustomization fails. These reference the `flux-system`
+  `GitRepository` the `FluxInstance` generates from `spec.sync`.
+  - **`infrastructure` and `apps` carry `postBuild.substituteFrom` on the
+    Ansible-seeded `cluster-topology` Secret; `crds` deliberately does not.**
+    kustomize-controller only runs substitution when `spec.postBuild` is set, so
+    leaving it off `crds` is what keeps 3 MB of generated CRD text from being
+    scanned — and, under the strict gate, from hard-failing the one tier
+    everything else `dependsOn`. `apps` has no placeholders yet and gets the
+    block anyway, so the first one added is covered by the gate rather than
+    silently substituting to `""`.
 - **`infrastructure/` vs `apps/`**: controllers (CNI, LB, ingress, CSI, secrets)
   live in `infrastructure/`; only actual workloads go in `apps/`. `apps.yaml`
   `dependsOn` `infrastructure`, so nothing in `apps/` reconciles before the
@@ -284,11 +298,24 @@ HelmRelease.
 
 ## Not here yet
 
-- **Flux itself** (`FluxInstance`, secret-zero) — the `deployment/` entrypoints
-  activate then. **Now sequenced *after* the Calico BGP migration** (see
-  `ansible/CLAUDE.md` current-task banner). What Ansible seeds at that point:
-  secret-zero, the `cluster-topology` Secret (post-build substitution), and —
-  only if SOPS turns out to be needed — `sops-age`.
+- ~~**Flux itself**~~ — **WRITTEN 2026-08-17 in `ansible/playbooks/flux-bootstrap.yml`,
+  not yet run against a cluster.** The `deployment/` entrypoints stop being inert
+  the moment it does. Notes that matter from this side:
+  - **The operator is Ansible-owned and is NOT primed-for-adoption.** Nothing in
+    `gitops/` manages the flux-operator, so unlike Calico there is no second
+    writer and no HelmRelease here for it. Self-management (a HelmRelease for the
+    operator, reconciled by the Flux that operator installed) is a real pattern
+    and a real footgun — an in-flight upgrade can delete the controller
+    performing it. Adopt it deliberately or not at all; don't drift into it.
+  - **The `FluxInstance` is applied in two passes, the first WITHOUT
+    `spec.sync`**, so the `StrictPostBuildSubstitutions` gate is verified present
+    before Flux is allowed to reconcile anything from this tree. Without the
+    gate, the first `infrastructure` reconcile applies `peerIP: ""` over a
+    working `BGPPeer` and reports Healthy. See `ansible/CLAUDE.md`.
+  - **No pull secret** — the repo is public. If it ever goes private that
+    changes, and `spec.sync.pullSecret` + a BWS secret are the fix.
+  - Still to seed if SOPS is ever needed: `sops-age`. `cluster-topology` is
+    already seeded by `bootstrap-cluster.yml`.
 - **TODO at Flux bootstrap — source is OCI, not Git.** The `deployment/`
   entrypoints currently point at a `GitRepository` named `flux-system` as a
   placeholder. When Flux is wired up, **rewrite them to an `OCIRepository`**

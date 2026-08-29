@@ -11,8 +11,12 @@ When in doubt about *why* a choice was made, check that doc's Appendix A
 decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
-> **Current task:** **Flux bootstrap** (Flux Operator + `FluxInstance` +
-> secret-zero) — the second half of §6 step 4. Everything before it is done:
+> **Current task:** **Flux bootstrap** (Flux Operator + `FluxInstance`) — the
+> second half of §6 step 4. **The playbook exists and Flux installs cleanly, but
+> ADOPTION HAS NOT BEEN TESTED YET** — two first-run failures (both fixed, both
+> caught before Git sync) stopped it short. Next: roll back the
+> `pre-flux-adoption` snapshot and run it once, clean. Everything
+> before it is done:
 > **§1 (VM shell), §2 (k3s all-in-one server), and the Calico prime (§6 step 4,
 > first half) are all COMPLETE and verified live** on `snoop-a2o` (§1 done
 > 2026-07-07: full §1.4 DoD incl. unattended reboot + from-scratch rebuild; §2:
@@ -80,17 +84,104 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > as `cluster-topology` **permanently**, because ESO needs a LoadBalancer IP that
 > BGP produces.
 >
-> **▶ NEXT: Flux bootstrap on a GitRepository** (step 2 of 1→2→4→3). Three items
-> already come due there: **§7 item 14** (scoped kubeconfig for Flux, explicitly
-> deferred to this milestone); **`StrictPostBuildSubstitutions=true`** on
-> kustomize-controller, enabled WITH the bootstrap — there are four `${...}` in
-> the tree and without the gate a typo reconciles green as `peerIP: ""`; and
-> **adoption is the real risk** — Flux must take over the Ansible-primed
-> HelmRelease, the BGP CRs and the server-side-applied CRDs without a diff war.
+> **🔶 FIRST RUN ATTEMPTED 2026-08-29 — Flux bootstrap on a GitRepository**
+> (step 2 of 1→2→4→3). `playbooks/flux-bootstrap.yml` +
+> `playbooks/tasks/flux-bootstrap-cluster.yml`, wired into `site.yml` as the
+> fourth import. **Flux installs cleanly; ADOPTION IS STILL UNTESTED** — the run
+> stopped before Git sync both times, for two different reasons, both now fixed.
+> Pins: **flux-operator chart `0.58.0`** (⚠ no leading `v`; the OCI chart tags are
+> bare semver while the GitHub release is `v0.58.0`) installing **Flux `2.9.x`** —
+> minor pin, patches automatic, exactly the k3s sysupdate posture.
+>
+> **The design in one line: helm-install the operator, apply ONE `FluxInstance`,
+> let it generate the `flux-system` GitRepository + Kustomization that the
+> already-committed `gitops/deployment/<cluster>/` entrypoints reference.**
+>
+> **✅ What the first run PROVED:** the operator installs, the FluxInstance
+> reconciles, all four controllers come up, the GitRepository clones and goes
+> Ready, and **the two-phase design did exactly its job** — the gate assert failed
+> in phase 1, before `spec.sync` existed, so nothing was ever reconciled from Git.
+> Verified against a pre-run snapshot afterwards: helm still **revision 1**,
+> `Installation.spec` byte-identical, **zero** pod restarts, BGP CRs intact. A
+> failed bootstrap left the cluster untouched, which is the property the whole
+> phase split exists to buy.
+>
+> **❌ Failure 1 — the gate assert was wrong, not the cluster.** The operator
+> already emits `--feature-gates=ObjectLevelWorkloadIdentity=false`, so appending
+> ours produced two `--feature-gates` arguments and the assert (`length == 1`)
+> failed the run. **The premise behind it — "a repeated flag overrides, last one
+> wins" — is FALSE.** `--feature-gates` is a component-base `MapStringBool`: the
+> first `Set()` clears defaults, later ones **MERGE**. kustomize-controller's own
+> startup log settles it, logging `loading feature gate` for *both*. So appending
+> is correct and version-proof, and the assert now folds every `--feature-gates`
+> argument into an effective map (last writer wins *per key*) and checks the
+> resulting value — exercised against six cases incl. one-combined-flag and
+> same-key-twice.
+>
+> **❌ Failure 2 — FLUX READS THE REMOTE, NOT YOUR WORKING TREE.** With the gate
+> fixed, phase 2 landed and then sat for 10 minutes: `kustomization path not
+> found: .../gitops/deployment/homelab`. The rename to `homelab` and the new
+> `kustomization.yaml` were **committed nowhere** — `origin/main` still had
+> `snoop-a2o`. Every local check sailed past it, because `kubectl kustomize
+> gitops/deployment/homelab` proves the build works ON DISK and says nothing about
+> the branch Flux clones. ⚠ **The symptom is deliberately misleading: the
+> GitRepository goes READY** (the clone worked, the repo is fine) and only the
+> `flux-system` Kustomization fails. **A preflight now fetches the remote and
+> asserts the sync path exists there before anything is applied**, plus warns when
+> `gitops/` has uncommitted changes Flux cannot see. Ten minutes of retries became
+> an instant, named failure.
+>
+> Three further things in the play are non-obvious and load-bearing:
+> - **The FluxInstance is applied in TWO passes, phase 1 with NO `spec.sync`** —
+>   see above; this is what made a failed first run harmless.
+> - **Phase 1 is `when: not exists`, and that is NOT an optimization.**
+>   `apply: true` prunes absent fields, so running it unconditionally would strip
+>   `spec.sync` from an established instance — deleting the `flux-system`
+>   Kustomization, whose `prune: true` cascades to all three tiers.
+> - **`gitops/deployment/snoop-a2o/` was RENAMED to `homelab/`** — the cluster
+>   key, not a node name, which is what lets `flux_sync_path` derive as
+>   `gitops/deployment/{{ cluster_name }}`. ⚠ Renaming that directory without
+>   renaming the cluster key is Failure 2 all over again.
+>
+> **The play needs NO credentials** — no BWS, no keychain prompt. Every value is a
+> committed constant or comes from the cluster via the kubeconfig.
+>
+> **Two more bugs were found while writing it, both silent-wrong rather than
+> loud-broken, and both worth carrying forward:**
+> - A task-level `vars:` entry referencing `item` does **not** re-resolve per
+>   iteration under this ansible-core's lazy templating. The placeholder-scanner
+>   ran over all 18 files and produced an **empty list** — it would have asserted
+>   "nothing missing" against an empty topology Secret. Fixed by using the repo's
+>   existing single-expression Jinja-loop idiom (`k3s_tokens`, `cluster_bgp`).
+> - Keys inside **one** `set_fact` are not resolved in declaration order; an
+>   earlier key referencing a later sibling fails outright. Hence the kustomize
+>   patch is inlined rather than held in its own variable.
+>
+> **▶ NEXT: roll back the `pre-flux-adoption` snapshot (VM 1050, 2026-08-29
+> 14:13:43, with RAM) and run it once, clean.** The snapshot is the right teardown
+> here — far safer than deleting the FluxInstance, which would cascade a prune
+> through the three tiers and **uninstall Calico**. Rolling back also restores the
+> pre-Flux state without re-running `bootstrap-cluster.yml`: same VM state, so the
+> kubeconfig and the `cluster-topology` Secret both survive. Re-running *without*
+> a rollback would take the `when: not exists` path and skip phase 1 entirely —
+> i.e. test the re-run path, not a first bootstrap.
+>
+> **⚠ Anything that reaches the Proxmox API cannot run from the control node as
+> of 2026-08-29** — Python gets `No route to host` on the mgmt IP while reaching
+> the DMZ (`:6443`) and the public internet fine, so this is NOT the TCC Local
+> Network denial in README troubleshooting; the management subnet simply isn't
+> routable from the Mac right now. `flux-bootstrap.yml` and
+> `bootstrap-cluster.yml` are unaffected (DMZ only); `provision-nodes.yml` and a
+> full `site.yml` rebuild are blocked until it is.
+>
 > Then step 4 (GHA builds + cosign-signs the OCI artifact), then step 3 (point
 > Flux at it with `spec.verify`). ⚠ Do NOT fold "stop vendoring the Calico CRDs"
 > into step 4 — `bootstrap-cluster.yml` primes from the vendored file, so that's
 > a separate step 5.
+>
+> **§7 item 14 was NOT a blocker here (de-scoped 2026-08-17):** Flux runs
+> in-cluster and authenticates with its own ServiceAccount token, so it never
+> reads a kubeconfig. See item 14.
 
 > **✅✅ DONE + VERIFIED LIVE 2026-08-16 — THE CALICO BGP MIGRATION IS COMPLETE.**
 > Proven end-to-end on a **from-scratch rebuild** of `snoop-a2o` (VM destroyed and
@@ -160,8 +251,11 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 >
 > **Still open before writing the Calico manifests:** whether pfSense/FRR is
 > actually configured on the box (§2–§7 of the runbook — the render is done, the
-> paste is not), and §7 item 14 (scoped kubeconfig for Flux). BWS unblocks
+> paste is not)~~, and §7 item 14 (scoped kubeconfig for Flux)~~. BWS unblocks
 > nothing (`vault.yml` already works), so it follows rather than leads.
+> *(Both closed since: the paste landed with the 2026-08-16 BGP verification, and
+> item 14's Flux half was de-scoped 2026-08-17 as a category error — in-cluster
+> Flux uses no kubeconfig.)*
 >
 > **⚠ Next session, before writing `BGPConfiguration`/`BGPPeer`/`BGPFilter`:**
 > confirm the exact CR shape for Calico **3.32** — that release moved the CRDs
@@ -977,15 +1071,33 @@ apply once k3s work starts.
 
     </details>
 
-14. **Cluster-admin kubeconfig persists on the control node — OPEN, decide WITH
-    the Flux milestone (raised 2026-07-12).** `bootstrap-cluster.yml` fetches k3s's
+14. **Cluster-admin kubeconfig persists on the control node — control-node
+    hygiene only, NO LONGER GATES THE FLUX MILESTONE (raised 2026-07-12,
+    de-scoped 2026-08-17).** `bootstrap-cluster.yml` fetches k3s's
     admin kubeconfig to `ansible/.kube/<cluster>.config` (0600, git-ignored) and
     merges the context into `~/.kube/config`. That admin cert then just *sits*
     there: it's cluster-admin, long-lived, and every play reads it — including the
-    Flux bootstrap that's next. **The two questions, which are really one:** should
-    Flux get a **scoped ServiceAccount kubeconfig** rather than reusing the admin
-    one, and should the admin file be **shredded after bootstrap** once nothing
-    needs it? **Why not just delete it in the happy path today** (the obvious move,
+    Flux bootstrap.
+
+    > **⚠ This item used to bundle "should Flux get a scoped ServiceAccount
+    > kubeconfig?" and called the two questions "really one." They were never one,
+    > and the Flux half was a category error: an in-cluster Flux controller never
+    > uses a kubeconfig at all.** `spec.kubeConfig` on a Kustomization/HelmRelease
+    > exists solely for reconciling a *remote* cluster; locally each controller
+    > authenticates with its own ServiceAccount token, so there is no
+    > "kubeconfig for Flux" to scope or hand over. Nothing about this file changes
+    > what Flux can do. **Do not re-raise it as a Flux blocker.**
+    >
+    > Flux's in-cluster privilege is a real but *separate* lever, and not a
+    > bootstrap decision: `flux-system` binds the controllers to **cluster-admin**,
+    > and narrowing it means `--default-service-account` on kustomize-controller
+    > (or per-Kustomization `spec.serviceAccountName`) plus dropping that binding.
+    > For a repo whose whole job is installing a CNI, server-side-applying CRDs and
+    > managing cluster-scoped Calico CRs, broad power is close to the genuine
+    > requirement — revisit when `apps/` has workloads worth isolating from the
+    > infra tier, not before.
+
+    **Why not just delete the file in the happy path today** (the obvious move,
     and wrong): (a) later plays run *standalone* — a `flux-bootstrap.yml` on its own
     would find no kubeconfig, working only inside a full `site.yml` that re-fetched
     it first, a coupling that bites exactly once and confusingly; (b) with

@@ -2,6 +2,6 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 # Workloads only (design §6): litellm, qdrant, open-webui, ... — added once the
 # infrastructure layer is up. Empty for now; the apps Flux Kustomization
-# (deployment/snoop-a2o/apps.yaml) dependsOn infrastructure so nothing here
+# (deployment/homelab/apps.yaml) dependsOn infrastructure so nothing here
 # reconciles before Calico + the rest of the controllers are Ready.
 resources: []
