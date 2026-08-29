@@ -32,7 +32,7 @@ apps/                     # workloads only: litellm, qdrant, open-webui, ...
 - **`deployment/`** holds the Flux `Kustomization` CRs (the entrypoints Flux
   reconciles), NOT the workloads. One subdir per cluster, and **the directory
   name IS the cluster key from `ansible/inventory/nodes.yml`** — today `homelab`
-  (renamed from `snoop-a2o`, a node name, on 2026-08-17). That is not cosmetic:
+  (renamed from `snoop-a2o`, a node name, on 2026-08-29). That is not cosmetic:
   `flux_sync_path` derives the FluxInstance's sync path as
   `gitops/deployment/{{ cluster_name }}`, so a rename here silently points Flux
   at a path that doesn't exist — and the failure is asymmetric, because the
