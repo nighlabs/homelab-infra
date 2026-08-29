@@ -167,9 +167,14 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 >
 > **Snapshot/teardown note, kept because it will be needed again:** rolling back a
 > Proxmox snapshot is the RIGHT way to get back to a pre-Flux cluster. Deleting the
-> FluxInstance is NOT — the operator owns the generated `flux-system`
-> Kustomization, whose `prune: true` cascades to all three tiers, and
-> `infrastructure` pruning its inventory **uninstalls Calico**. A rollback with RAM
+> FluxInstance is NOT — it prunes the generated `flux-system` Kustomization, whose
+> `prune: true` cascades to all three tiers, and `infrastructure` pruning its
+> inventory **uninstalls Calico**. ⚠ The mechanism is the **operator's own
+> inventory + a `fluxcd.controlplane.io/finalizer`**, NOT Kubernetes
+> ownerReferences — the generated `GitRepository`/`Kustomization` carry *no*
+> ownerReferences at all (verified 2026-08-29; both appear in the FluxInstance's
+> 34-entry `status.inventory`). So `kubectl delete --cascade=orphan` does **not**
+> save you: it defeats GC, and GC is not what is doing the deleting. A rollback with RAM
 > also preserves the kubeconfig and the `cluster-topology` Secret, so
 > `bootstrap-cluster.yml` does not need re-running.
 >
