@@ -11,8 +11,12 @@ When in doubt about *why* a choice was made, check that doc's Appendix A
 decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
-> **Current task:** **step 4 of 1→2→4→3 — a GHA that builds + cosign-signs the
-> gitops tree as an OCI artifact**, then step 3, whose shape is now **decided**:
+> **Current task:** **step 3 of 1→2→4→3.** ✅ **Step 4 is DONE and verified**
+> (2026-08-29): `.github/workflows/gitops-artifact.yml` publishes and keyless-
+> cosign-signs `ghcr.io/nighlabs/homelab-infra/gitops`; `cosign verify` passes
+> against our workflow identity and the package is public, so no pull secret is
+> needed. ⚠ **The artifact root is `gitops/` itself**, so at step 3 every tier
+> path loses its `./gitops` prefix. Step 3's shape is **decided**:
 > the FluxInstance stays **sync-less** (`spec.sync` cannot express `verify`) and
 > Ansible seeds an `OCIRepository` + root `Kustomization` instead, committed
 > inside the path they reconcile so Flux adopts and drift-corrects them. That

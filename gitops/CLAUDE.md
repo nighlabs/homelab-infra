@@ -372,6 +372,29 @@ HelmRelease.
     recovered only by re-running `flux-bootstrap.yml`, which is why that play
     must stay idempotent rather than one-shot.
   - Full rationale + everything rejected: **Appendix A, "GitOps delivery"**.
+  - **✅ DONE + VERIFIED 2026-08-29 — step 4 is live.**
+    `.github/workflows/gitops-artifact.yml` publishes
+    `ghcr.io/nighlabs/homelab-infra/gitops`. Verified independently, not just
+    "the job went green": `cosign verify` against
+    `--certificate-identity-regexp='^https://github.com/nighlabs/homelab-infra/'`
+    + the GitHub OIDC issuer passes (claims validated, transparency-log entry
+    confirmed, cert chained to a trusted CA), and the pulled layer contains all
+    21 manifests and **zero markdown**. The package is **public** (anonymous
+    pull works), so **no image pull secret is needed** — one less bootstrap-tier
+    secret than expected.
+  - ⚠⚠ **THE ARTIFACT ROOT IS `gitops/` ITSELF — THE PREFIX IS GONE.** Paths
+    inside it are `deployment/homelab/…`, `infrastructure/…`, `crds/…`. The
+    committed Kustomizations currently say `path: ./gitops/infrastructure`,
+    which is correct *only* for the GitRepository source (repo-root-relative).
+    **At step 3 every tier path loses its `./gitops` prefix and the sync path
+    becomes `./deployment/homelab`.** Miss this and the symptom is the one
+    already burned into this repo: source Ready, Kustomization failing with
+    "kustomization path not found".
+  - ⚠ `--reproducible` stabilises the LAYER digest, not the manifest digest —
+    `org.opencontainers.image.revision` embeds the commit SHA, so every build
+    mints a new manifest digest and therefore a new OCIRepository revision.
+    That is why the workflow negates `gitops/**/*.md` in its trigger `paths`
+    rather than relying on the ignore list alone.
 - Everything downstream of Calico: **Calico BGP** (no MetalLB), NGINX Gateway
   Fabric + cert-manager, ceph-csi-operator + StorageClasses, ESO + Bitwarden SDK
   Server, then the apps (Postgres/Redis → LiteLLM → Qdrant → RAG → Open WebUI →

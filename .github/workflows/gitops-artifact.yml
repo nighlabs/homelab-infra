@@ -20,12 +20,16 @@ name: gitops-artifact
 on:
   push:
     branches: [main]
-    # Only what actually reaches the cluster. Docs edits under gitops/ still
-    # touch this path filter, but --ignore-paths below keeps them out of the
-    # artifact, and --reproducible means unchanged content yields an unchanged
-    # digest — so Flux sees nothing new and does not reconcile.
+    # ⚠ Markdown is negated HERE, not just via --ignore-paths, and the
+    # distinction is load-bearing. --ignore-paths keeps docs out of the LAYER,
+    # and --reproducible keeps that layer's digest stable — but the manifest
+    # also carries `org.opencontainers.image.revision`, which embeds the commit
+    # SHA. So a docs-only commit still mints a NEW MANIFEST DIGEST, which is
+    # what an OCIRepository tracks as its revision, and Flux would reconcile a
+    # no-op. Not running at all is the only way to avoid that.
     paths:
       - 'gitops/**'
+      - '!gitops/**/*.md'
       - '.github/workflows/gitops-artifact.yml'
   workflow_dispatch:
 
