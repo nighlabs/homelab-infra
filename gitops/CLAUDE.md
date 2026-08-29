@@ -344,14 +344,34 @@ HelmRelease.
     the "one source, primed twice" invariant has to be re-established some other
     way (a CI-published artifact both sides consume, most likely). Don't delete
     the vendored file until that second half is actually solved.
-  - **Image/artifact signing** (cosign — keyless via the GHA OIDC identity is
-    the low-friction path) so the artifact is provably built by our pipeline,
-    plus **`OCIRepository.spec.verify`** (cosign) on the Flux side so
-    source-controller **refuses to reconcile an unsigned/forged artifact** — a
-    malicious actor pushing a look-alike image to the registry can't get it
-    applied to the cluster. Update the `FluxInstance` bootstrap (Ansible) to
-    provision the registry pull creds + the cosign trust config alongside
-    secret-zero.
+  - **✅ DECIDED 2026-08-29 — cosign, keyless via the GHA OIDC identity, verified
+    by `OCIRepository.spec.verify` + `matchOIDCIdentity`.** Not a preference:
+    `spec.verify.provider` is an enum of exactly **`cosign`/`notation`**, so
+    **GitHub artifact attestations cannot gate reconciliation at all**. They
+    compose fine as extra SLSA provenance, but they are not admission control —
+    do not swap one for the other. Keyless over a key because a long-lived key
+    is another BWS secret to store/rotate/leak, while issuer+subject matching
+    asserts the stronger *"signed by this workflow, in this repo"*.
+  - **✅ DECIDED 2026-08-29 — the FluxInstance stays SYNC-LESS; Ansible seeds the
+    `OCIRepository` + root `Kustomization`.** ⚠ `spec.sync` accepts
+    `OCIRepository` as a kind but has **NO `verify` field** (8 fields only —
+    checked against the live CRD *and* the operator's `main`, where the `Sync`
+    struct is unchanged and no issue tracks adding it). Wiring OCI through
+    `spec.sync` would therefore look finished while the signature gate was
+    silently absent. Patching the generated source doesn't help either: the
+    operator holds it in `status.inventory` and reconciles the edit away.
+  - **The root source is committed INSIDE the path it reconciles**, so Flux
+    adopts it and then drift-corrects it — the same "Ansible primes, Flux adopts"
+    handoff as Calico. ⚠ **Self-management is a LAYOUT property, not an automatic
+    one** (`flux bootstrap` gets it by writing `gotk-sync.yaml` into its own
+    `TargetPath`); lay it out any other way and nothing heals the root.
+  - ⚠ **Two sharp edges of that self-management:** a future signed artifact that
+    drops `verify` would **disable its own verification** (not a hole — it must
+    be signed by our identity to apply — but treat that file like a CI secret,
+    not routine review); and a bad committed root is self-inflicted lockout,
+    recovered only by re-running `flux-bootstrap.yml`, which is why that play
+    must stay idempotent rather than one-shot.
+  - Full rationale + everything rejected: **Appendix A, "GitOps delivery"**.
 - Everything downstream of Calico: **Calico BGP** (no MetalLB), NGINX Gateway
   Fabric + cert-manager, ceph-csi-operator + StorageClasses, ESO + Bitwarden SDK
   Server, then the apps (Postgres/Redis → LiteLLM → Qdrant → RAG → Open WebUI →

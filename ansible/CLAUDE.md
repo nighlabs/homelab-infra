@@ -12,8 +12,13 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
 > **Current task:** **step 4 of 1→2→4→3 — a GHA that builds + cosign-signs the
-> gitops tree as an OCI artifact**, then step 3 (repoint Flux at it with
-> `spec.verify`). **The Flux bootstrap is DONE and the adoption is VERIFIED LIVE
+> gitops tree as an OCI artifact**, then step 3, whose shape is now **decided**:
+> the FluxInstance stays **sync-less** (`spec.sync` cannot express `verify`) and
+> Ansible seeds an `OCIRepository` + root `Kustomization` instead, committed
+> inside the path they reconcile so Flux adopts and drift-corrects them. That
+> also means **phase 2 of `flux-bootstrap.yml` goes away** and its
+> `when: not exists` guard with it — that guard existed only to stop a re-run
+> stripping `spec.sync`. Rationale: Appendix A, "GitOps delivery". **The Flux bootstrap is DONE and the adoption is VERIFIED LIVE
 > (2026-08-29)** — see the block below. Everything before it is done:
 > **§1 (VM shell), §2 (k3s all-in-one server), and the Calico prime (§6 step 4,
 > first half) are all COMPLETE and verified live** on `snoop-a2o` (§1 done
