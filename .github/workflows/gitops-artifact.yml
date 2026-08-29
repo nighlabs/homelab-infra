@@ -21,7 +21,7 @@ on:
   push:
     branches: [main]
     # Only what actually reaches the cluster. Docs edits under gitops/ still
-    # touch this path filter, but --add-ignore-paths below keeps them out of the
+    # touch this path filter, but --ignore-paths below keeps them out of the
     # artifact, and --reproducible means unchanged content yields an unchanged
     # digest — so Flux sees nothing new and does not reconcile.
     paths:
@@ -72,10 +72,21 @@ jobs:
       #    identical digest. Without it every run mints a new digest and Flux
       #    reconciles on no actual change.
       #
-      #    --add-ignore-paths APPENDS to the defaults (--ignore-paths would
-      #    REPLACE them). Markdown is excluded: gitops/CLAUDE.md is documentation
-      #    for humans, is not applied to the cluster, and would otherwise make
-      #    every doc edit a new artifact.
+      #    ⚠ --ignore-paths REPLACES the CLI's default exclude list rather than
+      #    appending to it, so the defaults are restated here verbatim. Those
+      #    defaults are `excludeOCI` = sourceignore.ExcludeVCS + ExcludeExt:
+      #      .git/,.gitignore,.gitmodules,.gitattributes
+      #      *.jpg,*.jpeg,*.gif,*.png,*.wmv,*.flv,*.tar.gz,*.zip
+      #    (pflag semantics: the first --ignore-paths replaces the default, each
+      #    later one appends — hence three flags, not one merged string.)
+      #
+      #    🔁 flux2 `main` has an --add-ignore-paths that appends and would make
+      #    this a one-liner, but it is NOT in the pinned v2.9.4 the action
+      #    installs. Collapse these three flags into it at the next flux bump.
+      #
+      #    Markdown is excluded: gitops/CLAUDE.md is documentation for humans,
+      #    is never applied to the cluster, and would otherwise make every doc
+      #    edit mint a new artifact.
       - name: Push the artifact
         id: push
         run: |
@@ -86,7 +97,9 @@ jobs:
             --source="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --revision="${GITHUB_REF_NAME}@sha1:${GITHUB_SHA}" \
             --reproducible \
-            --add-ignore-paths='**/*.md' \
+            --ignore-paths='.git/,.gitignore,.gitmodules,.gitattributes' \
+            --ignore-paths='*.jpg,*.jpeg,*.gif,*.png,*.wmv,*.flv,*.tar.gz,*.zip' \
+            --ignore-paths='**/*.md' \
             --annotations="org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
             --annotations="org.opencontainers.image.description=Flux-managed cluster state (gitops/) for homelab-infra" \
             --output json | jq -r '.digest')
