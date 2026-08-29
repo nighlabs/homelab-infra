@@ -173,14 +173,27 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > also preserves the kubeconfig and the `cluster-topology` Secret, so
 > `bootstrap-cluster.yml` does not need re-running.
 >
-> **⚠ Anything that reaches the Proxmox API cannot run from the control node as
-> of 2026-08-29** — Python gets `No route to host` on the mgmt IP while reaching
-> the DMZ (`:6443`) and the public internet fine, so this is NOT the TCC Local
-> Network denial in README troubleshooting; the management subnet simply isn't
-> routable from the Mac right now. `flux-bootstrap.yml` and
-> `bootstrap-cluster.yml` are unaffected (DMZ only); `provision-nodes.yml` and a
-> full `site.yml` rebuild are blocked until it is. **A from-scratch `site.yml` run
-> is therefore the one part of this milestone's DoD still outstanding.**
+> **⚠ Proxmox-API plays are blocked on the control node as of 2026-08-29 — it is
+> the macOS Local Network Privacy (TCC) denial, already documented in README
+> troubleshooting and NOT a new problem.** Python gets `[Errno 65] No route to
+> host` on `<pve>:8006` while Apple-signed binaries sail through (`nc` succeeds,
+> `curl` returns **401** — i.e. Proxmox is reachable and answering). Fix: grant
+> **Zed** (`dev.zed.Zed`, the shell's owning app) Local Network access, then fully
+> ⌘Q and relaunch. `flux-bootstrap.yml` and `bootstrap-cluster.yml` are unaffected
+> — they reach the DMZ, which is *routed* and therefore not gated.
+>
+> ⚠ **This was first misdiagnosed as "the management subnet isn't routable",
+> and the lesson is about the test, not the fix. LNP gates ON-LINK traffic only.**
+> The control node is `x.x.x.220/24` and PVE is `x.x.x.21` — same link, so
+> gated. The k3s node `x.x.x.50` is *routed* via the gateway, so reaching it
+> from Python exercises nothing and proves nothing. Reasoning "Python reached a
+> LAN host, therefore the grant is present" is vacuous unless that host is
+> on-link. The only valid test is **Python vs an Apple-signed binary against the
+> same on-link host and a port known to listen** — see the README section, which
+> had it right the whole time.
+>
+> **A from-scratch `site.yml` run remains the one part of this milestone's DoD
+> still outstanding**, and it is unblocked the moment that grant is in place.
 >
 > Then step 4 (GHA builds + cosign-signs the OCI artifact), then step 3 (point
 > Flux at it with `spec.verify`). ⚠ Do NOT fold "stop vendoring the Calico CRDs"
