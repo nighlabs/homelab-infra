@@ -1,6 +1,6 @@
 # Flux entrypoint for the workloads layer. dependsOn infrastructure so no app
 # reconciles until Calico + the controllers are Ready (design §6 dependency
-# order). ./gitops/apps is an empty `resources: []` today, so this reconciles to
+# order). ./apps is an empty `resources: []` today, so this reconciles to
 # a no-op until the first workload lands.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -9,7 +9,8 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
-  path: ./gitops/apps
+  # Artifact-root-relative — no ./gitops prefix (see sync.yaml).
+  path: ./apps
   prune: true
   wait: true
   timeout: 5m
@@ -25,8 +26,7 @@ spec:
     substituteFrom:
       - kind: Secret
         name: cluster-topology
-  # TODO (step 3): switch to a signed OCIRepository source — see the note in
-  # infrastructure.yaml / gitops/CLAUDE.md "Not here yet".
+  # Signed OCIRepository source — see source.yaml / infrastructure.yaml.
   sourceRef:
-    kind: GitRepository
+    kind: OCIRepository
     name: flux-system

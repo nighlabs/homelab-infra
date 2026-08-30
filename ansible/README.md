@@ -591,10 +591,12 @@ compare `gitops/infrastructure/calico/values.yaml` against the live release
 (`helm -n tigera-operator get values tigera-operator`) — they must be identical,
 which is the entire point of the shared values file.
 
-**Idempotency:** re-run `flux-bootstrap.yml` → no changes, and critically the
-`GitRepository` and the three Kustomizations are **not** recreated. Phase 1 of
-the FluxInstance apply is skipped once the instance exists precisely so a re-run
-can't strip `spec.sync` and cascade a prune through everything Flux owns.
+**Idempotency:** re-run `flux-bootstrap.yml` → no changes. The sync-less
+FluxInstance apply is a safe no-op (there is no `spec.sync` for `apply: true` to
+strip), and re-seeding the `OCIRepository` + root Kustomization from their
+committed files is an adoption, not a recreate. ⚠ The play **refuses** to run
+against a cluster still on the old GitRepository-sync FluxInstance — converting
+that in place would cascade-prune Calico — so migrate by re-provisioning.
 
 ## Troubleshooting
 

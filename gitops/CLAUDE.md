@@ -321,11 +321,12 @@ HelmRelease.
     changes, and `spec.sync.pullSecret` + a BWS secret are the fix.
   - Still to seed if SOPS is ever needed: `sops-age`. `cluster-topology` is
     already seeded by `bootstrap-cluster.yml`.
-- **TODO at Flux bootstrap — source is OCI, not Git.** The `deployment/`
-  entrypoints currently point at a `GitRepository` named `flux-system` as a
-  placeholder. When Flux is wired up, **rewrite them to an `OCIRepository`**
-  source instead, so Flux pulls a versioned OCI **artifact** (the built gitops
-  manifests) rather than reconciling straight from the Git branch. This needs:
+- **✅ DONE (step 3, branch `step3-oci-flux-source`, 2026-08-30; not yet merged
+  or run) — source is OCI, not Git.** The `deployment/homelab/` entrypoints now
+  point at `OCIRepository/flux-system` (`source.yaml`), reconciled by a committed
+  root `flux-system` Kustomization (`sync.yaml`); the FluxInstance is sync-less.
+  Flux pulls the versioned, cosign-verified OCI **artifact** rather than the Git
+  branch. History of what this needed:
   - **A GitHub Actions workflow** that builds the gitops tree into an OCI
     artifact and pushes it to a registry (e.g. GHCR) — on merge to `main`
     and/or tag (`flux push artifact oci://…` or the equivalent action).
@@ -383,13 +384,12 @@ HelmRelease.
     pull works), so **no image pull secret is needed** — one less bootstrap-tier
     secret than expected.
   - ⚠⚠ **THE ARTIFACT ROOT IS `gitops/` ITSELF — THE PREFIX IS GONE.** Paths
-    inside it are `deployment/homelab/…`, `infrastructure/…`, `crds/…`. The
-    committed Kustomizations currently say `path: ./gitops/infrastructure`,
-    which is correct *only* for the GitRepository source (repo-root-relative).
-    **At step 3 every tier path loses its `./gitops` prefix and the sync path
-    becomes `./deployment/homelab`.** Miss this and the symptom is the one
-    already burned into this repo: source Ready, Kustomization failing with
-    "kustomization path not found".
+    inside it are `deployment/homelab/…`, `infrastructure/…`, `crds/…`. **✅ Done
+    in step 3:** every tier path lost its `./gitops` prefix (`./crds`,
+    `./infrastructure`, `./apps`) and the root sync path is `./deployment/homelab`
+    (`sync.yaml`). The failure this prevents — source Ready, Kustomization failing
+    "kustomization path not found" — is the one already burned into this repo's
+    history, so keep the prefix off any new tier added under the OCI source.
   - ⚠ `--reproducible` stabilises the LAYER digest, not the manifest digest —
     `org.opencontainers.image.revision` embeds the commit SHA, so every build
     mints a new manifest digest and therefore a new OCIRepository revision.

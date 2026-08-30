@@ -1,6 +1,6 @@
 # Flux entrypoint for the infrastructure layer. Reconciled by the `flux-system`
-# Kustomization the FluxInstance generates from `spec.sync` (see
-# ansible/playbooks/flux-bootstrap.yml), which reconciles THIS directory.
+# Kustomization (sync.yaml) off the signed OCIRepository (source.yaml), which
+# reconciles THIS directory.
 #
 # Flux's first pass here is an ADOPTION, not an install: bootstrap-cluster.yml
 # already primed the Calico CRDs, the tigera-operator Helm release, and the BGP
@@ -19,10 +19,10 @@ spec:
   # `wait: true`, so this dependsOn gates on Established, not merely applied.
   dependsOn:
     - name: crds
-  # Relative to the GitRepository root, which IS the repo root — the FluxInstance
-  # syncs `gitops/deployment/homelab` from the same source, so both paths are
-  # repo-root-relative and this prefix is required, not optional.
-  path: ./gitops/infrastructure
+  # ⚠ Artifact-root-relative (the OCI artifact root IS gitops/), so no ./gitops
+  # prefix — the root Kustomization (sync.yaml) reconciles ./deployment/homelab
+  # from the same artifact, and this tier lives at ./infrastructure within it.
+  path: ./infrastructure
   prune: true
   wait: true
   timeout: 5m
@@ -41,10 +41,9 @@ spec:
     substituteFrom:
       - kind: Secret
         name: cluster-topology
-  # TODO (step 3 of the Flux milestone): switch this to a signed OCIRepository
-  # source — a GHA builds+pushes+cosign-signs the gitops artifact, and
-  # OCIRepository.spec.verify gates reconciliation on that signature. See
-  # gitops/CLAUDE.md "Not here yet".
+  # Signed OCIRepository source: a GHA builds+pushes+cosign-signs the gitops
+  # artifact and OCIRepository.spec.verify (source.yaml) gates reconciliation on
+  # that signature.
   sourceRef:
-    kind: GitRepository
+    kind: OCIRepository
     name: flux-system

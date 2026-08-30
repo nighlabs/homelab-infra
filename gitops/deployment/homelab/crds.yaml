@@ -1,6 +1,6 @@
 # Flux entrypoint for the CRD tier. Reconciled by the `flux-system` Kustomization
-# the FluxInstance generates from `spec.sync`, same as its infrastructure/apps
-# siblings.
+# (sync.yaml) off the signed OCIRepository (source.yaml), same as its
+# infrastructure/apps siblings.
 #
 # This exists because Calico v3.32 removed CRDs from the tigera-operator chart
 # and they must be applied server-side — see gitops/crds/calico/crds.yaml.
@@ -13,8 +13,9 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
-  # Relative to the GitRepository root — same assumption as infrastructure.yaml.
-  path: ./gitops/crds
+  # ⚠ Artifact-root-relative (the OCI artifact root IS gitops/), so no ./gitops
+  # prefix — same as sync.yaml/infrastructure.yaml.
+  path: ./crds
   # ⚠ prune: false — DELIBERATE, do not "fix" this to match the other tiers.
   # Pruning a CustomResourceDefinition cascades: Kubernetes garbage-collects
   # every custom resource of that kind. For Calico that is the entire cluster
@@ -35,9 +36,8 @@ spec:
   # generated CRD text — descriptions, examples, regex patterns, anything that
   # might contain a `${...}` — from being scanned and hard-failing the tier that
   # everything else dependsOn. This tier has no topology in it and needs none.
-  # TODO (step 3): switch to the signed OCIRepository source alongside the other
-  # tiers — and see gitops/CLAUDE.md "Not here yet", which records the plan to
-  # render these CRDs at OCI build time so the 3 MB stops living in Git.
+  # See gitops/CLAUDE.md "Not here yet" for the still-open follow-on: render
+  # these CRDs at OCI build time so the 3 MB stops living in Git.
   sourceRef:
-    kind: GitRepository
+    kind: OCIRepository
     name: flux-system

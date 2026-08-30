@@ -1,9 +1,14 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# The per-cluster Flux entrypoint. This is the directory the FluxInstance's
-# `spec.sync` points at (playbooks/flux-bootstrap.yml), so it is the ONE path
-# Flux is told about — everything else in gitops/ is reached through the three
-# Kustomization CRs below.
+# The per-cluster Flux entrypoint. This is the directory the root `flux-system`
+# Kustomization (sync.yaml) reconciles, so it is the ONE path Flux is told about
+# — everything else in gitops/ is reached through the Kustomization CRs below.
+#
+# ⚠ SELF-MANAGING: source.yaml (the OCIRepository) and sync.yaml (the root
+# flux-system Kustomization) are listed here on purpose. The root reconciles
+# THIS directory, so it re-applies itself and its own source every pull — which
+# is the whole mechanism by which a change to either heals from Git. Ansible
+# primes both at bootstrap; Flux owns them thereafter.
 #
 # ⚠ THE DIRECTORY NAME IS THE CLUSTER KEY from ansible/inventory/nodes.yml
 # (`homelab`), not a node name. `flux_sync_path` derives the sync path as
@@ -17,6 +22,8 @@ kind: Kustomization
 # fourth tier is a visible one-line diff instead of a directory listing quietly
 # changing what Flux applies.
 resources:
+  - source.yaml
+  - sync.yaml
   - crds.yaml
   - infrastructure.yaml
   - apps.yaml

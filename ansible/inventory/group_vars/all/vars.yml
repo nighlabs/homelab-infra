@@ -314,10 +314,11 @@ flux_operator_chart_ref: "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operat
 # Namespace for BOTH the operator and the FluxInstance — the operator only
 # reconciles a FluxInstance named `flux` in its OWN namespace, so these can't
 # diverge. `flux-system` also matches what `flux bootstrap` uses, which is what
-# makes the generated source/Kustomization names line up with the
-# `sourceRef: {kind: GitRepository, name: flux-system}` already committed in
-# gitops/deployment/<cluster>/. bootstrap-cluster.yml already creates this
-# namespace (for the cluster-topology Secret), so it exists before Flux does.
+# makes the Ansible-seeded source + root Kustomization names
+# (`sourceRef: {kind: OCIRepository, name: flux-system}` committed in
+# gitops/deployment/<cluster>/source.yaml + sync.yaml) line up with the three
+# tier entrypoints. bootstrap-cluster.yml already creates this namespace (for the
+# cluster-topology Secret), so it exists before Flux does.
 flux_namespace: "flux-system"
 
 # Which Flux distribution the operator installs. A MINOR PIN with automatic
@@ -361,28 +362,35 @@ flux_cluster_size: "small"
 # Revisit once ceph-csi + StorageClasses are up, if the emptyDir cache proves
 # too small.
 
-# The Git source Flux syncs from. PUBLIC repo, so there is NO pull secret and
-# nothing to seed — if this ever goes private, add a BWS secret and set
-# `pullSecret:` on spec.sync (see BWS-SECRETS.md).
+# ⚠ Flux does NOT clone this repo. It reconciles the SIGNED OCI artifact
+# (ghcr.io/nighlabs/homelab-infra/gitops) built from the branch below by the
+# gitops-artifact workflow — because signature verification (OCIRepository
+# spec.verify) has no equivalent on a GitRepository sync. The url/branch here are
+# used ONLY by flux-bootstrap.yml's preflight (does the source dir exist on the
+# branch the artifact is built from) and NOT by any running FluxInstance. The
+# artifact source itself is committed in gitops/deployment/<cluster>/source.yaml.
+# PUBLIC repo + PUBLIC package, so no pull secret; if either goes private, add a
+# BWS secret and set spec.secretRef on the OCIRepository (see BWS-SECRETS.md).
 flux_git_url: "https://github.com/nighlabs/homelab-infra.git"
 flux_git_ref: "refs/heads/main"
 
 # The bare branch name, DERIVED from flux_git_ref so the two can't disagree.
-# Used only by flux-bootstrap.yml's preflight, which checks that the sync path
-# actually exists on the branch Flux clones — because Flux reads the REMOTE and
-# every local check (kubectl kustomize, a file listing) passes happily while the
-# remote is missing the path entirely. Ask how that was discovered.
+# Used only by flux-bootstrap.yml's preflight, which checks the source dir exists
+# on the branch the artifact is built from — a fast fail for "forgot to push",
+# necessary but not sufficient (the artifact must also be rebuilt; the
+# OCIRepository Ready gate is what proves that).
 flux_git_branch: "{{ flux_git_ref | regex_replace('^refs/heads/', '') }}"
 
-# The per-cluster entrypoint directory, DERIVED from the cluster name — which is
-# why gitops/deployment/ subdirectories are named for the cluster key in
-# inventory/nodes.yml (`homelab`) and not for a node. The three Kustomization CRs
-# in there are what Flux reads first; everything else in gitops/ is reached
-# through them.
+# The per-cluster entrypoint directory (repo-root-relative, for the git preflight
+# above), DERIVED from the cluster name — which is why gitops/deployment/
+# subdirectories are named for the cluster key in inventory/nodes.yml (`homelab`)
+# and not for a node. ⚠ Note the ARTIFACT-relative path Flux actually uses drops
+# the `gitops/` prefix (the artifact root IS gitops/): the root Kustomization's
+# path is `./deployment/<cluster>`, hardcoded in sync.yaml, not derived here.
 flux_sync_path: "gitops/deployment/{{ cluster_name }}"
-# How often source-controller re-checks Git. 1m is the operator's own default;
-# stated explicitly because it's the knob you actually reach for.
-flux_sync_interval: "1m"
+# NOTE: the old `flux_sync_interval` was removed with the GitRepository sync — the
+# OCIRepository and root Kustomization intervals now live in their committed
+# manifests (source.yaml / sync.yaml), which is the single place they belong.
 
 # ⚠ MUST STAY TRUE. Without this gate, an undefined ${var} in a postBuild
 # substitution becomes the EMPTY STRING and the Kustomization reconciles

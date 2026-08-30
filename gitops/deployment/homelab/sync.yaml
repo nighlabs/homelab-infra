@@ -1,0 +1,35 @@
+# The ROOT Kustomization — the one Flux entry point that reconciles this
+# directory, replacing the `flux-system` Kustomization the FluxInstance used to
+# generate from spec.sync. Ansible primes it (playbooks/flux-bootstrap.yml);
+# Flux then adopts it and, because this file sits INSIDE the path it reconciles
+# (./deployment/homelab), drift-corrects itself and source.yaml on every pull.
+#
+# ⚠ SELF-MANAGEMENT IS A LAYOUT PROPERTY, NOT AN AUTOMATIC ONE. `flux bootstrap`
+# gets it by writing gotk-sync.yaml into its own TargetPath; we get it by
+# committing this file under the same directory its `path` points at. Move it
+# elsewhere and nothing heals the root — see gitops/CLAUDE.md "Not here yet".
+#
+# name/namespace = flux-system so the three tier Kustomizations
+# (crds/infrastructure/apps) that were written against the operator-generated
+# `flux-system` source keep resolving without change.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: flux-system
+  namespace: flux-system
+spec:
+  interval: 10m
+  # ⚠ Artifact-root-relative, NOT repo-root-relative. The OCI artifact's root IS
+  # gitops/, so the `./gitops` prefix that the GitRepository source required is
+  # GONE — here and in crds/infrastructure/apps.yaml. Miss this and the symptom
+  # is a Ready source next to a Kustomization failing "kustomization path not
+  # found" (the failure already burned into this repo's history once).
+  path: ./deployment/homelab
+  prune: true
+  # No postBuild: this tier carries only the source + the three tier entrypoints,
+  # none of which hold ${...} placeholders — same reasoning as crds.yaml. If a
+  # placeholder is ever added here, add the postBuild block WITH it so the
+  # StrictPostBuildSubstitutions gate covers it (see apps.yaml for that pattern).
+  sourceRef:
+    kind: OCIRepository
+    name: flux-system

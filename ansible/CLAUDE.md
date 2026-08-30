@@ -16,13 +16,23 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > cosign-signs `ghcr.io/nighlabs/homelab-infra/gitops`; `cosign verify` passes
 > against our workflow identity and the package is public, so no pull secret is
 > needed. ⚠ **The artifact root is `gitops/` itself**, so at step 3 every tier
-> path loses its `./gitops` prefix. Step 3's shape is **decided**:
-> the FluxInstance stays **sync-less** (`spec.sync` cannot express `verify`) and
-> Ansible seeds an `OCIRepository` + root `Kustomization` instead, committed
-> inside the path they reconcile so Flux adopts and drift-corrects them. That
-> also means **phase 2 of `flux-bootstrap.yml` goes away** and its
-> `when: not exists` guard with it — that guard existed only to stop a re-run
-> stripping `spec.sync`. Rationale: Appendix A, "GitOps delivery". **The Flux bootstrap is DONE and the adoption is VERIFIED LIVE
+> path loses its `./gitops` prefix. Step 3's shape was **decided** and is now
+> **✅ IMPLEMENTED on branch `step3-oci-flux-source` (2026-08-30) — NOT yet
+> merged or run against a cluster.** The FluxInstance is now **sync-less**
+> (`spec.sync` cannot express `verify`); Ansible seeds a committed `OCIRepository`
+> (`gitops/deployment/homelab/source.yaml`, cosign `spec.verify` +
+> `matchOIDCIdentity`) + root `Kustomization` (`sync.yaml`), both inside the path
+> they reconcile so Flux adopts and drift-corrects them. The three tier
+> entrypoints now point at `OCIRepository/flux-system` with the `./gitops` prefix
+> stripped from every path. **Phase 2 of `flux-bootstrap.yml` is gone** along with
+> its `when: not exists` guard — with no `spec.sync` there is nothing for a re-run
+> to strip. ⚠ **Two migration facts:** (1) the OCI artifact must be **rebuilt from
+> `main`** before the play runs, since Flux pulls the artifact, not the branch;
+> (2) the play now **REFUSES to convert a live sync-based FluxInstance in place**
+> (that would cascade-prune Calico) — migration is by **re-provision**, per the
+> disposable-cluster rule. Rationale: Appendix A, "GitOps delivery". ⚠ The step-2
+> log below still describes the *superseded* two-pass GitRepository design as it
+> ran on 2026-08-29 — kept as history; the live design is now the above. **The Flux bootstrap is DONE and the adoption is VERIFIED LIVE
 > (2026-08-29)** — see the block below. Everything before it is done:
 > **§1 (VM shell), §2 (k3s all-in-one server), and the Calico prime (§6 step 4,
 > first half) are all COMPLETE and verified live** on `snoop-a2o` (§1 done
