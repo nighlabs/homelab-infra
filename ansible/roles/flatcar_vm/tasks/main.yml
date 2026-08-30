@@ -155,7 +155,7 @@
     quiet: true
     fail_msg: >-
       {{ proxmox_snippet_dir }} on the Proxmox host is not a directory writable
-      by '{{ vault_proxmox_ssh_user }}'
+      by '{{ bws.proxmox_ssh_user }}'
       (exists={{ snippet_stat.exists | default('n/a') }},
       isdir={{ snippet_stat.isdir | default('n/a') }},
       writeable={{ snippet_stat.writeable | default('n/a') }}).
@@ -164,7 +164,7 @@
       easy to add on one host and forget on the others), or the group doesn't
       exist here. Fix ON THE PVE HOST AS ROOT:
       `groupadd -f {{ proxmox_snippet_group }};
-      usermod -aG {{ proxmox_snippet_group }} {{ vault_proxmox_ssh_user }};
+      usermod -aG {{ proxmox_snippet_group }} {{ bws.proxmox_ssh_user }};
       chgrp {{ proxmox_snippet_group }} {{ proxmox_snippet_dir }};
       chmod {{ proxmox_snippet_mode }} {{ proxmox_snippet_dir }}`
       — then verify `ls -ld` shows

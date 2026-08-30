@@ -11,14 +11,17 @@ When in doubt about *why* a choice was made, check that doc's Appendix A
 decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 **current** task — §1's VM shell is done.
 
-> **Current task:** **step 3 of 1→2→4→3.** ✅ **Step 4 is DONE and verified**
+> **Current task:** **the 1→2→4→3 bring-up sequence is COMPLETE.** ✅✅ **Step 3
+> is DONE and VERIFIED LIVE (2026-08-30)** on a from-scratch `site.yml` run — see
+> the block immediately below for the evidence; the next milestone is §6 step 5
+> (deliver the rest of the stack from Git). ✅ **Step 4 is DONE and verified**
 > (2026-08-29): `.github/workflows/gitops-artifact.yml` publishes and keyless-
 > cosign-signs `ghcr.io/nighlabs/homelab-infra/gitops`; `cosign verify` passes
 > against our workflow identity and the package is public, so no pull secret is
 > needed. ⚠ **The artifact root is `gitops/` itself**, so at step 3 every tier
-> path loses its `./gitops` prefix. Step 3's shape was **decided** and is now
-> **✅ IMPLEMENTED on branch `step3-oci-flux-source` (2026-08-30) — NOT yet
-> merged or run against a cluster.** The FluxInstance is now **sync-less**
+> path loses its `./gitops` prefix. Step 3's shape was **decided**, implemented,
+> **merged to `main` (#4), and is now ✅ VERIFIED LIVE (2026-08-30)** on a
+> from-scratch `site.yml` run — see the DONE block below. The FluxInstance is now **sync-less**
 > (`spec.sync` cannot express `verify`); Ansible seeds a committed `OCIRepository`
 > (`gitops/deployment/homelab/source.yaml`, cosign `spec.verify` +
 > `matchOIDCIdentity`) + root `Kustomization` (`sync.yaml`), both inside the path
@@ -197,7 +200,10 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > also preserves the kubeconfig and the `cluster-topology` Secret, so
 > `bootstrap-cluster.yml` does not need re-running.
 >
-> **⚠ Proxmox-API plays are blocked on the control node as of 2026-08-29 — it is
+> **✅ RESOLVED 2026-08-30 — the LNP grant landed and the from-scratch run
+> completed (see the DONE block below). Kept as the diagnostic record, because
+> the failure mode recurs after any move to a new shell app or a TCC reset.**
+> **⚠ Proxmox-API plays were blocked on the control node as of 2026-08-29 — it was
 > the macOS Local Network Privacy (TCC) denial, already documented in README
 > troubleshooting and NOT a new problem.** Python gets `[Errno 65] No route to
 > host` on `<pve>:8006` while Apple-signed binaries sail through (`nc` succeeds,
@@ -216,13 +222,40 @@ decision log before re-litigating it. The §6 k3s/multi-node plan is now the
 > same on-link host and a port known to listen** — see the README section, which
 > had it right the whole time.
 >
-> **A from-scratch `site.yml` run remains the one part of this milestone's DoD
-> still outstanding**, and it is unblocked the moment that grant is in place.
+> **✅✅ DONE + VERIFIED LIVE 2026-08-30 — THE FROM-SCRATCH `site.yml` RUN IS
+> COMPLETE.** This was the one part of the milestone's DoD still outstanding (it
+> was blocked on the LNP grant above; the grant landed and the full run — provision
+> → bootstrap-cluster → flux-bootstrap — completed clean). Verified against the
+> live cluster after the run, **not** inferred from a zero-exit:
 >
-> Then step 4 (GHA builds + cosign-signs the OCI artifact), then step 3 (point
-> Flux at it with `spec.verify`). ⚠ Do NOT fold "stop vendoring the Calico CRDs"
-> into step 4 — `bootstrap-cluster.yml` primes from the vendored file, so that's
-> a separate step 5.
+> | Evidence | |
+> |---|---|
+> | Fresh node | `snoop-a2o` **Ready**, `v1.36.2+k3s1`, ~7 min old — a genuine rebuild, no prior-run residue |
+> | Calico | every `tigerastatus` **Available**; all `calico-system` pods Running |
+> | BGP dataplane | session to the pfSense peer **Established**; `BGPPeer.peerIP` **resolved** (not `""`), so StrictPostBuildSubstitutions worked |
+> | #12890 workaround | `calico-kube-controllers-ipamconfigs-workaround` ClusterRole present, seeded at bootstrap |
+> | Flux | operator + `FluxInstance` **Ready**, Flux **v2.9.4** |
+> | **Step 3: OCI source** | Flux source is `OCIRepository/flux-system` (`oci://ghcr.io/nighlabs/homelab-infra/gitops`); **zero `GitRepository` exists** — sync-less confirmed |
+> | **Step 3: cosign verify** | `SourceVerified=True :: verified signature of revision latest@sha256:ff22…` — the artifact's keyless signature is checked and passing |
+> | Adoption, not collision | the seeded `OCIRepository` and `BGPPeer` both carry `kustomize.toolkit.fluxcd.io/name` labels — Flux drift-corrects the very objects Ansible seeded |
+> | All tiers | `crds`/`infrastructure`/`apps`/`flux-system` **Ready** at the same OCI digest |
+>
+> The load-bearing row is `SourceVerified=True` on an OCI source with **no**
+> `GitRepository`: that is step 3's entire thesis — Flux pulling the
+> keyless-cosign-signed artifact and verifying it before applying — proven on a
+> clean provision. **Steps 4 and 3 are both done; the 1→2→4→3 sequence is
+> closed.**
+>
+> ⚠ **One hygiene fix rode in with this run** (`roles/flatcar_vm/tasks/main.yml`):
+> a leftover `vault_proxmox_ssh_user` → `bws.proxmox_ssh_user`, missed in the
+> 2026-08-17 vault→BWS retirement. It lives inside an assert's `fail_msg`, so a
+> passing run never renders it — the clean run did **not** validate the fix, it's
+> correctness for the day that snippet-dir assert actually fires.
+>
+> **Next: §6 step 5** — deliver the rest of the stack from Git (Gateway →
+> cert-manager → ceph-csi → ESO → …). ⚠ Do NOT fold "stop vendoring the Calico
+> CRDs" into it — `bootstrap-cluster.yml` primes from the vendored file, so that's
+> its own step.
 >
 > **§7 item 14 was NOT a blocker here (de-scoped 2026-08-17):** Flux runs
 > in-cluster and authenticates with its own ServiceAccount token, so it never
