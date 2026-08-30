@@ -187,7 +187,7 @@
         state: directory
         mode: "0700"
 
-    # 0600: this embeds vault_frr_master_password. Git-ignored via
+    # 0600: this embeds frr_master_password (from BWS). Git-ignored via
     # ansible/.gitignore, but the mode is the control that doesn't depend on
     # anyone reading a gitignore.
     - name: Render frr.conf
