@@ -23,8 +23,8 @@ inventory/group_vars/**/vault.yml*
 .kube/
 
 # Rendered pfSense/FRR config (playbooks/render-frr-config.yml). frr.conf
-# embeds vault_frr_master_password, so it's a credential-bearing artifact —
-# NEVER commit. Regenerate on demand from inventory/nodes.yml + the vault; the
+# embeds the FRR master password (from BWS), so it's a credential-bearing
+# artifact — NEVER commit. Regenerate on demand from inventory/nodes.yml + BWS; the
 # committed inputs are the template and the node map, not this output.
 .frr/
 

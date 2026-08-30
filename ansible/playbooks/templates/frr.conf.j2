@@ -33,7 +33,7 @@ log syslog informational
 ! ⚠ REDACTED RENDER — this file is for review/diffing only. The real password
 ! ⚠ line is required (raw config replaces the generated frr.conf wholesale), so
 ! ⚠ re-render without frr_redact_password before pasting.
-password <REDACTED: vault_frr_master_password>
+password <REDACTED: frr_master_password>
 {% else %}
 password {{ frr_master_password }}
 {% endif %}
