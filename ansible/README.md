@@ -80,8 +80,9 @@ the rest from `ansible/`.
    (`butane`, `helm`; `kubectl` recommended) — they're not pip/uv-managed.
 4. **Set up Bitwarden Secrets Manager — see [`BWS-SECRETS.md`](BWS-SECRETS.md).**
    That file is the complete manifest: the project + read-only machine account
-   to create, the access token to put in your macOS **Keychain**, `BWS_ORG_ID`,
-   and every secret name with its expected format. It includes the Proxmox API
+   to create, the access token **and** the org id to put in your macOS
+   **Keychain** (`BWS_ORG_ID` via env or `-e` still works), and every secret name
+   with its expected format. It includes the Proxmox API
    credential (create it per **[Proxmox API token & user](#proxmox-api-token--user-one-time-on-a-pve-node)**
    below) and the environment specifics (IPs, subnets/VLANs, gateways,
    hostnames, storage names, SSH public key).

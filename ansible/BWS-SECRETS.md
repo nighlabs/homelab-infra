@@ -68,12 +68,18 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    only searches the local file-based list (`security list-keychains`), and it
    only creates website/app logins and passkeys — there is no "arbitrary named
    secret" for `find-generic-password -s NAME` to match.
-5. **Organization ID** — export it. Not a credential (it can't come from BWS,
-   since you need it to make the call), but environment-identifying, so it isn't
-   committed:
+5. **Organization ID** — store it in the Keychain, the same way as the token
+   (that is the default the plays read). Not a credential (it can't come from
+   BWS, since you need it to make the call), but environment-identifying, so it
+   isn't committed:
    ```sh
-   export BWS_ORG_ID='<your organization uuid>'
+   security add-generic-password -a "$USER" -s BWS_ORG_ID -w -U
+   security find-generic-password -w -s BWS_ORG_ID -a "$USER"   # verify
    ```
+   Prefer an env var instead (CI, Linux control nodes)? `export BWS_ORG_ID=…`
+   takes precedence over the Keychain item; `-e bws_organization_id=…` beats
+   both. Unlike the token, a *missing* org-id Keychain item is not an error — it
+   just falls through to that env/`-e` path (the id isn't secret).
 
    ⚠ **This is the ORGANIZATION uuid, NOT the project uuid.** Both are uuids and
    you supply them one line apart during the import, which makes them easy to

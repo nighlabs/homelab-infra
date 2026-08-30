@@ -493,9 +493,10 @@ cluster_bgp: >-
 # which lives in the macOS Keychain and never touches this repo.
 
 # Organization UUID. Environment-identifying but not secret, and it cannot come
-# from BWS (you need it to make the call). Set BWS_ORG_ID in your environment,
-# or override with -e bws_organization_id=...
-bws_organization_id: "{{ lookup('ansible.builtin.env', 'BWS_ORG_ID') }}"
+# from BWS (you need it to make the call). RESOLVED in load-bws-secrets.yml,
+# exactly like the access token: Keychain by default, overridable by BWS_ORG_ID
+# in the environment or -e bws_organization_id=... The Keychain item and command
+# are defined below next to the token's.
 
 # Optional: restrict to one project. The access token is already scoped
 # read-only to a single project, so this is belt-and-braces for the case where a
@@ -531,3 +532,17 @@ bws_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
 bws_keychain_command: >-
   security find-generic-password -w -s {{ bws_keychain_service | quote }}
   -a {{ bws_keychain_account | quote }}
+
+# The organization id lives in its own Keychain item (same account), fetched the
+# same way as the token. Create it with:
+#   security add-generic-password -a "$USER" -s BWS_ORG_ID -w -U
+# ⚠ Trailing `|| true`, which the token command deliberately lacks: the org id is
+# NOT secret, and a missing item should fall through to load-bws-secrets.yml's
+# assert (with its "add it to the keychain / export BWS_ORG_ID" guidance) rather
+# than surface `security`'s bare exit-44 as a raw lookup error. The pipe only
+# runs at all when neither -e nor BWS_ORG_ID is set (Jinja short-circuits the
+# default chain), so this never masks a real value.
+bws_org_keychain_service: "BWS_ORG_ID"
+bws_org_keychain_command: >-
+  security find-generic-password -w -s {{ bws_org_keychain_service | quote }}
+  -a {{ bws_keychain_account | quote }} 2>/dev/null || true
