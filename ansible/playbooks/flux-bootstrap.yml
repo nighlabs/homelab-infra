@@ -5,11 +5,16 @@
 #
 # What it does, per cluster:
 #   1. helm-installs the flux-operator into flux-system.
-#   2. Applies ONE FluxInstance CR, which is what actually installs the Flux
-#      controllers and (once verified) points them at this Git repo.
-#   3. Waits for the three committed entrypoint Kustomizations — crds ->
-#      infrastructure -> apps — to reconcile, which is where Flux ADOPTS the
-#      Calico CRDs / Helm release / BGP CRs that bootstrap-cluster.yml primed.
+#   2. Applies ONE SYNC-LESS FluxInstance CR, which installs the Flux controllers
+#      but generates NO source of its own (spec.sync can't express the signature
+#      gate, so it's omitted).
+#   3. After verifying the strict-substitution gate, SEEDS the signed source:
+#      a committed OCIRepository (cosign spec.verify) + a root flux-system
+#      Kustomization, which Flux then adopts and drift-corrects.
+#   4. Waits for the OCIRepository to pull+verify, then for the three committed
+#      entrypoint Kustomizations — crds -> infrastructure -> apps — to reconcile,
+#      which is where Flux ADOPTS the Calico CRDs / Helm release / BGP CRs that
+#      bootstrap-cluster.yml primed.
 #
 # Run:  uv run ansible-playbook playbooks/flux-bootstrap.yml
 #
