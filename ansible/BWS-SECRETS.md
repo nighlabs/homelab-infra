@@ -25,8 +25,10 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
 4. **Keychain** — store the token:
 
    ```sh
-   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U
-   # omitting the value after -w prompts, so the token stays out of shell history
+   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -w
+   # -w MUST be last: with no value after it, security prompts (keeping the token
+   # out of shell history). Put -w mid-args and it swallows the next flag as its
+   # value instead of prompting.
    security find-generic-password -w -s BWS_ACCESS_TOKEN -a "$USER"   # verify
    ```
 
@@ -42,7 +44,7 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    authorization instead, create the item with an EMPTY trusted-application list:
 
    ```sh
-   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U -T ""
+   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -T "" -w
    ```
 
    Nothing is pre-authorized, so each read raises the macOS keychain
@@ -68,12 +70,18 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    only searches the local file-based list (`security list-keychains`), and it
    only creates website/app logins and passkeys — there is no "arbitrary named
    secret" for `find-generic-password -s NAME` to match.
-5. **Organization ID** — export it. Not a credential (it can't come from BWS,
-   since you need it to make the call), but environment-identifying, so it isn't
-   committed:
+5. **Organization ID** — store it in the Keychain, the same way as the token
+   (that is the default the plays read). Not a credential (it can't come from
+   BWS, since you need it to make the call), but environment-identifying, so it
+   isn't committed:
    ```sh
-   export BWS_ORG_ID='<your organization uuid>'
+   security add-generic-password -a "$USER" -s BWS_ORG_ID -U -w   # -w last: prompts
+   security find-generic-password -w -s BWS_ORG_ID -a "$USER"   # verify
    ```
+   Prefer an env var instead (CI, Linux control nodes)? `export BWS_ORG_ID=…`
+   takes precedence over the Keychain item; `-e bws_organization_id=…` beats
+   both. Unlike the token, a *missing* org-id Keychain item is not an error — it
+   just falls through to that env/`-e` path (the id isn't secret).
 
    ⚠ **This is the ORGANIZATION uuid, NOT the project uuid.** Both are uuids and
    you supply them one line apart during the import, which makes them easy to
