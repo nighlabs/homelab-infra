@@ -62,7 +62,7 @@
     # --- Post-boot cleanup: destroy the Ignition snippets ----------------------
     # The .ign holds the k3s join token and Ignition reads it exactly once, so
     # once a node is up the file is a live credential with no purpose left on
-    # shared storage — delete it (ansible/CLAUDE.md §7 item 21; the ordering trap
+    # shared storage — delete it (docs/decisions/0025-destroy-ignition-snippet-after-first-boot.md; the ordering trap
     # and the running-VM analysis are documented in the included task file).
     #
     # This lives here rather than in bootstrap-cluster.yml because cicustom is a

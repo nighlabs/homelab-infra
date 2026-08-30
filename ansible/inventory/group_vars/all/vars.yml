@@ -20,7 +20,7 @@
 # goal is truly zero topology in git, that doc would need scrubbing too.
 
 # --- DNS -------------------------------------------------------------------
-# Static resolvers, injected into eth0's networkd unit (ansible/CLAUDE.md §1.1).
+# Static resolvers, injected into eth0's networkd unit (ansible/CLAUDE.md "Node map and derivation").
 dns_servers: "{{ bws.dns_servers.splitlines() | map('trim') | reject('equalto', '') | list }}"
 
 # --- Networks --------------------------------------------------------------
@@ -60,7 +60,7 @@ ssh_authorized_keys: "{{ bws.ssh_authorized_keys.splitlines() | map('trim') | re
 
 # --- Proxmox connection ----------------------------------------------------
 # API access for the proxmox_* modules (run from the control node). Uses a
-# scoped API token, NOT root@pam (ansible/CLAUDE.md; design doc Appendix A).
+# scoped API token, NOT root@pam (docs/decisions/0005-flatcar-k3s-sysext-ignition-config-drive.md).
 # Host, node name, storage, and the full credential are all vaulted.
 proxmox_api_host: "{{ bws.proxmox_api_host }}"
 proxmox_api_user: "{{ bws.proxmox_api_user }}"
@@ -111,7 +111,7 @@ flatcar_template_name: "flatcar-stable"
 # --- k3s -------------------------------------------------------------------
 # Baked into a node's Ignition when its role is a k3s role (see
 # roles/flatcar_vm/tasks/preflight.yml). Delivered via the Flatcar k3s sysext
-# (design doc §3.1) — immutable, systemd-sysupdate-updatable, Renovate-trackable.
+# (ADR-0005) — immutable, systemd-sysupdate-updatable, Renovate-trackable.
 #
 # k3s_version is the exact seed asset fetched at provision time; the sysext .raw
 # is https://extensions.flatcar.org/extensions/k3s-<version>-x86-64.raw . Bump it
@@ -139,7 +139,7 @@ k3s_version_default: "v1.36.2+k3s1"
 # the per-node `k3s_version` / `k3s_minor` from the node's cluster.
 
 # Cluster-internal CIDRs — pinned explicitly (never left as k3s implicit
-# defaults) so Calico's IPPool always matches (design §4.1, guardrail §8).
+# defaults) so Calico's IPPool always matches (docs/architecture.md §4.2).
 # In 10.0.0.0/8; NEVER CGNAT 100.64.0.0/10 (root CLAUDE.md).
 k3s_cluster_cidr: "10.42.0.0/16"
 k3s_service_cidr: "10.43.0.0/16"
@@ -159,7 +159,7 @@ k3s_service_cidr: "10.43.0.0/16"
 #
 # Assembled from ONE BWS SECRET PER CLUSTER, named `k3s_token_<cluster>`. Each
 # is a plain scalar string, so every secret stays paste-into-a-field editable —
-# no JSON hand-authored into a textarea with no validation (Appendix A).
+# no JSON hand-authored into a textarea with no validation (ADR-0027).
 #
 # ⚠ A cluster with no matching secret is OMITTED rather than defaulted, so the
 # preflight assert in roles/flatcar_vm can name the missing cluster. Never make
@@ -202,7 +202,7 @@ k3s_tls_sans_by_cluster: >-
 # (`ignition.firstboot` is cleared on that boot) — so past first boot it's a live
 # credential with no purpose, on storage every hypervisor can reach.
 # Full rationale + the ordering trap: playbooks/tasks/destroy-ignition-snippet.yml
-# and ansible/CLAUDE.md §7 item 21.
+# and docs/decisions/0025-destroy-ignition-snippet-after-first-boot.md.
 #
 # Set false to keep the snippets — the escape hatch for debugging a first boot
 # (it's also the on-storage record of what config a node actually got, which is
@@ -259,8 +259,8 @@ kubeconfig_set_current_context: true
 # helm_binary: "/usr/local/bin/helm3"
 
 # Calico (CNI) — installed once by Ansible via the tigera-operator Helm chart,
-# then adopted by the Flux HelmRelease in gitops/infrastructure/calico (design
-# §4.2; the "Ansible installs, Flux adopts" decision in ansible/CLAUDE.md §6).
+# then adopted by the Flux HelmRelease in gitops/infrastructure/calico (docs/architecture.md
+# §4.3; the "Ansible primes, Flux adopts" decision, ADR-0016).
 # Pinned (Renovate marker); MUST match the chart version in the HelmRelease so
 # the primed release and the Git definition are identical (clean adoption). The
 # pod-CIDR the operator uses lives in gitops/infrastructure/calico/values.yaml
@@ -285,7 +285,7 @@ calico_version: "v3.32.1"
 # (`clusters/<name>/` for the CRD tier, HelmRelease and values) is still ahead.
 
 # --- Flux (playbooks/flux-bootstrap.yml) -----------------------------------
-# Flux is installed the "operator" way (design §6 step 4): Ansible helm-installs
+# Flux is installed the "operator" way (ADR-0008, ADR-0028): Ansible helm-installs
 # the flux-operator, then applies ONE FluxInstance CR that declares which Flux
 # distribution, components and Git source the cluster runs. Everything about
 # Flux's own shape lives in that CR, NOT in the chart's values — so there are no
@@ -322,7 +322,7 @@ flux_operator_chart_ref: "oci://ghcr.io/controlplaneio-fluxcd/charts/flux-operat
 flux_namespace: "flux-system"
 
 # Which Flux distribution the operator installs. A MINOR PIN with automatic
-# patch upgrades — the same posture as k3s's sysupdate MatchPattern (§2): patches
+# patch upgrades — the same posture as k3s's sysupdate MatchPattern: patches
 # apply unattended, minors are a deliberate edit. Renovate marker.
 #
 # ⚠ Downgrading a minor is NOT supported by the operator (it errors with
@@ -404,7 +404,7 @@ flux_strict_substitutions: true
 
 # --- BGP / LoadBalancer ----------------------------------------------------
 # Calico BGP owns BOTH LoadBalancer IP advertisement and the pod dataplane;
-# there is no MetalLB (root CLAUDE.md; ansible/CLAUDE.md §7 item 13). These
+# there is no MetalLB (root CLAUDE.md; ADR-0018). These
 # values are shared by both sides of the peering — the pfSense/FRR config
 # (rendered by playbooks/render-frr-config.yml) and the Calico BGP CRs — so
 # they live here rather than in either one.

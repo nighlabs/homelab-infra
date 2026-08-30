@@ -6,7 +6,7 @@
 #
 # LoadBalancer IPAM is OSS from Calico v3.30 (our v3.29.1 pin literally could not
 # allocate, only advertise — that's why the version bump was a prerequisite, see
-# ansible/CLAUDE.md §7 item 15).
+# ADR-0019, docs/decisions/).
 #
 # ⚠ This pool depends on kube-controllers-ipamconfigs-rbac.yaml, the #12890
 # workaround. Without it, allocation fails while BGP advertises perfectly

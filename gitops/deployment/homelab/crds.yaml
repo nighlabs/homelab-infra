@@ -36,7 +36,7 @@ spec:
   # generated CRD text — descriptions, examples, regex patterns, anything that
   # might contain a `${...}` — from being scanned and hard-failing the tier that
   # everything else dependsOn. This tier has no topology in it and needs none.
-  # See gitops/CLAUDE.md "Not here yet" for the still-open follow-on: render
+  # See ADR-0020 (docs/decisions/) for the still-open follow-on: render
   # these CRDs at OCI build time so the 3 MB stops living in Git.
   sourceRef:
     kind: OCIRepository

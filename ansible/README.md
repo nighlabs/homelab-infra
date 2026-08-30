@@ -1,12 +1,14 @@
 # ansible/ — Flatcar VM provisioning
 
-Current scope: build a **rebuildable** Flatcar VM shell — two NICs, a separate
-data disk, key-only SSH — via Ignition delivered through Proxmox's config-drive
-(`cicustom`); bake **k3s** in via the Flatcar k3s sysext; then wait for k3s to
-boot and prime **Calico** so the node goes Ready; then **bootstrap Flux**, which
-adopts that primed Calico and takes ownership of the cluster (verified live
-2026-08-29). See `ansible/CLAUDE.md` (§1 shell, §2 k3s, §6 Calico/Flux) for the
-definitions of done.
+What this directory does, end to end: build a **rebuildable** Flatcar VM shell —
+two NICs, a separate data disk, key-only SSH — via Ignition delivered through
+Proxmox's config-drive (`cicustom`); bake **k3s** in via the Flatcar k3s sysext;
+wait for k3s to boot and prime **Calico** (with BGP + the LoadBalancer IPAM
+workaround) so the node goes Ready; then **bootstrap Flux**, which adopts that
+primed Calico and takes ownership of the cluster. Every step is verified on a
+from-scratch `site.yml` run (`docs/worklog.md`). The definition-of-done checks
+for each layer are in **Verify** below; the non-obvious facts about working here
+are in `CLAUDE.md`; the design is `../docs/architecture.md`.
 
 ## Layout
 
@@ -89,7 +91,7 @@ the rest from `ansible/`.
 
    **There is no `vault.yml` and no vault passphrase.** Secrets are fetched at
    run time in a single API call; secret zero is the Keychain item. Why:
-   `docs/mac-studio-inference-stack-2.md`, Appendix A, "Control-node secrets".
+   `docs/decisions/0027-control-node-secrets-bws-runtime.md`.
 5. `inventory/group_vars/all/vars.yml` needs no editing for secrets — it's just
    structure plus `{{ bws.* }}` references. Only generic, non-revealing
    defaults (MAC OUI, Flatcar channel/version) remain in cleartext there.
@@ -99,7 +101,7 @@ the rest from `ansible/`.
 ## Proxmox API token & user (one-time, on a PVE node)
 
 The provisioning uses a **scoped API token** (`ansible@pve!provisioning`),
-deliberately **not** `root@pam` (design doc Appendix A). Run these as `root` on
+deliberately **not** `root@pam` (`docs/decisions/0005-flatcar-k3s-sysext-ignition-config-drive.md`). Run these as `root` on
 any node — `pveum` is cluster-wide:
 
 ```bash
@@ -372,7 +374,7 @@ it on fetch, keyed off the **cluster name — which is the cluster key in
 
 - entries renamed → cluster `homelab`, user `homelab-admin`, context `homelab`;
 - `server:` repointed from `127.0.0.1` to the node's **DMZ IP** so the control
-  node (and, next milestone, Flux) can reach the API;
+  node can reach the API;
 - written `0600` to **`ansible/.kube/<cluster>.config`** — one file per cluster
   (a shared path would have each bootstrap clobber the last). These are the
   canonical files the plays themselves use.
@@ -436,7 +438,7 @@ After boot, over SSH to the node's DMZ IP (`<dmz_subnet_base>.<n>`):
 The k3s server is baked into Ignition via the Flatcar k3s sysext — no manual
 post-boot steps. The ~50 MB sysext image is **downloaded on first boot** by
 `k3s-sysext-download.service` (Ignition can't fetch it in the initramfs — no
-DHCP; see `ansible/CLAUDE.md` §2), so k3s is up **~30–60 s after boot**, not
+DHCP; see `CLAUDE.md`, "Non-obvious facts"), so k3s is up **~30–60 s after boot**, not
 instantly. The node is **NotReady until Calico** (its CNI arrives later via
 Flux); that's expected here, not a failure. Over SSH to the DMZ IP:
 
@@ -462,8 +464,8 @@ Flux); that's expected here, not a failure. Over SSH to the DMZ IP:
   entries (`echo | openssl s_client -connect <dmz-ip>:6443 2>/dev/null |
   openssl x509 -noout -text | grep -A1 'Subject Alternative'`)
 - `systemctl list-timers systemd-sysupdate.timer` — active; `systemd-sysupdate
-  -C k3s-<minor> list` tracks the `k3s-<minor>.@v` pattern (actual patch
-  pull-through is a separate PoC — `ansible/CLAUDE.md` §7 item 5)
+  -C k3s-<minor> list` tracks the `k3s-<minor>.@v` pattern (unattended patch
+  pull-through is proven — `docs/worklog.md`, 2026-08-01)
 - delete the VM, re-run the play → k3s comes up **identically** from Ignition
   (the real rebuild test, same as the shell above)
 
@@ -488,7 +490,7 @@ from NotReady to **Ready**. From the control node, using the fetched kubeconfig:
 - `kubectl get pods -A` → coredns + metrics-server now **Running** (were Pending
   pre-CNI)
 - `helm -n tigera-operator list` → release `tigera-operator`, chart version =
-  `calico_version` — this is the release Flux adopts next milestone
+  `calico_version` — this is the release Flux adopts
 - **Idempotency:** re-run `bootstrap-cluster.yml` → no changes (release present,
   node already Ready)
 
@@ -566,11 +568,16 @@ kubectl -n flux-system get pods                                  # 4 controllers
 # reconciles GREEN — this is the check with no symptom to notice.
 kubectl -n flux-system get deploy kustomize-controller \
   -o jsonpath='{.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep feature-gates
-# -> exactly ONE line, containing StrictPostBuildSubstitutions=true
+# -> one of the lines contains StrictPostBuildSubstitutions=true. There are
+#    normally TWO --feature-gates lines (the operator emits its own); they
+#    MERGE per key, so that is correct — the play's assert folds them the same way.
 
-# Source + the three tiers
-kubectl -n flux-system get gitrepository flux-system             # READY True
-kubectl -n flux-system get kustomizations                        # crds/infrastructure/apps READY True
+# Source + the tiers. The source is an OCIRepository (no GitRepository exists);
+# SourceVerified=True is the signature gate actually passing.
+kubectl -n flux-system get ocirepository flux-system             # READY True
+kubectl -n flux-system get ocirepository flux-system \
+  -o jsonpath='{.status.conditions[?(@.type=="SourceVerified")].status}'   # True
+kubectl -n flux-system get kustomizations                        # flux-system/crds/infrastructure/apps READY True
 
 # Substitution actually resolved — the real test of the whole postBuild chain
 kubectl get bgppeer pfsense -o jsonpath='{.spec.peerIP}'         # a real IP, NOT empty

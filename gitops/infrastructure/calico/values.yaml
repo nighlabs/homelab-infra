@@ -1,7 +1,7 @@
 # Calico (tigera-operator chart) values — THE single source of truth for how
 # Calico is configured. Consumed two ways, deliberately from this one file so the
 # Ansible-primed release and the Flux-managed release are byte-identical (clean
-# adoption, no diff war — see ansible/CLAUDE.md §6 "Ansible installs, Flux adopts"):
+# adoption, no diff war — see ADR-0016 "Ansible primes, Flux adopts"):
 #   1. Ansible (playbooks/bootstrap-cluster.yml) → kubernetes.core.helm
 #      `values_files: [ this file ]` when it primes the release.
 #   2. Flux → kustomization.yaml's configMapGenerator turns this into the
@@ -12,8 +12,8 @@ installation:
   cni:
     type: Calico
   calicoNetwork:
-    # eBPF dataplane, replacing kube-proxy's service handling (ansible/CLAUDE.md
-    # §7 item 17; trial + verification in docs/calico-ebpf-single-node-trial.md).
+    # eBPF dataplane, replacing kube-proxy's service handling (ADR-0024;
+    # trial + verification in docs/calico-ebpf-single-node-trial.md).
     # The reason is SOURCE IP, not throughput: under externalTrafficPolicy
     # Cluster, kube-proxy SNATs externally-originated traffic to the node IP and
     # the client address is gone before the pod sees it — unrecoverable at L7, so
@@ -26,8 +26,8 @@ installation:
     # nodes emit packets sourced from each other's IPs. It's a runtime
     # FelixConfiguration patch if we ever want it, so nothing here blocks that.
     linuxDataplane: BPF
-    # ⚠ BGP IS THE POD DATAPLANE NOW (changed 2026-08-16; ansible/CLAUDE.md §7
-    # item 13). Calico's VXLAN implementation uses no BGP at all, so this is not
+    # ⚠ BGP IS THE POD DATAPLANE NOW (changed 2026-08-16; ADR-0018).
+    # Calico's VXLAN implementation uses no BGP at all, so this is not
     # "enabling a feature alongside the existing dataplane" — it takes BGP from
     # *not running* to *the sole mechanism for pod routing between nodes*.
     #
@@ -41,13 +41,13 @@ installation:
     bgp: Enabled
     ipPools:
       # cidr MUST equal k3s_cluster_cidr (group_vars/all/vars.yml) — Calico's pool
-      # has to match k3s's cluster-cidr (design §4.1, guardrail §8). bootstrap-
+      # has to match k3s's cluster-cidr (docs/architecture.md §4.2). bootstrap-
       # cluster.yml asserts this equality before priming, so the two can't drift.
       - cidr: 10.42.0.0/16
         # No encapsulation: pod traffic goes on the wire as-is, routed by BGP.
         # Drops the ~50-byte VXLAN header and its per-packet encap/decap cost —
         # the actual reason for the migration. Requires every node on one subnet
-        # (they are — §6 step 5) or a fabric that routes the pod CIDR; otherwise
+        # (they are — ADR-0018) or a fabric that routes the pod CIDR; otherwise
         # cross-subnet pod traffic silently blackholes, which is exactly what
         # VXLANCrossSubnet used to paper over.
         encapsulation: None

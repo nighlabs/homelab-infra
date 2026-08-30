@@ -4,7 +4,7 @@
 # the OEM that reads Ignition from the config-drive user-data (cicustom).
 #
 # NOTE: this is the "download image -> import -> convert to template" role from
-# the design doc §3.4. Validate it against your storage backend once; the
+# docs/architecture.md §3.4. Validate it against your storage backend once; the
 # imported-disk reference below assumes a block/RBD storage (vm-<id>-disk-0).
 
 - name: "template — check whether {{ flatcar_template_name }} ({{ flatcar_template_vmid }}) already exists"

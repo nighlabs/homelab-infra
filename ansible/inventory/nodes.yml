@@ -1,6 +1,6 @@
 ---
 # Flatcar node map — the single source of truth for node identity and
-# addressing (ansible/CLAUDE.md §1.1). Nodes are grouped under the k3s cluster
+# addressing (ansible/CLAUDE.md "Node map and derivation"). Nodes are grouped under the k3s cluster
 # they belong to; the cluster key IS the cluster's name.
 #
 # That key names more than the grouping: it becomes the kubeconfig's

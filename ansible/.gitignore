@@ -1,5 +1,5 @@
 # ⚠ RETIRED — secrets now come from Bitwarden Secrets Manager at run time and
-# there is no vault.yml (Appendix A, "Control-node secrets"). These patterns
+# there is no vault.yml (docs/decisions/0027-control-node-secrets-bws-runtime.md). These patterns
 # stay as a backstop so a leftover file from before the migration, or one
 # created out of habit, can never be committed.
 # Glob the suffix too: a rename-aside during the migration (vault.yml.bkp,

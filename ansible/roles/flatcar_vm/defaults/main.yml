@@ -12,5 +12,5 @@
 # the OS disk. Mounting at the default beats overriding data-dir: `k3s
 # secrets-encrypt`/`etcd-snapshot`/uninstall + community tooling all assume the
 # default path and break under a custom one (learned the hard way — see
-# ansible/CLAUDE.md §2). k3s creates `k3s/` under this on first start.
+# ansible/CLAUDE.md "Non-obvious facts: Flatcar, Ignition, k3s"). k3s creates `k3s/` under this on first start.
 data_mount_point: "/var/lib/rancher"

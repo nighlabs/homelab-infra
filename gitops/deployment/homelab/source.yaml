@@ -1,6 +1,6 @@
 # The signed OCI artifact Flux reconciles this cluster from — step 3 of the
-# 1->2->4->3 GitOps-delivery sequence (ansible/CLAUDE.md, gitops/CLAUDE.md
-# "Not here yet"). Replaces the GitRepository the FluxInstance used to generate
+# 1->2->4->3 GitOps-delivery sequence (ADR-0028; gitops/CLAUDE.md "How this
+# tree reaches the cluster"). Replaces the GitRepository the FluxInstance used to generate
 # from spec.sync: spec.sync has NO `verify` field (checked against the live CRD
 # and the operator's main), so signature-gated delivery cannot go through it.
 # Hence a sync-LESS FluxInstance plus this committed OCIRepository, which Ansible

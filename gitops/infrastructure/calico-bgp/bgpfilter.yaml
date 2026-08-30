@@ -11,7 +11,7 @@
 # prefix list permitting only the LB range (docs/pfsense-frr-bgp-setup.md §4).
 # This one is enforced by the side we'd be guarding against misconfiguring, so it
 # isn't trusted alone. If 10.42.0.0/16 ever appears in `vtysh -c 'show ip bgp'`,
-# BOTH controls failed — see ansible/CLAUDE.md §7 item 8.
+# BOTH controls failed — see ADR-0023 (docs/decisions/).
 #
 # Filters attach to BGPPeers, and the node-to-node mesh is not a BGPPeer, so this
 # has NO effect on pod routing between nodes. It only shapes what crosses the

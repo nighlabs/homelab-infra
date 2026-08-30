@@ -1,6 +1,6 @@
 # Butane config for {{ hostname }} — rendered from the node map, then
 # transpiled with `butane --strict` to Ignition and delivered as the
-# config-drive user-data via `qm set --cicustom` (design doc §3.1 / Appendix A).
+# config-drive user-data via `qm set --cicustom` (docs/decisions/0005-flatcar-k3s-sysext-ignition-config-drive.md).
 #
 # The two networkd units are rendered to <build>/files/ from their own Jinja2
 # templates and pulled in here with `contents.local:` (transpiled with
@@ -96,7 +96,7 @@ storage:
       format: ext4
       label: data
       # Reformat on a from-scratch rebuild — a stale FS signature would
-      # otherwise make Ignition skip formatting (ansible/CLAUDE.md §7 item 1).
+      # otherwise make Ignition skip formatting (docs/worklog.md, 2026-07-07).
       wipe_filesystem: true
       with_mount_unit: true
 {% if k3s_enabled %}

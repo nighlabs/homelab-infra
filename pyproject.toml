@@ -30,8 +30,8 @@ dependencies = [
     # (The `helm` CLI is a separate Go binary — see the header note.)
     "kubernetes>=30.1",
     # Bitwarden Secrets Manager SDK — used by library/bws_secrets.py to fetch
-    # every secret in one call at run time (there is no vault.yml; see Appendix A
-    # "Control-node secrets" in docs/mac-studio-inference-stack-2.md).
+    # every secret in one call at run time (there is no vault.yml; see
+    # docs/decisions/0027-control-node-secrets-bws-runtime.md).
     # ⚠ Pinned to a major, deliberately: bitwarden/sm-ansible#59 is an open
     # SDK-compatibility issue, so this must not float.
     "bitwarden-sdk>=1.0.0,<2.0.0",
