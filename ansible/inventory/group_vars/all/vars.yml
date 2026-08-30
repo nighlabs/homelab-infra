@@ -504,8 +504,9 @@ cluster_bgp: >-
 # bws_project_id: "<project uuid>"
 
 # Where secret zero lives. Create it with:
-#   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U
-# (omitting the value after -w prompts, keeping it out of shell history)
+#   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -w
+# (-w must be LAST: with no value after it, security prompts — keeping it out of
+# shell history. Mid-args, -w swallows the next flag as its value and never asks.)
 #
 # ⚠ The LOCAL login keychain, NOT the Passwords app — they are separate stores.
 # Passwords.app manages the synced iCloud Keychain; the `security` CLI reads
@@ -535,7 +536,7 @@ bws_keychain_command: >-
 
 # The organization id lives in its own Keychain item (same account), fetched the
 # same way as the token. Create it with:
-#   security add-generic-password -a "$USER" -s BWS_ORG_ID -w -U
+#   security add-generic-password -a "$USER" -s BWS_ORG_ID -U -w   (-w last: prompts)
 # ⚠ Trailing `|| true`, which the token command deliberately lacks: the org id is
 # NOT secret, and a missing item should fall through to load-bws-secrets.yml's
 # assert (with its "add it to the keychain / export BWS_ORG_ID" guidance) rather

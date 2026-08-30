@@ -25,8 +25,10 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
 4. **Keychain** — store the token:
 
    ```sh
-   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U
-   # omitting the value after -w prompts, so the token stays out of shell history
+   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -w
+   # -w MUST be last: with no value after it, security prompts (keeping the token
+   # out of shell history). Put -w mid-args and it swallows the next flag as its
+   # value instead of prompting.
    security find-generic-password -w -s BWS_ACCESS_TOKEN -a "$USER"   # verify
    ```
 
@@ -42,7 +44,7 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    authorization instead, create the item with an EMPTY trusted-application list:
 
    ```sh
-   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -w -U -T ""
+   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -T "" -w
    ```
 
    Nothing is pre-authorized, so each read raises the macOS keychain
@@ -73,7 +75,7 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    BWS, since you need it to make the call), but environment-identifying, so it
    isn't committed:
    ```sh
-   security add-generic-password -a "$USER" -s BWS_ORG_ID -w -U
+   security add-generic-password -a "$USER" -s BWS_ORG_ID -U -w   # -w last: prompts
    security find-generic-password -w -s BWS_ORG_ID -a "$USER"   # verify
    ```
    Prefer an env var instead (CI, Linux control nodes)? `export BWS_ORG_ID=…`
