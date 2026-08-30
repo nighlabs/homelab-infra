@@ -249,7 +249,7 @@
 
 # The installed community.proxmox.proxmox_kvm DOES expose cicustom (unlike the
 # older version the design doc assumed), so set it over the API — scoped token,
-# no SSH, no root@pam (design doc §3.4 / Appendix A). Requires a cloud-init drive
+# no SSH, no root@pam (docs/decisions/0005-flatcar-k3s-sysext-ignition-config-drive.md). Requires a cloud-init drive
 # on the template (present) and the snippet already uploaded (above). FALLBACK:
 # if a PVE build ever rejects cicustom-over-API for a non-root token, revert this
 # to a delegated `{{ proxmox_qm }} set {{ vmid }} --cicustom ...` over SSH.

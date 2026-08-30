@@ -2,8 +2,9 @@
 
 > **Status: ✅ RUN AND PASSED, 2026-08-03 — BOTH STAGES COMPLETE AND COMMITTED.**
 > Kept as the reasoning record and the revert procedure; it is no longer a plan.
-> Decision in `ansible/CLAUDE.md` §7 item 17. Nothing here was a prerequisite for
-> the Calico BGP work — the two are independent (see §8), and that held.
+> Decision: [ADR-0024](decisions/0024-calico-ebpf-dataplane-no-kube-proxy.md).
+> Nothing here was a prerequisite for the Calico BGP work — the two are
+> independent (see §8), and that held.
 >
 > **Result — `externalTrafficPolicy: Cluster` throughout, three requests each:**
 >
@@ -291,8 +292,8 @@ Steps taken, for the record — only after stage 1 passed:
 1. Drop `--disable-kube-proxy` into the k3s server config
    (`roles/*/templates/k3s-config.yaml.j2` — a server-only flag, per §8's
    guardrail it must not reach agent joins).
-2. Re-provision. Per §7 item 16's reasoning, re-provision beats in-place while
-   the cluster is disposable.
+2. Re-provision. Per [ADR-0019](decisions/0019-k3s-1.36-calico-3.32.1-version-pair.md),
+   re-provision beats in-place while the cluster is disposable.
 3. Set `bpfKubeProxyIptablesCleanupEnabled` back to `true` (its default) —
    there's nothing left to coexist with, and leaving cleanup disabled orphans
    kube-proxy's old rules.

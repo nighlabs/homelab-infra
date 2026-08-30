@@ -7,7 +7,7 @@ spec:
   interval: 1h
   # releaseName + namespace MUST match what Ansible primed
   # (`helm install tigera-operator -n tigera-operator`) so helm-controller ADOPTS
-  # the existing release instead of colliding with it (ansible/CLAUDE.md §6).
+  # the existing release instead of colliding with it (ADR-0016).
   releaseName: tigera-operator
   chart:
     spec:

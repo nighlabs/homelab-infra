@@ -21,7 +21,7 @@
 #
 # NOTE: single-server assumption. With an HA control plane this should be a
 # stable VIP / API DNS name, not one node's address — revisit when a second
-# server node joins (ansible/CLAUDE.md §7 item 10).
+# server node joins (ADR-0004, docs/decisions/).
 apiVersion: v1
 kind: ConfigMap
 metadata:

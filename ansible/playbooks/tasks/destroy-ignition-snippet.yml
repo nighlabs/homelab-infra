@@ -10,7 +10,7 @@
 # snippet storage that every hypervisor in the cluster can reach. The token's
 # other two copies (the vault, and /etc/rancher/k3s/config.yaml on the node) are
 # both load-bearing; this one isn't, and it has the widest blast radius.
-# See ansible/CLAUDE.md §7 item 21.
+# See docs/decisions/0025-destroy-ignition-snippet-after-first-boot.md.
 #
 # ⚠ EVERY VAR HERE IS `cleanup_*`-PREFIXED ON PURPOSE. The flatcar_vm role sets
 # `hostname`, `vmid` and `eth0_ip` as *facts* (preflight.yml), and facts outrank

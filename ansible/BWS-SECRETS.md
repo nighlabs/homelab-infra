@@ -6,7 +6,7 @@ single API call into the `bws` fact, and `inventory/group_vars/all/vars.yml`
 indexes it.
 
 Why it works this way — and why the values aren't grouped into JSON blobs:
-`docs/mac-studio-inference-stack-2.md`, Appendix A, **"Control-node secrets"**.
+`docs/decisions/0027-control-node-secrets-bws-runtime.md`.
 
 > **Blinding rule:** this file is committed. Formats below are illustrative and
 > deliberately fake. Do not paste real values back into it.
@@ -101,93 +101,56 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
 
 ## 2. Secrets to create
 
-> **Migrating from `vault.yml`? Don't hand-copy — use the helper.** Four values
-> change shape between the two stores, and the long opaque ones
-> (`proxmox_api_token_secret`, `k3s_token_<cluster>`) fail confusingly and late
-> if truncated. `playbooks/port-vault-to-bws.yml` has two modes:
->
-> **1. Dry run** (default) — reshapes everything into one file per secret,
-> `0600` in a git-ignored `0700` dir. Prints names only, never values, and warns
-> about any vault variable it didn't know how to port. Good as a preview even if
-> you intend to import:
->
-> ```sh
-> uv run ansible-playbook playbooks/port-vault-to-bws.yml --ask-vault-pass
-> ls .bws-port
-> pbcopy < .bws-port/proxmox_api_token_secret   # paste by hand, if you prefer
-> ```
->
-> **2. Import** — creates every missing secret in BWS directly:
->
-> ```sh
-> uv run ansible-playbook playbooks/port-vault-to-bws.yml --ask-vault-pass \
->   -e bws_import=true \
->   -e bws_project_id=<project uuid> \
->   -e bws_write_token='<write-scoped token>'
-> ```
->
-> ⚠ **Import needs a WRITE-scoped token, which nothing else in this repo uses.**
-> Create a **separate, temporary** machine account with write access on the
-> project, import, then **delete that machine account**. Never widen the
-> production read-only token — a read-only token that leaks can't write.
->
-> The import is **idempotent and resumable**: it reads existing names once and
-> creates only what's missing, skipping (never overwriting) anything already
-> there. That matters because BWS rate limits are undocumented and there is no
-> bulk create, so a 23-secret import can be throttled part-way — if it stops,
-> re-run it. `-e bws_import_pause=2` spaces the calls out further.
->
-> When done: `rm -rf .bws-port`, delete the temporary write machine account, and
-> delete `playbooks/port-vault-to-bws.yml` + `playbooks/tasks/port-cluster-map.yml`.
-
 **Every value is a plain string** — paste into the value field, no encoding.
 Name them **exactly** as in the first column; the module keys the `bws` dict on
-the secret name.
+the secret name. ⚠ The long opaque ones (`proxmox_api_token_secret`,
+`k3s_token_<cluster>`) fail confusingly and late if truncated — paste, don't
+retype.
 
 ### Proxmox
 
-| Secret name | Was | Format / example |
-|---|---|---|
-| `proxmox_api_host` | `vault_proxmox_api_host` | hostname or IP of the PVE API |
-| `proxmox_api_user` | `vault_proxmox_api_user` | `ansible@pve` |
-| `proxmox_api_token_id` | `vault_proxmox_api_token_id` | the token's ID part |
-| **`proxmox_api_token_secret`** 🔑 | `vault_proxmox_api_token_secret` | the token's secret part |
-| `proxmox_node` | `vault_proxmox_node` | PVE node name, as PVE knows it |
-| `proxmox_ssh_addr` | `vault_proxmox_ssh_addr` | address the `pve` inventory alias connects to |
-| `proxmox_ssh_user` | `vault_proxmox_ssh_user` | `provisioner` (or `root`) |
-| `proxmox_vm_storage` | `vault_proxmox_vm_storage` | e.g. `local-lvm` |
-| `proxmox_snippet_storage` | `vault_proxmox_snippet_storage` | e.g. `cephfs` |
-| `proxmox_snippet_dir` | `vault_proxmox_snippet_dir` | e.g. `/mnt/pve/cephfs/snippets` |
+| Secret name | Format / example |
+|---|---|
+| `proxmox_api_host` | hostname or IP of the PVE API |
+| `proxmox_api_user` | `ansible@pve` |
+| `proxmox_api_token_id` | the token's ID part |
+| **`proxmox_api_token_secret`** 🔑 | the token's secret part |
+| `proxmox_node` | PVE node name, as PVE knows it |
+| `proxmox_ssh_addr` | address the `pve` inventory alias connects to |
+| `proxmox_ssh_user` | `provisioner` (or `root`) |
+| `proxmox_vm_storage` | e.g. `local-lvm` |
+| `proxmox_snippet_storage` | e.g. `cephfs` |
+| `proxmox_snippet_dir` | e.g. `/mnt/pve/cephfs/snippets` |
 
 ### Networks
 
-| Secret name | Was | Format / example |
-|---|---|---|
-| `dmz_subnet_base` | `vault_dmz_subnet_base` | **first three octets only** — `10.0.1`, no trailing dot |
-| `dmz_vlan` | `vault_dmz_vlan` | integer as a string — `2` (cast with `\| int` on use) |
-| `dmz_bridge` | `vault_dmz_bridge` | `vmbr0` |
-| `dmz_gateway` | `vault_dmz_gateway` | full address — `10.0.1.1`. Also the BGP peer IP |
-| `ceph_subnet_base` | `vault_ceph_subnet_base` | first three octets only |
-| `ceph_vlan` | `vault_ceph_vlan` | integer as a string |
-| `ceph_bridge` | `vault_ceph_bridge` | `vmbr1` |
-| `lb_range_base` | `vault_lb_range_base` | **first two octets only** — LB range is `<base>.<cluster index>.0/24` |
-| `dns_servers` | `vault_dns_servers` | **one per line** (see below) |
+| Secret name | Format / example |
+|---|---|
+| `dmz_subnet_base` | **first three octets only** — `10.0.1`, no trailing dot |
+| `dmz_vlan` | integer as a string — `2` (cast with `\| int` on use) |
+| `dmz_bridge` | `vmbr0` |
+| `dmz_gateway` | full address — `10.0.1.1`. Also the BGP peer IP |
+| `ceph_subnet_base` | first three octets only |
+| `ceph_vlan` | integer as a string |
+| `ceph_bridge` | `vmbr1` |
+| `lb_range_base` | **first two octets only** — LB range is `<base>.<cluster index>.0/24` |
+| `dns_servers` | **one per line** (see below) |
 
 ### Access
 
-| Secret name | Was | Format / example |
-|---|---|---|
-| `ssh_authorized_keys` | `vault_ssh_authorized_keys` | **one key per line** (see below) |
-| **`frr_master_password`** 🔑 | `vault_frr_master_password` | pfSense FRR daemon password |
+| Secret name | Format / example |
+|---|---|
+| `ssh_authorized_keys` | **one key per line** (see below) |
+| **`frr_master_password`** 🔑 | pfSense FRR daemon password |
 
 ### Per cluster — one secret per cluster in `inventory/nodes.yml`
 
 Named `<prefix>_<cluster>`. With only `homelab` today that's one required secret.
 
-| Secret name | Was | Required? |
-|---|---|---|
-| **`k3s_token_homelab`** 🔑 | `vault_k3s_tokens.homelab` | **yes** for any cluster with k3s nodes |
-| `k3s_tls_sans_homelab` | `vault_k3s_tls_sans_by_cluster.homelab` | optional — omit entirely if no extra SANs |
+| Secret name | Required? |
+|---|---|
+| **`k3s_token_homelab`** 🔑 | **yes** for any cluster with k3s nodes |
+| `k3s_tls_sans_homelab` | optional — omit entirely if no extra SANs |
 
 Adding a cluster `edge` means adding `k3s_token_edge`. Nothing in the repo
 changes; `vars.yml` assembles the map from the `clusters` keys.

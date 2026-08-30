@@ -20,8 +20,7 @@ WHY THIS EXISTS instead of the official `bitwarden.secrets.lookup`:
     rather than in contorting the secret layout to fit a plugin's addressing
     model (e.g. hand-authoring JSON blobs into a textarea with no validation).
 
-Full rationale + the alternatives rejected: docs/mac-studio-inference-stack-2.md,
-Appendix A, "Control-node secrets".
+Full rationale + the alternatives rejected: docs/decisions/0027-control-node-secrets-bws-runtime.md.
 
 ⚠ NO STATE FILE IS WRITTEN, deliberately. `login_access_token()` takes an
 optional state_file; we never pass one. State files exist to reduce rate

@@ -1,5 +1,5 @@
 ---
-# Flux bootstrap — the second half of ansible/CLAUDE.md §6 step 4, and the last
+# Flux bootstrap — ADR-0008 / ADR-0028 (docs/decisions/), and the last
 # thing Ansible does to a cluster. Everything after this point arrives through
 # Flux from Git.
 #

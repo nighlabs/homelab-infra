@@ -1,7 +1,7 @@
 ---
 # Post-provision cluster bootstrap: wait for the k3s server(s) to finish booting,
 # fetch + rewrite the kubeconfig, then prime Calico (the CNI) so the node goes
-# Ready. This is ansible/CLAUDE.md §6 step 4's first half — "k3s up → fetch
+# Ready. This is the "Ansible primes, Flux adopts" handoff (ADR-0016) — "k3s up → fetch
 # kubeconfig → install Calico → wait node Ready". Flux bootstrap (Flux Operator +
 # FluxInstance, which then ADOPTS this same Calico release) is the next step, not
 # here. Safe to re-run: the SSH/k3s waits are idempotent and the Helm prime
@@ -116,7 +116,7 @@
   gather_facts: false
   tasks:
     # k3s isn't up the instant SSH is: on first boot the ~50 MB sysext downloads,
-    # merges, then k3s starts (ansible/CLAUDE.md §2). Poll /readyz until the API
+    # merges, then k3s starts (ansible/CLAUDE.md "Non-obvious facts"). Poll /readyz until the API
     # reports healthy. `until` retries suppress the non-zero rc while it comes up.
     - name: Wait for the k3s API to report readyz=ok
       ansible.builtin.raw: sudo /usr/local/bin/k3s kubectl get --raw=/readyz
@@ -261,7 +261,7 @@
     # twice. Regeneration command lives in that file's header.
     calico_crds_file: "{{ playbook_dir }}/../../gitops/crds/calico/crds.yaml"
     # eBPF dataplane prerequisites, primed from the SAME committed manifests Flux
-    # reconciles (§7 item 17). Never hand-maintain a second copy here.
+    # reconciles (ADR-0024). Never hand-maintain a second copy here.
     calico_manifest_dir: "{{ playbook_dir }}/../../gitops/infrastructure/calico"
     # BGP + LoadBalancer CRs, primed the same way. Separate directory because
     # ../calico/'s kustomization applies a `namespace:` transformer that would
@@ -292,7 +292,7 @@
           gitops/infrastructure/calico/values.yaml pod CIDR
           ({{ calico_values.installation.calicoNetwork.ipPools[0].cidr }})
           != k3s_cluster_cidr ({{ k3s_cluster_cidr }}) — Calico's IPPool must
-          match k3s cluster-cidr (design §4.1, guardrail §8).
+          match k3s cluster-cidr (docs/architecture.md §4.2).
         quiet: true
       delegate_to: localhost
       run_once: true
@@ -337,7 +337,7 @@
           type: Established
           status: "True"
 
-    # --- eBPF dataplane prerequisites (§7 item 17) --------------------------
+    # --- eBPF dataplane prerequisites (ADR-0024) --------------------------
     # ORDERING IS LOAD-BEARING, both before helm:
     #   namespace  — the ConfigMap has nowhere to land otherwise (helm's
     #                create_namespace would come too late, and is idempotent).
@@ -393,7 +393,7 @@
         wait: true
         timeout: 10m0s
 
-    # ⚠ WORKAROUND for projectcalico/calico#12890 — see §7 item 15 and the header
+    # ⚠ WORKAROUND for projectcalico/calico#12890 — see ADR-0019 and the header
     # in the manifest itself. Applied HERE, immediately after the operator and
     # before anything can try to allocate a LoadBalancer IP, because the failure
     # it prevents is invisible from the BGP side: LB IPs sit `pending` while
@@ -426,7 +426,7 @@
       retries: 30
       delay: 10
 
-    # --- BGP / LoadBalancer (ansible/CLAUDE.md §7 items 6, 8, 13) ------------
+    # --- BGP / LoadBalancer (ADR-0018, ADR-0023, ADR-0026) ------------
     #
     # ⚠ THE BGP CRs ARE `projectcalico.org/v3`, SERVED BY THE AGGREGATED
     # calico-apiserver — not by the CRDs primed earlier. `helm --wait` returns
@@ -487,12 +487,12 @@
 
     # Assert, don't hope. A `no` here means the workaround didn't land and every
     # LoadBalancer IP will sit `pending` — while BGP advertises routes normally,
-    # so the BGP side gives no hint at all. §7 item 15 calls this out as the one
+    # so the BGP side gives no hint at all. ADR-0019 calls this out as the one
     # check worth making explicit rather than leaving to a manual probe.
     #
     # 🔁 If this ever passes with the workaround REMOVED, upstream fixed #12890
     # and the manifest can go. That's its documented removal criterion.
-    # §7 item 15 documents this check as:
+    # ADR-0019 documents this check as:
     #   kubectl auth can-i get ipamconfigs \
     #     --as=system:serviceaccount:calico-system:calico-kube-controllers
     # A SubjectAccessReview is the same question asked through the API instead of

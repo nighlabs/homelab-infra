@@ -5,7 +5,7 @@ name: gitops-artifact
 # Step 4 of the 1->2->4->3 sequence in ansible/CLAUDE.md; step 3 points an
 # OCIRepository at the result with spec.verify + matchOIDCIdentity.
 #
-# ⚠ WHY THE TAG IS MUTABLE (decided 2026-08-29, Appendix A "GitOps delivery").
+# ⚠ WHY THE TAG IS MUTABLE (ADR-0028, docs/decisions/).
 # `latest` is deliberate, not laziness. The OCIRepository that pins the artifact
 # version is itself COMMITTED INSIDE THE ARTIFACT, so an exact version pin is a
 # fixed point: the cluster reconciles vN, whose manifest says vN, and can never

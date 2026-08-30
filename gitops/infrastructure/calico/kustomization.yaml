@@ -8,7 +8,7 @@ resources:
   - namespace.yaml
   # eBPF dataplane prerequisite: in eBPF mode Calico implements Services itself
   # and must reach the API server without a ClusterIP (see that file's header,
-  # and ansible/CLAUDE.md §7 item 17).
+  # and ADR-0024).
   #
   # NOTE: felixconfiguration.yaml lived here for stage 1 and was REMOVED at
   # stage 2 (2026-08-03), on purpose. It only disabled

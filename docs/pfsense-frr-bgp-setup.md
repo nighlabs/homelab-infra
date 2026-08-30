@@ -1,24 +1,20 @@
 # Configuring FRR/BGP on pfSense CE 2.8.1-RELEASE
 
 Peers pfSense with the k3s cluster so Calico can advertise **LoadBalancer
-service IPs** into the LAN. Companion to `ansible/CLAUDE.md` §7 items 6 + 8;
-the Calico side lives in `gitops/CLAUDE.md` ("Calico BGP — CRs, not Helm
-values").
+service IPs** into the LAN. The Calico side lives in `gitops/CLAUDE.md`
+("Calico BGP — CRs, not Helm values"). The decisions this runbook implements,
+with the alternatives rejected:
 
-> **✅ DECIDED 2026-08-02 — the FRR configuration is managed as raw config, not
-> through the GUI.** `maximum-paths` exists *only* there, and it's the only thing
-> providing node-level load distribution. The GUI's routing config is ignored
-> wholesale once raw config is saved, so this is an all-or-nothing choice and
-> we're taking it deliberately. Rationale and consequences: §4.
->
-> **✅ REVISED 2026-08-16 — explicit `neighbor` statements, not `bgp listen
-> range`.** Dynamic neighbors were the original second reason for raw config;
-> they're incompatible with giving two clusters distinct ASNs on a shared DMZ
-> subnet, which is what `inventory/nodes.yml` assumes. Full reasoning: §4.
->
-> **✅ The config is generated** by
-> `ansible/playbooks/render-frr-config.yml` from `inventory/nodes.yml` + the
-> vault — don't hand-write or GUI-edit it. See §9.
+- raw config, not the GUI; explicit `neighbor` statements, not `bgp listen range`
+  — [ADR-0022](decisions/0022-pfsense-frr-raw-config-explicit-neighbors.md)
+- RFC 8212 satisfied by real prefix lists with `le 32`, never disabled —
+  [ADR-0023](decisions/0023-rfc8212-real-policy-le32.md)
+- the values: ASN and LB range derived from the cluster `index`, the LB range
+  routed-only — [ADR-0026](decisions/0026-per-cluster-derivation-from-index.md)
+
+**The config is generated** by `ansible/playbooks/render-frr-config.yml` from
+`inventory/nodes.yml` + BWS — don't hand-write or GUI-edit it. See §9. It was
+applied and verified live on 2026-08-16 (`worklog.md`).
 
 > **⚠ This runs on live production gear.** The same pfSense box routes
 > everything else in the house. Every step below is additive and parked —
@@ -26,17 +22,15 @@ values").
 > before starting.
 
 **Blinding rule:** this document is committed, so it contains **no real
-addresses or ASNs**. Values appear as `${placeholder}` matching the vault
-variable names. Fill them from `ansible/inventory/group_vars/all/vault.yml`.
-Do not paste real values back into this file.
+addresses or ASNs**. Values appear as `${placeholder}` matching the BWS secret
+names (`ansible/BWS-SECRETS.md`). Do not paste real values back into this file.
 
 ---
 
-## 1. Values — ✅ DECIDED 2026-08-16
+## 1. Values
 
-These were the open blockers from `ansible/CLAUDE.md` §7 item 6. All are now
-settled, and **most are derived rather than chosen** — a cluster declares one
-number and everything else falls out of it.
+**Most are derived rather than chosen** — a cluster declares one number and
+everything else falls out of it ([ADR-0026](decisions/0026-per-cluster-derivation-from-index.md)).
 
 ### Per-cluster values derive from `index`
 
@@ -59,18 +53,18 @@ hoping they stay consistent.
 | pfSense ASN | `bgp_peer_asn: 64512` (cleartext) | **One** AS for the whole router, shared by every cluster's peering — it's one device, one AS |
 | ASN base | `bgp_asn_base: 64600` (cleartext) | Leaves 64512–64599 free; keeps cluster ASNs visually distinct from pfSense's |
 | pfSense peer IP | `bgp_peer_ip: {{ dmz_network.gateway }}` | **Not a new variable** — see below |
-| LB supernet base | `vault_lb_range_base` | Environment-revealing, so vaulted |
-| FRR master password | `vault_frr_master_password` | A **credential** — BWS-managed, never in a committed manifest |
+| LB supernet base | `lb_range_base` (BWS) | Environment-revealing, so never in Git |
+| FRR master password | `frr_master_password` (BWS) | A **credential** — never in a committed manifest |
 
 ASNs stay in cleartext deliberately: a number from the RFC 6996 private range
-reveals nothing about the environment. Addresses stay vaulted.
+reveals nothing about the environment. Addresses stay in BWS.
 
 **The peer IP is the DMZ gateway.** pfSense's BGP address *is* its DMZ interface
-address, which *is* the nodes' default gateway — one value, already vaulted, so
+address, which *is* the nodes' default gateway — one value, already in BWS, so
 there is no second variable to drift. ⚠ That equivalence breaks under **CARP**:
 the gateway would be a VIP while BGP must peer with the physical interface
 address. There is no CARP on that interface today (confirmed 2026-08-16); if
-that changes, `bgp_peer_ip` becomes its own vault var.
+that changes, `bgp_peer_ip` becomes its own BWS secret.
 
 ### ⚠ The LB range must be routed-only
 
@@ -167,8 +161,8 @@ a correct config that does nothing.
 
 - **Enable FRR** — check. Master switch; unchecked disables all of FRR.
 - **Master Password** — required. This is FRR's internal daemon password, not a
-  BGP peer password. Vault it as `vault_frr_master_password`; it's a credential,
-  so per the root `CLAUDE.md` it belongs in BWS and never in Git.
+  BGP peer password. It's the `frr_master_password` BWS secret; it's a
+  credential, so per the root `CLAUDE.md` it never lands in Git.
 - **Default Router ID** — leave unset; §4 sets it per-protocol.
 
 **Services > FRR BGP**, *BGP* tab:
@@ -644,22 +638,22 @@ Writes two git-ignored files to `ansible/.frr/`:
 | `frr.conf` | §5 — Services > FRR Global Settings > Raw Config |
 | `bgp-nodes.txt` | §6 — members of the firewall alias |
 
-Both are rendered from `inventory/nodes.yml` + the vault, so the BGP neighbor
-list and the firewall alias cannot disagree. Same Jinja2-from-vault pattern the
-repo already uses for Ignition.
+Both are rendered from `inventory/nodes.yml` + BWS, so the BGP neighbor
+list and the firewall alias cannot disagree. Same Jinja2-from-secrets pattern
+the repo already uses for Ignition.
 
 The play reads inventory and writes two local files — it does **not** touch
 pfSense or any node. Delivery is a manual paste, because pfSense CE ships no API.
 
 > ⚠ **pfSense is a render target, not a source of truth.** Editing the raw
 > config directly is tempting for a one-line change, and it works — until the
-> next render, which regenerates the whole file from the vault and reverts your
+> next render, which regenerates the whole file from BWS and reverts your
 > edit on paste. **Silently**: nothing errors, the value just goes backwards.
 >
-> The worst case is a rotated credential. Change
-> `vault_frr_master_password` on the box but not in the vault, and the next paste
-> quietly restores the old password. Whatever you change on pfSense, change in
-> the vault too — even if you don't re-render right away.
+> The worst case is a rotated credential. Change the FRR master password on
+> the box but not in BWS, and the next paste quietly restores the old
+> password. Whatever you change on pfSense, change in BWS too — even if you
+> don't re-render right away.
 >
 > Before any paste, diff the new render against what's running and confirm the
 > only differences are ones you intended.
@@ -696,16 +690,17 @@ half of §1 stays a manual check.
 place that needs it. If that derivation ever changes, change it in both, or
 pfSense will peer with addresses no node holds.
 
-### Vault additions
+### BWS secrets
 
-```yaml
-vault_lb_range_base: "<first two octets of the LB supernet>"
-vault_frr_master_password: "<FRR master password>"
-```
+| Secret | Value |
+|---|---|
+| `lb_range_base` | first two octets of the LB supernet |
+| `frr_master_password` | the FRR master password |
 
-Only these two are new. The pfSense peer IP is `dmz_network.gateway` (already
-vaulted) and both ASNs are cleartext constants in `group_vars/all/vars.yml` —
-see §1.
+Only these two exist for the BGP work. The pfSense peer IP is
+`dmz_network.gateway` (the `dmz_gateway` secret) and both ASNs are cleartext
+constants in `group_vars/all/vars.yml` — see §1. Full manifest:
+`ansible/BWS-SECRETS.md`.
 
 The address-shaped values flow to the cluster as the `cluster-topology` Secret,
 consumed via Flux `postBuild.substituteFrom` — so committed manifests keep
@@ -713,8 +708,8 @@ consumed via Flux `postBuild.substituteFrom` — so committed manifests keep
 lands in Git. See `gitops/CLAUDE.md` ("Topology blinding"). The ASNs need no
 blinding and can appear literally.
 
-`vault_frr_master_password` is a **credential**, not topology — BWS-managed, and
-it never reaches a committed manifest.
+`frr_master_password` is a **credential**, not topology — it never reaches a
+committed manifest.
 
 Remember the strict-substitution gate: an undefined `${var}` becomes an empty
 string and reconciles **successfully**, so a typo yields `peerIP: ""` reported
@@ -748,11 +743,11 @@ after landing:
 | **`Local` + no ECMP** | ✗ one node takes all | ⚠ **only replicas on that node** | preserved |
 | **`Local` + ECMP** | ✓ per-flow across advertising nodes | ✓ all replicas, weighted per *node* not per pod | preserved |
 
-> **⚠ RESOLVED 2026-08-03 — this matrix is historical.** It assumes the standard
-> iptables/kube-proxy dataplane, which we no longer run. The cluster is on
-> **Calico's eBPF dataplane with kube-proxy disabled entirely**, verified on a
-> from-scratch rebuild (`ansible/CLAUDE.md` §7 item 17), and eBPF **preserves the
-> source IP under `Cluster`**. That collapses all four rows into one:
+> **⚠ This matrix is historical.** It assumes the standard iptables/kube-proxy
+> dataplane, which we no longer run. The cluster is on **Calico's eBPF dataplane
+> with kube-proxy disabled entirely**, verified on a from-scratch rebuild
+> ([ADR-0024](decisions/0024-calico-ebpf-dataplane-no-kube-proxy.md)), and eBPF
+> **preserves the source IP under `Cluster`**. That collapses all four rows into one:
 >
 > | | Node-level | Pod-level | Source IP |
 > |---|---|---|---|
@@ -784,7 +779,7 @@ since ECMP hashes the 5-tuple across nodes with no weighting by pod count.
 > **⚠ Historical — does not apply to the eBPF dataplane we run.** This section
 > describes kube-proxy's behavior, which was the reason to prefer `Local`. Under
 > Calico eBPF the SNAT below doesn't happen and the client IP survives `Cluster`
-> (§7 item 17). Kept because it explains the trade, and because it applies again
+> (ADR-0024). Kept because it explains the trade, and because it applies again
 > if eBPF is ever reverted.
 
 Calico is explicit: Cluster-mode traffic is *"load balanced across all nodes

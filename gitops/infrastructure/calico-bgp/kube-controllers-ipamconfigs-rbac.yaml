@@ -1,5 +1,5 @@
 # ⚠ WORKAROUND for projectcalico/calico#12890 — REMOVE WHEN FIXED.
-# Full analysis and removal criteria: ansible/CLAUDE.md §7 item 15.
+# Full analysis and removal criteria: docs/decisions/0019-k3s-1.36-calico-3.32.1-version-pair.md.
 #
 # WHAT'S BROKEN: PR #11839 (milestone v3.32.0) renamed the ClusterRole grant to
 # `ipamconfigurations` while the deployed CRD is still `ipamconfigs`. So

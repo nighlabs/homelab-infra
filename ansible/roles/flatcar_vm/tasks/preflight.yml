@@ -2,7 +2,7 @@
 # Validate the node map entry and derive every host-shaped fact from
 # node_number. Dropping DHCP also drops its free IP-collision protection, so
 # nodes.yml is the SOLE source of address allocation — assert uniqueness before
-# creating anything (ansible/CLAUDE.md §7 item 2).
+# creating anything (docs/decisions/0017-static-addressing-no-dhcp.md).
 
 - name: "{{ hostname }} — assert node_number is present and valid"
   ansible.builtin.assert:
@@ -30,7 +30,7 @@
   run_once: true
 
 # k3s roles: all-in-one / server / control-plane -> a k3s *server*; agent /
-# worker -> a k3s *agent*. A node with no `role` is a bare VM shell (§1) and
+# worker -> a k3s *agent*. A node with no `role` is a bare VM shell and
 # gets no k3s config at all. Only the server path is built today; the agent
 # branch is derived here but wired in the §6 multi-node step.
 - name: "{{ hostname }} — assert role is a known value (if set)"
@@ -53,7 +53,7 @@
     k3s_enabled: "{{ node.role is defined and node.role in ['all-in-one', 'server', 'control-plane', 'agent', 'worker'] }}"
     k3s_role: "{{ 'agent' if (node.role | default('')) in ['agent', 'worker'] else 'server' }}"
     # Taint control-plane-only nodes; an all-in-one stays schedulable (the CP
-    # taint is added when dedicated workers arrive — ansible/CLAUDE.md §6.1).
+    # taint is added when dedicated workers arrive — docs/architecture.md §7).
     k3s_taint: "{{ (node.role | default('')) in ['server', 'control-plane'] }}"
 
 # k3s identity is CLUSTER-scoped, not fleet-wide: both the join token and the
@@ -107,7 +107,7 @@
 # ⚠ Set UNCONDITIONALLY, not `when: k3s_enabled`. set_fact persists across the
 # role's per-node loop iterations, so a `when` here would leave a non-k3s node
 # holding the PREVIOUS node's token — the same stale-registered-value trap as
-# ansible/CLAUDE.md §7 item 18. The k3s block in butane.yaml.j2 is gated on
+# ansible/CLAUDE.md "Ansible traps specific to this repo". The k3s block in butane.yaml.j2 is gated on
 # k3s_enabled anyway, so the empty values are never rendered.
 - name: "{{ hostname }} — resolve the cluster-scoped k3s facts"
   vars:

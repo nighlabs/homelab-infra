@@ -1,5 +1,5 @@
 # Flux entrypoint for the workloads layer. dependsOn infrastructure so no app
-# reconciles until Calico + the controllers are Ready (design §6 dependency
+# reconciles until Calico + the controllers are Ready (docs/architecture.md §7 dependency
 # order). ./apps is an empty `resources: []` today, so this reconciles to
 # a no-op until the first workload lands.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
