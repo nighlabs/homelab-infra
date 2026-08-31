@@ -11,3 +11,7 @@ kind: Kustomization
 # removed CRDs from the chart AND they exceed the client-side apply size limit.
 resources:
   - calico
+  # Gateway API standard-channel bundle: no chart installs it (NGF's chart
+  # carries only NGF's own CRDs) and httproutes exceeds the client-side apply
+  # size limit — both admission rules met. See gateway-api/crds.yaml's header.
+  - gateway-api

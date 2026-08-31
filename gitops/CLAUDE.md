@@ -40,10 +40,12 @@ deployment/<cluster>/     # Flux entrypoints — the ONE path Flux is told about
   apps.yaml                 #   -> ./apps            (dependsOn infrastructure, postBuild cluster-topology)
   kustomization.yaml        #   lists all five — adding a tier is a visible diff
 crds/                     # CRDs that must be Established BEFORE controllers
-  calico/                   #   vendored, server-side applied (Calico is the exception, not a convention)
+  calico/                   #   vendored, server-side applied (v3.32 chart carries no CRDs; 3 exceed the CSA limit)
+  gateway-api/              #   vendored standard-channel bundle (belongs to NO chart; httproutes exceeds the CSA limit)
 infrastructure/           # controllers, in dependency order:
   calico/                   #   INSTALLS Calico (operator chart + shared values.yaml + endpoint ConfigMap)
   calico-bgp/               #   CONFIGURES it: BGP CRs, LB IPAM pool, #12890 RBAC workaround
+  nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart + the shared Gateway
   kustomization.yaml        #   next: cert-manager -> ceph-csi-operator -> ESO + Bitwarden SDK -> ...
 apps/                     # workloads only (empty until the infra layer is up)
 ```
@@ -233,8 +235,11 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 
 ## Next
 
-Everything downstream of Calico, in dependency order: NGINX Gateway Fabric +
-cert-manager (DNS-01 wildcard) → ceph-csi-operator + StorageClasses → ESO +
+Everything downstream of the Gateway, in dependency order: cert-manager
+(DNS-01 wildcard; then add the HTTPS listener + wildcard cert to the Gateway in
+`infrastructure/nginx-gateway-fabric/gateway.yaml`, and the `NginxProxy`
+RewriteClientIP config when Cloudflare Tunnel arrives — ADR-0013)
+→ ceph-csi-operator + StorageClasses → ESO +
 Bitwarden SDK Server (its access token is Ansible-seeded from the
 `homelab-infra` BWS project; app secrets come from a *separate* project —
 ADR-0027) → Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel.

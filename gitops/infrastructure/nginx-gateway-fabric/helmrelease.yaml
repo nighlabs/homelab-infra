@@ -1,0 +1,39 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: nginx-gateway-fabric
+  namespace: nginx-gateway
+spec:
+  interval: 1h
+  # Explicit + stable per repo convention. Nothing primes this release first
+  # (NGF is Flux-only — no Ansible adoption dance, unlike Calico).
+  releaseName: nginx-gateway-fabric
+  chartRef:
+    kind: OCIRepository
+    name: nginx-gateway-fabric
+  install:
+    # NGF's OWN CRDs (NginxProxy, NginxGateway, ClientSettingsPolicy, ...) ship
+    # in the chart's crds/ dir and fit the client-side apply limit, so
+    # helm-controller installs them — the crds/ tier carries only the Gateway
+    # API bundle, which no chart installs (crds/gateway-api/crds.yaml).
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    nginx:
+      service:
+        # The data-plane LoadBalancer Service NGF creates per Gateway. Its IP
+        # comes from Calico's LB IPAM pool and is advertised over BGP
+        # (ADR-0018); no loadBalancerClass — Calico's assignIPs: AllServices
+        # covers unclassed Services.
+        #
+        # Chart default is Local; Cluster is deliberate (ADR-0013, ADR-0024):
+        # the eBPF dataplane preserves the client source IP under Cluster, and
+        # under Local the BGPFilter's `In ${lb_range}` would advertise a /32
+        # per Service instead of the whole block — both fine, but Cluster is
+        # the repo-wide default until a Service genuinely needs pinning.
+        externalTrafficPolicy: Cluster

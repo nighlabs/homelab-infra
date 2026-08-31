@@ -1,0 +1,25 @@
+# The cluster's one shared Gateway (ADR-0013). In NGF 2.x the data plane is
+# provisioned PER GATEWAY — creating this object is what makes NGF spin up the
+# nginx Deployment + LoadBalancer Service, so without it there is no data
+# plane, no LB allocation, nothing to verify. The GatewayClass (`nginx`) is
+# created by the Helm chart.
+#
+# HTTPS listener + the DNS-01 wildcard cert arrive with cert-manager (next
+# milestone, architecture.md §4.6); the HTTP listener exists now so LB
+# allocation and reachability are verifiable, and later serves redirects.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: gateway
+  namespace: nginx-gateway
+spec:
+  gatewayClassName: nginx
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          # Routes attach from any namespace — one shared Gateway for the
+          # whole cluster, apps bring their own HTTPRoute.
+          from: All
