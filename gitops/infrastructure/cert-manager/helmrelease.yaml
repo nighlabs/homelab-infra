@@ -21,6 +21,18 @@ spec:
     remediation:
       retries: 3
   values:
+    # ⚠ DNS-01 self-check MUST use public resolvers, permanently — this is not
+    # a tuning knob. cert-manager pre-checks the _acme-challenge TXT before
+    # asking LE to validate, and by default it asks the CLUSTER's resolver
+    # chain (CoreDNS -> node DNS -> pfSense Unbound). Two problems: Unbound
+    # negative-caches the NODATA from before the record existed (observed live
+    # 2026-09-05: record in the zone, 1.1.1.1 resolving it, local resolver
+    # returning nothing — issuance stuck on "not yet propagated"); and the
+    # split-horizon design (ADR-0013) makes the internal view of this zone
+    # PERMANENTLY diverge from the public one, while LE only ever validates
+    # against public DNS. Check what LE checks.
+    dns01RecursiveNameservers: "1.1.1.1:53,8.8.8.8:53"
+    dns01RecursiveNameserversOnly: true
     crds:
       # cert-manager's CRDs are TEMPLATED by the chart (gated on this value),
       # not shipped in a crds/ dir — so the chart installs and upgrades them
