@@ -1,0 +1,22 @@
+# Chart source for NGINX Gateway Fabric. NGF publishes its chart only to an OCI
+# registry (no classic Helm repo), so this is an OCIRepository + `chartRef` on
+# the HelmRelease rather than the HelmRepository + `chart.spec` pattern Calico
+# uses. Unrelated to the flux-system OCIRepository (the signed gitops artifact);
+# this one just fetches a public chart.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: nginx-gateway-fabric
+  namespace: nginx-gateway
+spec:
+  interval: 1h
+  url: oci://ghcr.io/nginx/charts/nginx-gateway-fabric
+  # Chart version == app version for NGF. Pinned literally (Renovate bumps it).
+  # ⚠ Moves in lockstep with the vendored Gateway API CRD bundle —
+  # crds/gateway-api/crds.yaml is regenerated at this same ref, in the same
+  # commit (see that file's header).
+  ref:
+    tag: "2.6.7"
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
