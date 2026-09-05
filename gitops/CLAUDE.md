@@ -242,5 +242,7 @@ RewriteClientIP config when Cloudflare Tunnel arrives — ADR-0013)
 → ceph-csi-operator + StorageClasses → ESO +
 Bitwarden SDK Server (its access token is Ansible-seeded from the
 `homelab-infra` BWS project; app secrets come from a *separate* project —
-ADR-0027) → Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel.
+ADR-0027; **open, decide at this milestone:** whether ESO adopts the
+cluster-destined bootstrap-seeded Secrets such as the cert-manager Cloudflare
+token — `docs/decisions/README.md`, "Open questions") → Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel.
 Design: `../docs/architecture.md` §3.8, §4.5–4.9, §7.

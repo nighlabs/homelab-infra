@@ -65,6 +65,19 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
 - Internal-resolver approach for split DNS (0013).
 - Rendering Calico's CRDs at OCI build time instead of vendoring (0020).
 - Control-node kubeconfig hygiene — `ansible/CLAUDE.md`, "Open items".
+- Whether ESO, once live, **adopts** the cluster-destined bootstrap-seeded
+  Secrets (first case: cert-manager's Cloudflare DNS-01 token), or they stay
+  Ansible-seed-only (0009, 0027). **Not yet decided** — the seed-only wording
+  in 0009 records the mechanism, not a permanence decision. Current lean:
+  adopt, inside 0027's consumer split — ESO's machine account still never
+  reads `homelab-infra` (cluster-destined secrets would live in the apps
+  project, with the *control-node* account granted read on both; exposure
+  doesn't widen because these secrets end up as in-cluster `Secret`s either
+  way), and **the Ansible seed remains regardless** — a from-scratch rebuild
+  needs the token before ESO exists, so adoption is an overlay, never a
+  handover. Excluded whatever is decided: `cluster-topology` (permanent,
+  0021/0027) and `eso_bws_access_token` (0027 ⚠). Decide + ADR at the ESO
+  milestone.
 
 ## Adding a record
 
