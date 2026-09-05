@@ -493,6 +493,17 @@ cluster_bgp: >-
 # ${base_domain} placeholder via the cluster-topology Secret. Blinding it hides
 # the repo<->domain LINK only — the zone itself goes public in the CT logs the
 # moment the wildcard cert issues.
+#
+# ⚠ FLEET-WIDE TODAY, and that flat shape BREAKS AT CLUSTER #2: two clusters
+# can't both own `*.<base_domain>` — split-horizon DNS can point the wildcard
+# at only ONE Gateway's LB IP. Certs aren't the problem (each cluster has its
+# own ACME account; LE allows duplicates); NAME OWNERSHIP is. The fix is
+# seed-side only, because the manifests carry ${base_domain} rather than a
+# literal: derive per-cluster here (e.g. `{{ cluster_name }}.` ~ the zone) or
+# add `base_domain_<cluster>` secrets on the k3s_token_<cluster> pattern —
+# zero gitops/ edits either way. Same deferred-until-a-second-cluster bucket
+# as the calico_version note above (and cloudflare_api_token below can fork
+# per cluster the same way if per-cluster revocation is wanted).
 base_domain: "{{ bws.base_domain }}"
 
 # Cloudflare API token for cert-manager's DNS-01 solver. A CREDENTIAL (root
