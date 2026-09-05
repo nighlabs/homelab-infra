@@ -148,7 +148,7 @@ retype.
 | Secret name | Format / example |
 |---|---|
 | `base_domain` | the apex zone, bare — `example.net`, no wildcard, no trailing dot |
-| **`cloudflare_api_token`** 🔑 | Cloudflare API token, scoped **Zone > DNS > Edit** on that one zone only (Cloudflare dashboard → My Profile → API Tokens → Create Token → "Edit zone DNS" template) |
+| **`cloudflare_api_token`** 🔑 | Cloudflare API token with **Zone > DNS > Edit** *and* **Zone > Zone > Read** (cert-manager looks the zone id up by name), zone resources scoped to that one zone. ⚠ An **account-owned** token works but returns `Invalid API Token` from `/user/tokens/verify` — verify with `GET /zones` instead |
 
 `base_domain` reaches gitops/ as the `${base_domain}` placeholder via
 `cluster-topology`; the token is seeded by `bootstrap-cluster.yml` into the
