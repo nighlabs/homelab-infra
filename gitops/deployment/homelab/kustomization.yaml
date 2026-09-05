@@ -26,4 +26,5 @@ resources:
   - sync.yaml
   - crds.yaml
   - infrastructure.yaml
+  - infrastructure-config.yaml
   - apps.yaml

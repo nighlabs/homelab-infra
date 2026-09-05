@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No `namespace:` transformer (see ../nginx-gateway-fabric/kustomization.yaml);
+# every resource carries its namespace explicitly.
+#
+# ⚠ The ClusterIssuers and the wildcard Certificate are NOT here — they're
+# cert-manager.io CRs, and this directory reconciles in the same pass that
+# *installs* the CRDs they need. They live in ../../infrastructure-config/,
+# whose Flux Kustomization dependsOn this whole tier being Ready.
+resources:
+  - namespace.yaml
+  - ocirepository.yaml
+  - helmrelease.yaml

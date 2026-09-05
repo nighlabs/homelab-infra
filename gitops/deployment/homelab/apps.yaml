@@ -14,8 +14,13 @@ spec:
   prune: true
   wait: true
   timeout: 5m
+  # infrastructure-config, not infrastructure: apps get a cluster whose
+  # controllers are Ready AND configured — issuers working, the wildcard cert
+  # issued (that tier's wait: true covers Certificate Ready), and later
+  # StorageClasses/SecretStores present. The chain is
+  # crds -> infrastructure -> infrastructure-config -> apps.
   dependsOn:
-    - name: infrastructure
+    - name: infrastructure-config
   # Present from the start even though ./gitops/apps has no ${...} placeholders
   # yet — the first app that needs one would otherwise substitute it to the empty
   # string, and with no postBuild block the StrictPostBuildSubstitutions gate

@@ -1,0 +1,38 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 1h
+  # Explicit + stable per repo convention. Flux-only, no Ansible priming —
+  # same as nginx-gateway-fabric. (Ansible DOES seed this controller's input,
+  # the cloudflare-api-token Secret, but never touches the release.)
+  releaseName: cert-manager
+  chartRef:
+    kind: OCIRepository
+    name: cert-manager
+  install:
+    crds: Create
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  values:
+    crds:
+      # cert-manager's CRDs are TEMPLATED by the chart (gated on this value),
+      # not shipped in a crds/ dir — so the chart installs and upgrades them
+      # itself, and they don't belong in the ../../crds tier (which is only for
+      # CRDs no chart can install; see that tier's kustomization.yaml).
+      enabled: true
+      # Keep the CRDs (and so every Certificate/Issuer CR) if the release is
+      # ever uninstalled — the chart default, pinned explicitly because it's
+      # load-bearing: same "removing a CRD is a manual act" stance as the crds
+      # tier's prune: false.
+      keep: true
+    # ClusterIssuers reference the cloudflare-api-token Secret in THIS
+    # namespace (a ClusterIssuer resolves secretRefs in the cluster-resource
+    # namespace, which defaults to the release namespace). The Secret is
+    # Ansible-seeded — bootstrap-secret tier, upstream of ESO by definition.

@@ -16,3 +16,8 @@ resources:
   # Gateway API CRDs are in ../crds/gateway-api (the crds tier this whole
   # Kustomization dependsOn), NOT installed by the chart.
   - nginx-gateway-fabric
+  # Certificates (ADR-0013): controller only — its ClusterIssuers and the
+  # wildcard Certificate are cert-manager.io CRs whose CRDs this very tier
+  # installs, so they live in ../infrastructure-config (a separate Flux
+  # Kustomization that dependsOn this one).
+  - cert-manager

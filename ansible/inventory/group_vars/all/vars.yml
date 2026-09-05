@@ -487,6 +487,21 @@ cluster_bgp: >-
   {%- endfor -%}
   {{ out }}
 
+# --- Edge: cert-manager DNS-01 + the shared Gateway (ADR-0013) ---------------
+# The apex DNS zone the wildcard cert and every app hostname hang off.
+# Environment-identifying (public repo), so it reaches gitops/ only as the
+# ${base_domain} placeholder via the cluster-topology Secret. Blinding it hides
+# the repo<->domain LINK only — the zone itself goes public in the CT logs the
+# moment the wildcard cert issues.
+base_domain: "{{ bws.base_domain }}"
+
+# Cloudflare API token for cert-manager's DNS-01 solver. A CREDENTIAL (root
+# CLAUDE.md tiers): BWS-managed, seeded by bootstrap-cluster.yml into the
+# cert-manager namespace, never in any manifest. Scope it in Cloudflare to
+# Zone > DNS > Edit on that one zone — it can create TXT records for ACME
+# challenges, which is all cert-manager needs.
+cloudflare_api_token: "{{ bws.cloudflare_api_token }}"
+
 # --- Bitwarden Secrets Manager connection -----------------------------------
 # How playbooks/tasks/load-bws-secrets.yml reaches BWS. The values below are
 # NOT credentials — the only credential is the machine-account access token,
