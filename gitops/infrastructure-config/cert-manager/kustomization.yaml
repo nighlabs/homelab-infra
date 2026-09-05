@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No `namespace:` transformer — ClusterIssuer is CLUSTER-SCOPED and a
+# transformer would wrongly stamp it (the calico-bgp scar, see that header).
+resources:
+  - clusterissuers.yaml
+  - certificate.yaml

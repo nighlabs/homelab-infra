@@ -4,9 +4,13 @@
 # plane, no LB allocation, nothing to verify. The GatewayClass (`nginx`) is
 # created by the Helm chart.
 #
-# HTTPS listener + the DNS-01 wildcard cert arrive with cert-manager (next
-# milestone, architecture.md §4.6); the HTTP listener exists now so LB
-# allocation and reachability are verifiable, and later serves redirects.
+# The https listener serves the DNS-01 wildcard cert (ADR-0013): the
+# Certificate in ../../infrastructure-config/cert-manager writes wildcard-tls
+# in THIS namespace (same-namespace certificateRefs need no ReferenceGrant).
+# Until the cert first issues, the listener reports ResolvedRefs=False and
+# serves nothing — the Gateway stays Programmed and :80 keeps working, so
+# bring-up ordering is safe. The http listener remains for the 301 redirect
+# (httproute-redirect.yaml).
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -18,6 +22,25 @@ spec:
     - name: http
       port: 80
       protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          # ⚠ Deliberately NOT `All`, unlike https below: the only route this
+          # listener should ever hold is the redirect (Same namespace = this
+          # one). An app HTTPRoute that binds here by accident would serve
+          # plaintext.
+          from: Same
+    - name: https
+      port: 443
+      protocol: HTTPS
+      # ${base_domain}: topology blinding (ADR-0021), substituted from
+      # cluster-topology — which is why that Secret gains the key in the same
+      # change as this listener (bootstrap-cluster.yml seeds it).
+      hostname: "*.${base_domain}"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: wildcard-tls
       allowedRoutes:
         namespaces:
           # Routes attach from any namespace — one shared Gateway for the

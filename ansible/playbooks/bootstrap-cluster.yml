@@ -565,6 +565,45 @@
             bgp_peer_asn: "{{ bgp_peer_asn | string }}"
             cluster_asn: "{{ cluster_bgp[cluster_name].asn | string }}"
             lb_range: "{{ cluster_bgp[cluster_name].lb_range }}"
+            base_domain: "{{ base_domain }}"
+
+    # --- Seed the cert-manager DNS-01 token (bootstrap-secret tier) ----------
+    # Same tier as cluster-topology, same reason: cert-manager sits UPSTREAM of
+    # ESO (the Bitwarden SDK Server needs a cert-manager cert), so on a
+    # from-scratch rebuild ESO can never supply this. Whether ESO later ADOPTS
+    # the Secret once it's live is an OPEN question (docs/decisions/README.md,
+    # "Open questions") — but this seed remains either way: adoption would be
+    # an overlay for rotation, never a handover, or the next rebuild deadlocks.
+    #
+    # The namespace is created here (Flux applies the committed namespace.yaml
+    # over it later — SSA adoption, same as flux-system above). The Secret name
+    # + key are the contract the committed ClusterIssuers reference
+    # (gitops/infrastructure-config/cert-manager/clusterissuers.yaml).
+    - name: Ensure the cert-manager namespace exists (for the DNS-01 token)
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: cert-manager
+
+    - name: Seed the Cloudflare DNS-01 API token Secret
+      delegate_to: localhost
+      no_log: true # a credential — never in output, even at -vvv
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cloudflare-api-token
+            namespace: cert-manager
+          stringData:
+            api-token: "{{ cloudflare_api_token }}"
 
     - name: Report the bootstrapped node(s)
       delegate_to: localhost

@@ -1,0 +1,23 @@
+# The wildcard cert (ADR-0013): one cert, every view — DNS-01 means the same
+# valid public cert serves LAN, tailnet and tunnel paths, so no internal CA and
+# no TLS mismatch. Lives in nginx-gateway because the Gateway's certificateRefs
+# must resolve in its own namespace (same-namespace ref needs no ReferenceGrant).
+#
+# ${base_domain} is topology blinding (ADR-0021) — the zone is substituted from
+# cluster-topology. Note the blinding here hides the repo↔domain LINK only: the
+# moment this issues, `*.${base_domain}` is public in the CT logs.
+#
+# ⚠ Covers `*.${base_domain}` ONLY, not the apex — apps live on subdomains. If
+# the apex is ever needed, add it as a second dnsName (one cert can carry both).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard
+  namespace: nginx-gateway
+spec:
+  secretName: wildcard-tls
+  dnsNames:
+    - "*.${base_domain}"
+  issuerRef:
+    kind: ClusterIssuer
+    name: letsencrypt

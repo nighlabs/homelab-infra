@@ -143,6 +143,18 @@ retype.
 | `ssh_authorized_keys` | **one key per line** (see below) |
 | **`frr_master_password`** 🔑 | pfSense FRR daemon password |
 
+### Edge (cert-manager DNS-01 + the shared Gateway)
+
+| Secret name | Format / example |
+|---|---|
+| `base_domain` | the apex zone, bare — `example.net`, no wildcard, no trailing dot |
+| **`cloudflare_api_token`** 🔑 | Cloudflare API token with **Zone > DNS > Edit** *and* **Zone > Zone > Read** (cert-manager looks the zone id up by name), zone resources scoped to that one zone. ⚠ An **account-owned** token works but returns `Invalid API Token` from `/user/tokens/verify` — verify with `GET /zones` instead |
+
+`base_domain` reaches gitops/ as the `${base_domain}` placeholder via
+`cluster-topology`; the token is seeded by `bootstrap-cluster.yml` into the
+`cert-manager` namespace (bootstrap-secret tier — see the play's comments and
+the ESO-adoption open question in `../docs/decisions/README.md`).
+
 ### Per cluster — one secret per cluster in `inventory/nodes.yml`
 
 Named `<prefix>_<cluster>`. With only `homelab` today that's one required secret.

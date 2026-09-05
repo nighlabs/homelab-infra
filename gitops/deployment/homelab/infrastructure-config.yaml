@@ -1,0 +1,38 @@
+# Flux entrypoint for controller CONFIGURATION — CRs whose CRDs/webhooks only
+# exist once the controllers in ./infrastructure are installed (first case:
+# cert-manager's ClusterIssuers + the wildcard Certificate; later: ceph-csi
+# StorageClasses, ESO SecretStores). A separate tier because kustomize-controller
+# applies a tier in one pass: a CR whose CRD arrives via a HelmRelease in the
+# same pass fails the reconcile, and dependsOn between tiers is the repo's
+# sanctioned ordering tool (gitops/CLAUDE.md, "Layout").
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: infrastructure-config
+  namespace: flux-system
+spec:
+  interval: 30m
+  # infrastructure has wait: true, so this gates on every HelmRelease there
+  # being Ready — CRDs Established, webhooks serving.
+  dependsOn:
+    - name: infrastructure
+  # Artifact-root-relative — no ./gitops prefix (see sync.yaml).
+  path: ./infrastructure-config
+  prune: true
+  # wait: true makes this tier Ready == the Certificate is actually Ready
+  # (kstatus follows cert-manager's Ready condition) — i.e. ACME issuance
+  # WORKED, DNS-01 and all. `apps` dependsOn this, so workloads only reconcile
+  # onto a cluster whose certs are real. Timeout is generous: a first DNS-01
+  # issuance waits on Cloudflare propagation + LE validation, minutes not
+  # seconds.
+  wait: true
+  timeout: 10m
+  # Same strict-substitution story as infrastructure (${base_domain} lives
+  # here); the Secret is Ansible-seeded — see infrastructure.yaml's warning.
+  postBuild:
+    substituteFrom:
+      - kind: Secret
+        name: cluster-topology
+  sourceRef:
+    kind: OCIRepository
+    name: flux-system

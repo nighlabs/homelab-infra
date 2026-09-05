@@ -1,0 +1,18 @@
+# Chart source for cert-manager. Jetstack publishes OCI charts as the source of
+# truth (the legacy https://charts.jetstack.io repo lags by hours), so this is
+# the OCIRepository + chartRef pattern, same as nginx-gateway-fabric.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 1h
+  url: oci://quay.io/jetstack/charts/cert-manager
+  # Pinned literally (Renovate bumps it). ⚠ Tag carries the leading `v` —
+  # unlike flux-operator's bare-semver OCI tags.
+  ref:
+    tag: "v1.21.1"
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy

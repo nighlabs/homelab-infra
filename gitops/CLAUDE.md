@@ -37,16 +37,21 @@ deployment/<cluster>/     # Flux entrypoints — the ONE path Flux is told about
   sync.yaml                 #   root Kustomization flux-system -> ./deployment/<cluster>
   crds.yaml                 #   -> ./crds            (prune: false, wait: true, no postBuild)
   infrastructure.yaml       #   -> ./infrastructure  (dependsOn crds, postBuild cluster-topology)
-  apps.yaml                 #   -> ./apps            (dependsOn infrastructure, postBuild cluster-topology)
-  kustomization.yaml        #   lists all five — adding a tier is a visible diff
+  infrastructure-config.yaml#   -> ./infrastructure-config (dependsOn infrastructure, postBuild)
+  apps.yaml                 #   -> ./apps            (dependsOn infrastructure-config, postBuild)
+  kustomization.yaml        #   lists all six — adding a tier is a visible diff
 crds/                     # CRDs that must be Established BEFORE controllers
   calico/                   #   vendored, server-side applied (v3.32 chart carries no CRDs; 3 exceed the CSA limit)
   gateway-api/              #   vendored standard-channel bundle (belongs to NO chart; httproutes exceeds the CSA limit)
 infrastructure/           # controllers, in dependency order:
   calico/                   #   INSTALLS Calico (operator chart + shared values.yaml + endpoint ConfigMap)
   calico-bgp/               #   CONFIGURES it: BGP CRs, LB IPAM pool, #12890 RBAC workaround
-  nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart + the shared Gateway
-  kustomization.yaml        #   next: cert-manager -> ceph-csi-operator -> ESO + Bitwarden SDK -> ...
+  nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart, shared Gateway, https redirect
+  cert-manager/             #   controller only — its CRs live a tier down
+  kustomization.yaml        #   next: ceph-csi-operator -> ESO + Bitwarden SDK -> ...
+infrastructure-config/    # CRs CONSUMED BY those controllers (CRDs arrive with the chart,
+  cert-manager/           #   so same-pass apply fails): ClusterIssuers + wildcard Certificate;
+                          #   later ceph-csi StorageClasses, ESO SecretStores
 apps/                     # workloads only (empty until the infra layer is up)
 ```
 
@@ -66,8 +71,8 @@ apps/                     # workloads only (empty until the infra layer is up)
   `infrastructure`, so nothing reconciles before the controllers are Ready.
   Ordering *within* a tier is Flux `dependsOn` between HelmReleases /
   Kustomizations.
-- **`postBuild.substituteFrom` is on `infrastructure` and `apps`, deliberately
-  not on `crds` or the root.** kustomize-controller only runs substitution when
+- **`postBuild.substituteFrom` is on `infrastructure`, `infrastructure-config`
+  and `apps`, deliberately not on `crds` or the root.** kustomize-controller only runs substitution when
   `spec.postBuild` is set; leaving it off `crds` keeps 3 MB of generated CRD
   text from being scanned and, under the strict gate, from hard-failing the
   tier everything depends on. `apps` has the block *before* it has any
@@ -235,11 +240,9 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 
 ## Next
 
-Everything downstream of the Gateway, in dependency order: cert-manager
-(DNS-01 wildcard; then add the HTTPS listener + wildcard cert to the Gateway in
-`infrastructure/nginx-gateway-fabric/gateway.yaml`, and the `NginxProxy`
-RewriteClientIP config when Cloudflare Tunnel arrives — ADR-0013)
-→ ceph-csi-operator + StorageClasses → ESO +
+Everything downstream of certs, in dependency order (the `NginxProxy`
+RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013):
+ceph-csi-operator + StorageClasses → ESO +
 Bitwarden SDK Server (its access token is Ansible-seeded from the
 `homelab-infra` BWS project; app secrets come from a *separate* project —
 ADR-0027; **open, decide at this milestone:** whether ESO adopts the

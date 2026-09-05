@@ -11,3 +11,4 @@ resources:
   - ocirepository.yaml
   - helmrelease.yaml
   - gateway.yaml
+  - httproute-redirect.yaml
