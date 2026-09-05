@@ -31,6 +31,15 @@ spec:
     # split-horizon design (ADR-0013) makes the internal view of this zone
     # PERMANENTLY diverge from the public one, while LE only ever validates
     # against public DNS. Check what LE checks.
+    #
+    # ⚠ AND the firewall must let these queries actually LEAVE. pfSense has a
+    # DNS-redirect NAT (port 53 to any destination outside the OkayDnsServers
+    # alias -> PiHole), which answers WEARING the destination's address — so a
+    # hijacked self-check looks successful while still reading the internal
+    # view, and these flags silently do nothing. The resolvers below are in
+    # that alias for exactly this reason; verify with a CHAOS-class
+    # `whoami.cloudflare` query from a cluster pod (answered = genuine
+    # Cloudflare, empty = redirected), not with a plain lookup.
     dns01RecursiveNameservers: "1.1.1.1:53,8.8.8.8:53"
     dns01RecursiveNameserversOnly: true
     crds:
