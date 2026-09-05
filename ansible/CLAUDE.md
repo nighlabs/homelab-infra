@@ -20,12 +20,15 @@ workaround, pfSense session `Established`, LB IPs reachable) → Flux
 Ready, Calico adopted with no diff war). Evidence: worklog entries for
 2026-08-16, 2026-08-29 and 2026-08-30.
 
-**Next milestone: deliver the rest of the stack from Git**, in dependency
-order — NGINX Gateway Fabric + cert-manager → ceph-csi-operator + StorageClasses
-→ ESO + Bitwarden SDK Server → Postgres + Redis → LiteLLM → … That work is in
-`gitops/`; this directory's part is seeding the bootstrap-tier secrets as they
-arrive — the cert-manager DNS-01 token (done, in `bootstrap-cluster.yml`) and
-the ESO access token when that milestone comes. ⚠ Do **not** fold "stop vendoring the Calico
+**Delivered from Git so far (both verified live, worklog 2026-09-05):** NGINX
+Gateway Fabric (Gateway API CRD tier, shared Gateway, LB reachable,
+source-IP preserved) and cert-manager (DNS-01 wildcard issued, HTTPS on the
+Gateway, `infrastructure-config` tier). **Next: ceph-csi-operator +
+StorageClasses** → ESO + Bitwarden SDK Server → Postgres + Redis → LiteLLM →
+… That work is in `gitops/`; this directory's part is seeding the
+bootstrap-tier secrets as they arrive — the cert-manager DNS-01 token (done,
+in `bootstrap-cluster.yml`) and the ESO access token when that milestone
+comes. ⚠ Do **not** fold "stop vendoring the Calico
 CRDs" into it — `bootstrap-cluster.yml` primes from the vendored file, so that's
 its own step (ADR-0020).
 

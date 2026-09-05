@@ -563,14 +563,25 @@ that genuinely needs traffic pinned to backend-bearing nodes. The Gateway API
 CRDs (standard channel) are vendored in `gitops/crds/gateway-api/` — they
 belong to no chart, and `httproutes` exceeds the client-side apply limit
 ([ADR-0020](decisions/0020-crd-tier-vendored-server-side-apply.md)'s rule).
-The HTTP listener serves today; the HTTPS listener arrives with the wildcard
-cert (§4.6).
+The `https` listener terminates the wildcard cert (§4.6) for `*.${base_domain}`;
+`:80` holds only the catch-all 301 redirect (its `allowedRoutes` is
+`Same`-namespace, so an app route can never accidentally serve plaintext).
 
 ### 4.6 Certificates
 
-*Status: next milestone.* **cert-manager + ACME via Cloudflare DNS-01.** DNS-01
-yields valid public certs with **no inbound**, so even internal-only services
-get real certs. A **wildcard** serves the internal endpoint too (§4.8).
+**cert-manager + ACME via Cloudflare DNS-01**
+(`gitops/infrastructure/cert-manager/` + `gitops/infrastructure-config/cert-manager/`).
+DNS-01 yields valid public certs with **no inbound**, so even internal-only
+services get real certs; the `*.${base_domain}` **wildcard** serves the
+internal endpoint too (§4.8). ClusterIssuers `letsencrypt` (prod, in use) and
+`letsencrypt-staging` (rate-limit-free testing); the ACME accounts carry **no
+email** (optional in ACME; LE ended expiry mail in 2025). The Cloudflare token
+is an Ansible-seeded bootstrap Secret, scoped Zone:DNS:Edit + Zone:Zone:Read on
+the one zone. ⚠ The DNS-01 **self-check is pinned to public resolvers**
+(`dns01RecursiveNameserversOnly`) — the internal view of the zone diverges from
+the public one (the pfSense DNS-redirect NAT today, split DNS §4.8 tomorrow)
+while LE validates only public DNS; the firewall's `OkayDnsServers` alias must
+keep exempting those resolver addresses.
 
 ### 4.7 Source-IP preservation
 
@@ -686,10 +697,12 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
 6. **From Git, in dependency order:** ✅ NGINX Gateway Fabric — the first
    Flux-only delivery: Gateway API CRD tier + NGF 2.6.7 + the shared Gateway;
    LB IP allocated and reachable cross-segment, source IP preserved under
-   `Cluster`. Then ⬜ cert-manager (DNS-01 wildcard) → ceph-csi-operator +
-   StorageClasses → External Secrets Operator + Bitwarden SDK Server →
-   Postgres + Redis → LiteLLM → confirm a chat completion routes end-to-end
-   to the Mac.
+   `Cluster`. ✅ cert-manager — DNS-01 wildcard issued, HTTPS live on the
+   Gateway with a valid LE chain, `:80` redirect-only; the
+   `infrastructure-config` tier gates `apps` on certs actually working. Then
+   ⬜ ceph-csi-operator + StorageClasses → External Secrets Operator +
+   Bitwarden SDK Server → Postgres + Redis → LiteLLM → confirm a chat
+   completion routes end-to-end to the Mac.
 7. ⬜ **Then:** Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 8. ⬜ **Split DNS + access:** internal resolver, Tailscale split DNS,
    Cloudflare Tunnel → Gateway; verify source-IP preservation on both paths.

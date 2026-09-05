@@ -13,6 +13,58 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-05 — cert-manager + the wildcard cert: ADR-0013's cert half done, HTTPS live on the Gateway
+
+**Related:** [ADR-0013](decisions/0013-ingress-certs-dns-external-access.md) ·
+`gitops/infrastructure/cert-manager/` · `gitops/infrastructure-config/` ·
+commits `197cc04` (#12), `742019f` (#13)
+
+cert-manager **v1.21.1** (OCI chart), Let's Encrypt prod + staging
+ClusterIssuers (Cloudflare DNS-01), and the `*.${base_domain}` wildcard —
+plus a **new `infrastructure-config` tier** for CRs whose CRDs arrive with
+their controller's chart (same-pass apply fails). The chain is now
+`crds → infrastructure → infrastructure-config → apps`, and that tier's
+`wait: true` makes tier-Ready mean *the cert actually issued*. Ansible seeds
+`base_domain` into `cluster-topology` and the `cloudflare-api-token` Secret
+(bootstrap tier — upstream of ESO; the adoption question stays open).
+
+| Evidence | |
+|---|---|
+| HelmRelease | cert-manager v1.21.1 install → later upgrade (#13) both **succeeded**; controller rolled |
+| Issuers | `letsencrypt` + `letsencrypt-staging` both Ready — ACME accounts registered (no email, deliberately: optional in ACME, LE ended expiry mail in 2025, keeps personal data out of a public repo) |
+| Certificate | `wildcard` **Ready**; issuer Let's Encrypt (YR1), subject `*.<domain>`, notAfter 2026-12-04 |
+| Gateway | `https` listener `ResolvedRefs=True, Programmed=True`; `:80` narrowed to the redirect route only |
+| Endpoint | `curl --resolve` → **404 over a valid LE chain** (`ssl_verify_result: 0`, no `-k`) in 0.17 s; `:80` → **301** to https |
+| Tiers | all five Ready at the same digest (`7aaebd94…`), #13's resolver flags verified on the deployment |
+
+**Three catches, each with a lesson:**
+
+1. **The Cloudflare token had account-wide `DNS:Edit` (4 zones)** where a
+   single zone was intended — caught by preflight (TXT write on a NON-target
+   zone succeeded), fixed by editing the token in place (same secret value, no
+   reseed). Lessons: `/user/tokens/verify` answers `Invalid API Token` for
+   **account-owned** tokens — a false negative; verify with `GET /zones` and a
+   TXT round-trip instead. And account-owned tokens are edited under *Manage
+   Account → Account API Tokens*, not the profile page — editing the
+   similarly-named profile token silently changes nothing.
+2. **Issuance stalled ~30 min on "not yet propagated"** while the TXT was live
+   publicly. Two stacked causes: pfSense's **DNS-redirect NAT** sends port-53
+   traffic for any destination outside the `OkayDnsServers` alias to PiHole —
+   *answering as the destination's address*, so the self-check believed it had
+   asked 1.1.1.1 — and the zone's SOA negative TTL (1799 s) kept the
+   pre-record NODATA alive. Fix (#13, permanent): `dns01RecursiveNameservers`
+   = 1.1.1.1/8.8.8.8 + `...Only=true` — the self-check must ask what LE asks,
+   *especially* once split-horizon DNS diverges the internal view forever.
+   Those resolvers must be in the `OkayDnsServers` alias, and the only honest
+   verification is a CHAOS-class `whoami.cloudflare` query from a cluster pod
+   (answered = genuine; a plain lookup cannot detect the hijack).
+3. The cert actually issued through the redirect path once the negative cache
+   expired — *before* #13 rolled. Working ≠ correct: without #13 every ~60-day
+   renewal replays the same race.
+
+**Next:** ceph-csi-operator + StorageClasses (then ESO, where the
+secret-adoption open question gets decided).
+
 ## 2026-09-05 — NGINX Gateway Fabric deployed; the first Flux-only delivery, verified
 
 **Related:** [ADR-0013](decisions/0013-ingress-certs-dns-external-access.md) ·
