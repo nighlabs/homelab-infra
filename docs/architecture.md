@@ -25,7 +25,8 @@ clients / agents
 │  datastore: SQLite via kine (no etcd)   HA: Proxmox restarts the VM
 │  CNI: Calico, eBPF dataplane, BGP-routed pods (no encap), no kube-proxy
 │  LB IPs: Calico LoadBalancer IPAM, advertised over BGP to pfSense (FRR)
-│  planned: NGINX Gateway Fabric · cert-manager · ceph-csi · ESO
+│  ingress: NGINX Gateway Fabric (Gateway API), one shared Gateway
+│  planned: cert-manager · ceph-csi · ESO
 │           Postgres · Redis · Qdrant · LiteLLM · RAG/agent · Open WebUI · OTel
 │  storage: ceph-csi → the existing Proxmox Ceph (RBD + CephFS)
 │  provisioning: Ansible    delivery: Flux, from a cosign-signed OCI artifact
@@ -549,12 +550,21 @@ NIC and the networkd unit (a silent fallback to 1500 defeats the point).
 
 ### 4.5 Ingress / Gateway
 
-*Status: next milestone.* [ADR-0013](decisions/0013-ingress-certs-dns-external-access.md).
-**Gateway API via NGINX Gateway Fabric** — cert-manager and external-dns both
-speak Gateway API. The Gateway's LoadBalancer Service gets its IP from Calico
-(§4.4) and uses `externalTrafficPolicy: Cluster` (source IP is preserved by
-eBPF; `Local` only for a Service that genuinely needs traffic pinned to
-backend-bearing nodes).
+[ADR-0013](decisions/0013-ingress-certs-dns-external-access.md).
+**Gateway API via NGINX Gateway Fabric** (`gitops/infrastructure/nginx-gateway-fabric/`)
+— cert-manager and external-dns both speak Gateway API. One shared `Gateway`
+(namespace `nginx-gateway`, routes attach from any namespace); NGF 2.x
+provisions its data plane **per Gateway**, so that object is what creates the
+nginx Deployment + LoadBalancer Service. The Service gets its IP from Calico
+(§4.4) and uses `externalTrafficPolicy: Cluster` — under eBPF both policies
+preserve the source IP; `Cluster` also balances across all endpoints, while
+`Local` balances per-node via ECMP `/32`s, so `Local` is only for a Service
+that genuinely needs traffic pinned to backend-bearing nodes. The Gateway API
+CRDs (standard channel) are vendored in `gitops/crds/gateway-api/` — they
+belong to no chart, and `httproutes` exceeds the client-side apply limit
+([ADR-0020](decisions/0020-crd-tier-vendored-server-side-apply.md)'s rule).
+The HTTP listener serves today; the HTTPS listener arrives with the wildcard
+cert (§4.6).
 
 ### 4.6 Certificates
 
@@ -673,10 +683,13 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
 5. ✅ **Flux** bootstrapped: operator + sync-less FluxInstance, signed OCI
    source verified (`SourceVerified=True`), all tiers Ready, Calico adopted
    without a diff war. The whole chain verified on one from-scratch `site.yml`.
-6. ⬜ **From Git, in dependency order:** NGINX Gateway Fabric + cert-manager
-   (DNS-01 wildcard) → ceph-csi-operator + StorageClasses → External Secrets
-   Operator + Bitwarden SDK Server → Postgres + Redis → LiteLLM → confirm a
-   chat completion routes end-to-end to the Mac.
+6. **From Git, in dependency order:** ✅ NGINX Gateway Fabric — the first
+   Flux-only delivery: Gateway API CRD tier + NGF 2.6.7 + the shared Gateway;
+   LB IP allocated and reachable cross-segment, source IP preserved under
+   `Cluster`. Then ⬜ cert-manager (DNS-01 wildcard) → ceph-csi-operator +
+   StorageClasses → External Secrets Operator + Bitwarden SDK Server →
+   Postgres + Redis → LiteLLM → confirm a chat completion routes end-to-end
+   to the Mac.
 7. ⬜ **Then:** Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 8. ⬜ **Split DNS + access:** internal resolver, Tailscale split DNS,
    Cloudflare Tunnel → Gateway; verify source-IP preservation on both paths.

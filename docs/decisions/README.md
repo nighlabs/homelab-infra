@@ -34,7 +34,7 @@ Rules:
 | [0010](0010-calico-over-cilium.md) | CNI: Calico | Accepted |
 | [0011](0011-cluster-cidrs-never-cgnat.md) | Cluster CIDRs live in `10.0.0.0/8` — never CGNAT | Accepted |
 | [0012](0012-metallb-bgp.md) | Load balancer: MetalLB in BGP mode | **Superseded by 0018** |
-| [0013](0013-ingress-certs-dns-external-access.md) | Edge: NGINX Gateway Fabric, cert-manager DNS-01 wildcard, split-horizon DNS, Cloudflare Tunnel + Tailscale | Accepted — not yet implemented; internal resolver **Open** |
+| [0013](0013-ingress-certs-dns-external-access.md) | Edge: NGINX Gateway Fabric, cert-manager DNS-01 wildcard, split-horizon DNS, Cloudflare Tunnel + Tailscale | Accepted — ingress half implemented (2026-09-05); certs/DNS/access not yet; internal resolver **Open** |
 | [0014](0014-observability-managed-backend.md) | Observability: vendor-neutral collector in-cluster, managed backend out-of-band | Accepted — not yet implemented |
 | [0015](0015-backups-nas-s3-and-break-glass.md) | Backups: NAS as S3 target; crown-jewels / break-glass | Accepted — not yet implemented |
 

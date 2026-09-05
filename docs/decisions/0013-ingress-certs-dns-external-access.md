@@ -1,7 +1,7 @@
 # ADR-0013: Edge: NGINX Gateway Fabric, cert-manager DNS-01 wildcard, split-horizon DNS, Cloudflare Tunnel + Tailscale, source-IP preservation
 
 - **Date:** 2026-07 (initial design)
-- **Status:** Accepted — not yet implemented; the internal-resolver approach is still **Open**
+- **Status:** Accepted — ingress half implemented (NGF + shared Gateway, 2026-09-05, see worklog); certs, DNS and external access not yet; the internal-resolver approach is still **Open**
 - **Supersedes / related:** [ADR-0012](0012-metallb-bgp.md) → [ADR-0018](0018-calico-bgp-replaces-metallb.md) (where the Gateway's LoadBalancer IP comes from); [ADR-0011](0011-cluster-cidrs-never-cgnat.md); [ADR-0024](0024-calico-ebpf-dataplane-no-kube-proxy.md) (changes the source-IP story); `../architecture.md` §4.5–§4.10
 
 ## Context
