@@ -13,6 +13,45 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-05 — NGINX Gateway Fabric deployed; the first Flux-only delivery, verified
+
+**Related:** [ADR-0013](decisions/0013-ingress-certs-dns-external-access.md) ·
+[ADR-0020](decisions/0020-crd-tier-vendored-server-side-apply.md) ·
+[ADR-0024](decisions/0024-calico-ebpf-dataplane-no-kube-proxy.md) ·
+`gitops/infrastructure/nginx-gateway-fabric/` · commit `2b2f12a` (#9)
+
+First delivery through the pure GitOps path — merge → CI signs → Flux applies —
+with **no Ansible priming anywhere**. Verified against the live cluster within
+minutes of the merge (source poll nudged with a `reconcile.fluxcd.io/requestedAt`
+annotation rather than waiting out the 10m interval):
+
+| Evidence | |
+|---|---|
+| Source | `SourceVerified=True` on `latest@sha256:3d08dd4f…`; all four tiers Ready at that digest |
+| CRD tier | all 8 `gateway.networking.k8s.io` CRDs **Established** (Gateway API v1.5.1 standard bundle, vendored from NGF's repo — `httproutes` ~431 KB exceeds the client-side apply limit, same admission rule as Calico) |
+| HelmRelease | NGF **2.6.7** install succeeded, via `OCIRepository` + `chartRef` (NGF publishes charts only to OCI — first use of that pattern here) |
+| Gateway | GatewayClass `nginx` **Accepted**; Gateway **Accepted + Programmed** — NGF 2.x provisions the data plane *per Gateway*, so creating it is what spun up the `gateway-nginx` Deployment + LoadBalancer Service |
+| LB allocation | `EXTERNAL-IP` assigned from `${lb_range}` immediately — the #12890 workaround doing its job |
+| Reachability | `HTTP 404` from nginx in ~9 ms, curled from the control Mac on a **different segment** — the BGP-advertised route carries real traffic |
+| Source IP | the nginx access log shows the Mac's **real address** (`x.x.x.N` on its own segment, not a node IP) under `externalTrafficPolicy: Cluster` — ADR-0024's source-IP claim now proven at the Gateway itself |
+
+Two notes for later readers:
+
+- The chart's `externalTrafficPolicy` default is `Local`; we override to
+  `Cluster` deliberately. Under the eBPF dataplane **both** policies preserve
+  the client IP — the difference is load distribution: `Cluster` spreads across
+  every endpoint cluster-wide, while `Local` balances **per node** (pfSense
+  ECMP over `/32`s), which skews with uneven scheduling and can briefly
+  blackhole during rollouts until the `/32` withdraws. Pinning traffic to
+  backend-holding nodes is `Local`'s only remaining legitimate use. Academic on
+  today's single node; the precedent is what matters.
+- Upstream's `safe-upgrades` ValidatingAdmissionPolicy (ships in the CRD
+  bundle) is kept — it refuses CRD downgrades and standard→experimental channel
+  swaps.
+
+**Next:** cert-manager (DNS-01 wildcard), then the HTTPS listener + wildcard
+cert on this Gateway.
+
 ## 2026-08-30 — From-scratch `site.yml` run verified; the 1→2→4→3 sequence is closed
 
 **Related:** [ADR-0028](decisions/0028-gitops-delivery-signed-oci-syncless-fluxinstance.md) ·
