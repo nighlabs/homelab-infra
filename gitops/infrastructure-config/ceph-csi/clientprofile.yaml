@@ -1,0 +1,30 @@
+# Per-cluster ceph-csi configuration: which CephConnection to use, and where in
+# CephFS this Kubernetes cluster is allowed to live.
+#
+# ⚠ THE NAME IS THE clusterID. Every StorageClass (and later every
+# VolumeSnapshotClass) must carry `clusterID: ceph` to match. Rename this and
+# every volume operation fails to resolve its cluster config — at PVC bind time,
+# not at reconcile time.
+#
+# The name is a fixed literal rather than ${...} on purpose: it is meaningful
+# only inside this cluster, so a second cluster reusing it collides with
+# nothing. It is not environment-revealing and has no Ceph-side counterpart to
+# drift against — unlike the pool and filesystem names below it.
+apiVersion: csi.ceph.io/v1
+kind: ClientProfile
+metadata:
+  name: ceph
+  namespace: ceph-csi
+spec:
+  cephConnectionRef:
+    name: ceph
+  cephFs:
+    # Confines this cluster to /volumes/<group> inside PVE's EXISTING CephFS.
+    # The cephx client's mds cap is scoped to exactly that path, so this is not
+    # merely a convention — a mismatch is an EACCES, not a stray directory.
+    # PVE's own snippets/ISOs/backups live outside /volumes entirely.
+    subVolumeGroup: ${ceph_subvolume_group}
+  # RBD needs no per-profile config: the pool is named on the StorageClass, and
+  # we use no RADOS namespace. Present-but-empty is meaningful — it is what
+  # tells the operator to build RBD config for this clusterID at all.
+  rbd: {}

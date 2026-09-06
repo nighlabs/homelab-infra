@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Vendored ceph-csi-operator CRDs. Plain `resources:` — NOT a kustomize
+# Component, and no patches: this is upstream output, and the only supported
+# edit is a re-vendor at a new operator version.
+#
+# Why they're here rather than installed by the chart (ADR-0031): the chart's
+# `operatorconfig` (536 KB) and `driver` (505 KB) CRD templates are each roughly
+# DOUBLE the 262144-byte client-side apply limit, and helm-controller cannot
+# apply server-side. Unlike Calico's chart there is no `crds.enabled` toggle to
+# route around it — both files are unconditional, the only template expression
+# in either being a labels helper. kustomize-controller applies server-side by
+# default, which is what makes this tier work.
+#
+# Regenerate (bump the tag; keep it in lockstep with
+# ../../infrastructure/ceph-csi-operator/, in the SAME commit):
+#   curl -sfL https://raw.githubusercontent.com/ceph/ceph-csi-operator/v1.0.4/deploy/multifile/crd.yaml -o crd.yaml
+#
+# Five CRDs: cephconnections, clientprofiles, clientprofilemappings, drivers,
+# operatorconfigs — all `csi.ceph.io`.
+#
+# ⚠ crd.yaml contains bare `$` characters (inside CEL and regex validation
+# rules). That is safe ONLY because the `crds` Flux Kustomization deliberately
+# has no `postBuild` — see deployment/<cluster>/crds.yaml. Do not add
+# substitution to this tier: `$` patterns here would be scanned, and under the
+# strict gate could hard-fail the tier that everything else dependsOn.
+resources:
+  - crd.yaml

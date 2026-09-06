@@ -21,3 +21,10 @@ resources:
   # installs, so they live in ../infrastructure-config (a separate Flux
   # Kustomization that dependsOn this one).
   - cert-manager
+  # Persistent storage (ADR-0006): the ceph-csi-operator controller, against the
+  # EXISTING Proxmox Ceph. Vendored upstream manifests rather than a HelmRelease
+  # — forced, not preferred (ADR-0031): two of its CRD templates are each about
+  # double the client-side apply limit and the chart has no toggle to skip them.
+  # Its CRDs are therefore in ../crds/ceph-csi; its CRs and the two
+  # StorageClasses are in ../infrastructure-config/ceph-csi.
+  - ceph-csi-operator

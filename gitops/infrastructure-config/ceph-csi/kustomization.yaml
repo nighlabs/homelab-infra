@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# ceph-csi CRs + StorageClasses (ADR-0006). These are consumed by the operator
+# in ../../infrastructure/ceph-csi-operator/, which is why they live a tier down
+# — this tier's Flux Kustomization dependsOn `infrastructure` with wait: true.
+#
+# ⚠ NO `namespace:` transformer here, unlike the operator directory. StorageClass
+# is cluster-scoped, and the transformer stamps a namespace on anything it cannot
+# prove otherwise — the trap that forced Calico's BGP CRs into their own
+# directory. Every namespaced resource below names its namespace explicitly.
+# Check with `kubectl kustomize` before adding anything.
+#
+# Deliberately absent: VolumeSnapshotClass. k3s ships no external
+# snapshot-controller, and nothing needs snapshots yet — see drivers.yaml for
+# what enabling them later involves (a controller, its CRDs, one Driver field).
+resources:
+  # Order is readability only — kustomize sorts on apply, and the operator
+  # reconciles these independently.
+  - cephconnection.yaml
+  - clientprofile.yaml
+  - drivers.yaml
+  - storageclasses.yaml

@@ -1,0 +1,54 @@
+# The two CSI drivers the operator deploys (ADR-0006: RWO block + RWX file).
+#
+# ⚠ metadata.name is NOT free-form. ceph-csi derives the CSI driver name from
+# it, so it must be exactly `rbd.csi.ceph.com` / `cephfs.csi.ceph.com` — the
+# same strings the StorageClasses name as `provisioner`. A different name
+# produces a driver nothing routes to.
+#
+# The Driver CR's NAMESPACE is where the plugin pods run, which is why it must
+# be the operator's namespace: the operator creates their ServiceAccounts there
+# (prefix `ceph-csi-operator-`) and ../../infrastructure/ceph-csi-operator/
+# binds exactly those. See that directory's kustomization.yaml.
+---
+apiVersion: csi.ceph.io/v1
+kind: Driver
+metadata:
+  name: rbd.csi.ceph.com
+  namespace: ceph-csi
+spec:
+  # ⚠ Load-bearing for ADR-0006's Non-Graceful Node Shutdown requirement. When a
+  # node is tainted `node.kubernetes.io/out-of-service`, this lets the driver
+  # fence it — blocklisting its Ceph client — so an RBD image can be safely
+  # re-attached on a healthy node. Without it a hard-failed node's RWO volume
+  # does not fail over; the rescheduled pod waits on an attachment that never
+  # detaches. That is the whole reason the cephx user carries
+  # `allow command "osd blocklist"` via `profile rbd` on mon.
+  enableFencing: true
+  # Snapshots deliberately deferred: k3s ships no external snapshot-controller,
+  # and nothing needs snapshots yet. Pinned explicitly rather than left to the
+  # default so the choice is visible.
+  #
+  # To enable later: install the snapshot-controller + its CRDs, then flip this
+  # to `volumeSnapshot` and add a VolumeSnapshotClass with `clusterID: ceph`.
+  # Additive — no change to the StorageClasses, CephConnection or ClientProfile.
+  snapshotPolicy: none
+  # attachRequired is left at its default (true) on purpose. Upstream warns that
+  # disabling it on RWO/RBD risks DATA CORRUPTION and breaks csi-addons
+  # operations, because there are no VolumeAttachments to say which node holds
+  # the volume. It speeds up pod start; it is not worth it here.
+---
+apiVersion: csi.ceph.io/v1
+kind: Driver
+metadata:
+  name: cephfs.csi.ceph.com
+  namespace: ceph-csi
+spec:
+  # The Flatcar kernel ships ceph.ko (verified on 6.12.102 alongside rbd.ko and
+  # libceph.ko), so pin the kernel client rather than letting autodetect fall
+  # back to ceph-fuse — the fuse client is slower and, per upstream, can disrupt
+  # applications across an upgrade. Kernel quotas need >= 4.17; we are well past.
+  cephFsClientType: kernel
+  # See the RBD driver above.
+  snapshotPolicy: none
+  # No enableFencing: fencing is an RBD concern. CephFS is RWX — a dead node
+  # holding a mount does not block another node from mounting the same subvolume.

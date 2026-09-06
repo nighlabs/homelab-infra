@@ -1,0 +1,26 @@
+# How to reach the EXISTING Proxmox Ceph cluster (ADR-0006). Connection details
+# only — no credentials: the cephx keys are Ansible-seeded Secrets in this
+# namespace, referenced by the StorageClasses.
+apiVersion: csi.ceph.io/v1
+kind: CephConnection
+metadata:
+  name: ceph
+  namespace: ceph-csi
+spec:
+  # ⚠ These MUST be Ceph PUBLIC network addresses — the only Ceph network a k3s
+  # node ever touches (root CLAUDE.md). The cluster/replication network is
+  # untagged on the same bond, so an address from there looks plausible and
+  # routes nowhere from a node. render-ceph-setup.yml asserts they're on the
+  # public subnet; ceph-k8s-keys.sh prints the right ones.
+  #
+  # ⚠ SUBSTITUTED AS A WHOLE LIST, which is unusual here and deliberate.
+  # `monitors` is a []string, and post-build substitution is string-level — the
+  # "substitution can't go here" case in gitops/CLAUDE.md. Rather than SOPS or a
+  # hard-coded ${ceph_mon_1..3} that bakes in a mon count, cluster-topology
+  # carries ONE value that is already a complete JSON array (valid YAML flow
+  # sequence), seeded via `ceph_csi.mons | to_json`. Adding or removing a mon is
+  # then a BWS edit and a re-seed, with no change to this file.
+  #
+  # The to_json quoting is load-bearing: an unquoted host:port is not a valid
+  # YAML scalar in flow context, so a hand-built list would silently misparse.
+  monitors: ${ceph_mons_yaml}
