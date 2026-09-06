@@ -513,6 +513,61 @@ base_domain: "{{ bws.base_domain }}"
 # challenges, which is all cert-manager needs.
 cloudflare_api_token: "{{ bws.cloudflare_api_token }}"
 
+# --- Storage: ceph-csi against the existing Proxmox Ceph (ADR-0006) ----------
+# ⚠ That Ceph cluster ALREADY SERVES LIVE PROXMOX VM STORAGE. Everything here
+# is additive — a new pool and a new subvolumegroup that PVE does not use — and
+# nothing in this repo may touch PVE's VM pool or the root of its CephFS. That
+# pool is deliberately NOT named anywhere here — the guardrail is that ours is a
+# different pool and our caps are scoped to ours. The Ceph-side objects are
+# created ONCE, by hand, from a rendered script:
+# docs/proxmox-ceph-k8s-setup.md + playbooks/render-ceph-setup.yml.
+#
+# The cleartext/BWS split here is narrower than elsewhere, deliberately:
+# names WE choose for objects that don't exist yet reveal nothing about the
+# environment, so they stay readable in the runbook and in gitops/. Names and
+# addresses that describe the EXISTING cluster are vaulted, per the root
+# CLAUDE.md rule that storage names are environment-revealing.
+ceph_csi:
+  # --- Ours, cleartext: created by the runbook, generic by construction ------
+  # New RBD pool for Kubernetes RWO volumes. NEVER the pool PVE stores VM disks
+  # in — the setup script refuses if this name is a registered PVE storage.
+  rbd_pool: "k8s-rbd"
+  # Subvolumegroup inside PVE's EXISTING CephFS (the chosen layout — a second
+  # filesystem would need a second active MDS, spending the standby redundancy
+  # that PVE's production filesystem relies on). ceph-csi confines itself to
+  # /volumes/<group>, and the cephfs client's mds cap is scoped to that path.
+  subvolume_group: "k8s"
+  # cephx entities, created by the runbook as `client.<name>`. Two of them, each
+  # scoped to one driver: an RBD-side compromise must not carry CephFS caps.
+  rbd_client: "k8s-rbd"
+  cephfs_client: "k8s-cephfs"
+  # Kubernetes namespace the operator and both drivers live in.
+  namespace: "ceph-csi"
+
+  # --- Theirs, vaulted: describes the existing cluster -----------------------
+  # Mon addresses, ONE PER LINE in BWS (same shape as dns_servers /
+  # ssh_authorized_keys). These are on the Ceph PUBLIC network — the only Ceph
+  # network a k3s node ever touches (root CLAUDE.md). Never the cluster network.
+  mons: "{{ bws.ceph_mons.splitlines() | map('trim') | reject('equalto', '') | list }}"
+  # Ceph cluster fsid. Doubles as ceph-csi's `clusterID`, which is why it
+  # reaches gitops/ as a placeholder rather than a literal.
+  fsid: "{{ bws.ceph_fsid }}"
+  # PVE's existing CephFS name (vaulted as a storage name, like
+  # proxmox_snippet_storage). We do not create this — we join it.
+  fs_name: "{{ bws.ceph_fs_name }}"
+
+# The two cephx keys. CREDENTIALS (root CLAUDE.md tiers): BWS-managed, seeded by
+# bootstrap-cluster.yml into the ceph-csi namespace, never in any manifest.
+#
+# ⚠ Bootstrap-secret tier, and that is a CONSEQUENCE OF ORDERING, not a
+# preference: ceph-csi lands before ESO in the §6 chain, so on a from-scratch
+# rebuild ESO cannot supply these. Same open question as the cert-manager token
+# — whether ESO later ADOPTS them (docs/decisions/README.md, "Open questions").
+# Unlike that token, these are NOT upstream of ESO, so if the adoption ADR ever
+# moves ceph-csi below ESO these seeds could genuinely retire.
+ceph_k8s_rbd_key: "{{ bws.ceph_k8s_rbd_key }}"
+ceph_k8s_cephfs_key: "{{ bws.ceph_k8s_cephfs_key }}"
+
 # --- Bitwarden Secrets Manager connection -----------------------------------
 # How playbooks/tasks/load-bws-secrets.yml reaches BWS. The values below are
 # NOT credentials — the only credential is the machine-account access token,
