@@ -57,9 +57,24 @@ if ceph fs get "${FS_NAME}" >/dev/null 2>&1; then
   else
     bad "subvolumegroup '${SVG}' missing — run ceph-k8s-setup.sh"
   fi
-  # One active MDS is enough to serve, but zero standbys means an MDS failure is
-  # an outage for PVE's storage too. Informational, not a gate.
-  printf '        MDS: %s\n' "$(ceph fs status "${FS_NAME}" 2>/dev/null | grep -c 'up:standby' || true) standby"
+  # MDS redundancy is why we share PVE's filesystem instead of creating a second
+  # one (a second fs needs a second ACTIVE MDS, spending a standby). So report it
+  # accurately — a wrong reading here argues for the wrong layout.
+  #
+  # ⚠ Read this from `ceph fs dump`, NOT `ceph fs status`. `fs status` renders a
+  # human table whose STATE column says `active`, and lists standbys under a
+  # `STANDBY MDS` heading — the string `up:standby` appears NOWHERE in it, so
+  # grepping for that always returns 0 and silently reports no redundancy.
+  # (Got exactly that wrong on 2026-09-07; `ceph mds` in the Proxmox API said
+  # 1 active + 2 standby at the same moment.) Standbys are cluster-wide, not
+  # per-filesystem, which is fine while this is the only filesystem.
+  STANDBYS=$(ceph fs dump -f json 2>/dev/null \
+             | python3 -c 'import sys,json; print(len(json.load(sys.stdin).get("standbys",[])))' 2>/dev/null || echo "?")
+  if [[ ${STANDBYS} == "0" ]]; then
+    bad "0 standby MDS — an MDS failure is an outage for PVE's storage too, and the shared-filesystem layout assumes spare standbys"
+  else
+    ok "standby MDS: ${STANDBYS}"
+  fi
 else
   bad "filesystem '${FS_NAME}' does not exist"
 fi
