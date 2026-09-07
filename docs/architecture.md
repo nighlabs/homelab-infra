@@ -26,7 +26,8 @@ clients / agents
 │  CNI: Calico, eBPF dataplane, BGP-routed pods (no encap), no kube-proxy
 │  LB IPs: Calico LoadBalancer IPAM, advertised over BGP to pfSense (FRR)
 │  ingress: NGINX Gateway Fabric (Gateway API), one shared Gateway
-│  planned: cert-manager · ceph-csi · ESO
+│  certs: cert-manager, Let's Encrypt DNS-01 wildcard, HTTPS on the Gateway
+│  planned: ESO
 │           Postgres · Redis · Qdrant · LiteLLM · RAG/agent · Open WebUI · OTel
 │  storage: ceph-csi → the existing Proxmox Ceph (RBD + CephFS)
 │  provisioning: Ansible    delivery: Flux, from a cosign-signed OCI artifact
@@ -325,7 +326,7 @@ in dependency order:
 
 ### 3.5 Persistent storage — ceph-csi against the existing Proxmox Ceph
 
-*Status: designed, not yet deployed.* [ADR-0006](decisions/0006-ceph-csi-external-proxmox-ceph.md).
+[ADR-0006](decisions/0006-ceph-csi-external-proxmox-ceph.md) · [ADR-0031](decisions/0031-ceph-csi-operator-vendored-manifests-not-helm.md) · Ceph-side runbook: [`proxmox-ceph-k8s-setup.md`](proxmox-ceph-k8s-setup.md).
 
 - Reuse the **Proxmox Ceph** cluster; never a second Ceph inside k8s. That
   cluster serves live production VM storage today — any change to it (mons,
@@ -336,10 +337,21 @@ in dependency order:
 - RBD volumes aren't node-bound: a dead worker → the pod reschedules and the
   volume re-attaches on a healthy node. Enable Non-Graceful Node Shutdown (the
   `out-of-service` taint) so RBD detaches from a hard-failed node.
-- **Setup checklist:** dedicated Ceph pool + restricted client user for k8s
-  (don't touch PVE's VM pool); the second vNIC on the Ceph public VLAN is
-  already in place; match the ceph-csi version to the Proxmox Ceph release;
-  watch RBD/CephFS image features vs the Flatcar kernel.
+- **On the Ceph side:** a dedicated RBD pool (`k8s-rbd`) that PVE does not
+  know about, so Proxmox can never place VM disks in it; RWX joins PVE's
+  **existing** CephFS under its own subvolumegroup (`/volumes/k8s`) rather than
+  adding a second filesystem, which would need a second *active* MDS. Two
+  cephx users, one per driver: `client.k8s-cephfs` needs `mgr "allow rw"`
+  (subvolume ops go through the mgr `volumes` module) and splitting keeps that
+  off the RBD credential. Created once, by hand, from a rendered script —
+  [`proxmox-ceph-k8s-setup.md`](proxmox-ceph-k8s-setup.md).
+- **`imageFeatures: layering` only.** krbd supports neither `object-map`,
+  `fast-diff` nor `deep-flatten`; an image created with them fails at *attach*
+  on the node, not at PVC creation.
+- **Delivered as vendored manifests, not a HelmRelease** — forced, not
+  preferred: two of the chart's CRD templates are each ~2× the client-side
+  apply limit and it has no toggle to skip them (ADR-0031). CRDs live in the
+  `crds/` tier, the third occupant.
 - **Upgrade order:** confirm version overlap → upgrade Proxmox Ceph (mons → mgr
   → OSDs, `require-osd-release`) → upgrade ceph-csi via the operator → test a
   PVC.
@@ -700,17 +712,21 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
    `Cluster`. ✅ cert-manager — DNS-01 wildcard issued, HTTPS live on the
    Gateway with a valid LE chain, `:80` redirect-only; the
    `infrastructure-config` tier gates `apps` on certs actually working. Then
-   ⬜ ceph-csi-operator + StorageClasses → External Secrets Operator +
-   Bitwarden SDK Server → Postgres + Redis → LiteLLM → confirm a chat
-   completion routes end-to-end to the Mac.
+   ✅ ceph-csi — ceph-csi-operator v1.0.4 against the existing Proxmox Ceph
+   (Squid 19.2.3): `ceph-rbd` (RWO, cluster default) and `cephfs` (RWX), both
+   provisioning, mounting and reclaiming; RBD mapped by krbd. Then
+   ⬜ External Secrets Operator + Bitwarden SDK Server → Postgres + Redis →
+   LiteLLM → confirm a chat completion routes end-to-end to the Mac.
 7. ⬜ **Then:** Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 8. ⬜ **Split DNS + access:** internal resolver, Tailscale split DNS,
    Cloudflare Tunnel → Gateway; verify source-IP preservation on both paths.
 9. ⬜ **Add the CP taint and provision workers** (1 CP + 3 workers). Node 2's
    join is a **dataplane event** — the first moment the BGP mesh carries real
    traffic, and mixed eBPF/iptables nodes are unsupported.
-10. ⬜ **Ceph:** dedicated k8s pool + restricted client user on the Proxmox Ceph
-    (can happen in parallel; doesn't block anything above ceph-csi).
+10. ✅ **Ceph:** dedicated k8s pool (`k8s-rbd`, unknown to PVE) + a
+    subvolumegroup in PVE's existing CephFS + two restricted cephx users, one
+    per driver. Created from a rendered script, verified 16/16 —
+    [`proxmox-ceph-k8s-setup.md`](proxmox-ceph-k8s-setup.md).
 
 **Mac tier**
 
@@ -764,5 +780,11 @@ Tracked with status **Open** or **Proposed** in the
   ([ADR-0020](decisions/0020-crd-tier-vendored-server-side-apply.md)).
 - Control-node kubeconfig hygiene (the cluster-admin cert that
   `bootstrap-cluster.yml` leaves at `ansible/.kube/`) — see `ansible/CLAUDE.md`.
+- ⚠ `wait: true` on `infrastructure-config` does NOT gate on ceph-csi's driver
+  pods: `Driver`/`ClientProfile`/`CephConnection` expose an empty status, and
+  kstatus treats a statusless resource as Current at once. So **`apps` does not
+  gate on storage being functional** — unlike cert-manager, whose `Certificate`
+  carries a real Ready condition. Anything that must not start before storage
+  works needs its own check.
 - Tests still owed: ceph-csi version vs Proxmox Ceph + kernel features on a real
   PVC; the actual API blip during a Proxmox HA restart of the CP VM.

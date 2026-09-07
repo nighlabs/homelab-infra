@@ -43,15 +43,18 @@ deployment/<cluster>/     # Flux entrypoints — the ONE path Flux is told about
 crds/                     # CRDs that must be Established BEFORE controllers
   calico/                   #   vendored, server-side applied (v3.32 chart carries no CRDs; 3 exceed the CSA limit)
   gateway-api/              #   vendored standard-channel bundle (belongs to NO chart; httproutes exceeds the CSA limit)
+  ceph-csi/                 #   vendored (operatorconfig 536 KB + driver 505 KB, each ~2x the CSA limit; chart has NO toggle)
 infrastructure/           # controllers, in dependency order:
   calico/                   #   INSTALLS Calico (operator chart + shared values.yaml + endpoint ConfigMap)
   calico-bgp/               #   CONFIGURES it: BGP CRs, LB IPAM pool, #12890 RBAC workaround
   nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart, shared Gateway, https redirect
   cert-manager/             #   controller only — its CRs live a tier down
-  kustomization.yaml        #   next: ceph-csi-operator -> ESO + Bitwarden SDK -> ...
+  ceph-csi-operator/        #   VENDORED manifests, not a HelmRelease (ADR-0031)
+  kustomization.yaml        #   next: ESO + Bitwarden SDK -> ...
 infrastructure-config/    # CRs CONSUMED BY those controllers (CRDs arrive with the chart,
-  cert-manager/           #   so same-pass apply fails): ClusterIssuers + wildcard Certificate;
-                          #   later ceph-csi StorageClasses, ESO SecretStores
+  cert-manager/           #   so same-pass apply fails): ClusterIssuers + wildcard Certificate
+  ceph-csi/               #   CephConnection, ClientProfile, 2 Drivers, 2 StorageClasses
+                          #   later: ESO SecretStores
 apps/                     # workloads only (empty until the infra layer is up)
 ```
 
@@ -71,6 +74,15 @@ apps/                     # workloads only (empty until the infra layer is up)
   `infrastructure`, so nothing reconciles before the controllers are Ready.
   Ordering *within* a tier is Flux `dependsOn` between HelmReleases /
   Kustomizations.
+- ⚠ **`wait: true` only gates on what kstatus can SEE.** A resource with no
+  `status` is treated as Current immediately, so a tier full of statusless CRs
+  goes Ready at once. `infrastructure-config` therefore does **not** gate on
+  ceph-csi's driver pods (`Driver`/`ClientProfile`/`CephConnection` all expose
+  an empty status) — it went Ready while they were still `ContainerCreating`.
+  Consequence: **`apps` does not gate on storage being functional.** Contrast
+  cert-manager, whose `Certificate` carries a real Ready condition, which is why
+  that tier's gate genuinely means "issuance worked". Don't generalise from it:
+  before relying on `wait: true`, check the resource actually reports status.
 - **`postBuild.substituteFrom` is on `infrastructure`, `infrastructure-config`
   and `apps`, deliberately not on `crds` or the root.** kustomize-controller only runs substitution when
   `spec.postBuild` is set; leaving it off `crds` keeps 3 MB of generated CRD
@@ -126,6 +138,12 @@ hand-edited) on every `calico_version` bump, in the same commit as `vars.yml`
 - **Don't route other controllers' CRDs here** just because they have some.
   Calico qualifies because of the size limit; a chart whose CRDs fit is fine
   as a HelmRelease.
+- **Three occupants now, from three unrelated charts** (Calico, Gateway API,
+  ceph-csi), so this tier is load-bearing rather than a Calico quirk. ceph-csi
+  is the strictest case: its chart has **no `crds.enabled` toggle at all**, so
+  the whole operator is installed from vendored manifests (ADR-0031). Before
+  assuming a chart can install its own CRDs, check the rendered size —
+  `helm template ... | ...` — against 262144 bytes per object.
 - **Open follow-on:** render the CRDs at OCI build time so the 3 MB stops
   living in Git. Two constraints must survive: the version must come from the
   same pin as `calico_version`, and `bootstrap-cluster.yml` primes from the
@@ -170,6 +188,15 @@ spec:
 - `$${var}` escapes a literal; `$var` is untouched; substitution into a Secret
   needs `.stringData`; per-resource opt-out is the annotation
   `kustomize.toolkit.fluxcd.io/substitute: disabled`.
+- **A YAML LIST can be substituted as one value.** `postBuild` is string-level,
+  so `${x}` cannot expand into multiple sequence items — the case this file
+  calls "substitution can't go here". It does not always need SOPS: seed ONE
+  value that is already a complete JSON array (valid YAML flow sequence) and
+  substitute it whole. `CephConnection.spec.monitors: ${ceph_mons_yaml}` does
+  this, from `ceph_csi.mons | to_json` in `bootstrap-cluster.yml`, so the mon
+  count lives in BWS rather than being baked into the manifest as
+  `${ceph_mon_1..3}`. The `to_json` quoting is load-bearing — an unquoted
+  `host:port` is not a valid scalar in flow context.
 - **Keep substituted resources out of kustomize `Components`** —
   [kustomize-controller#1506](https://github.com/fluxcd/kustomize-controller/issues/1506).
   Plain `resources:` entries only.
@@ -240,9 +267,8 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 
 ## Next
 
-Everything downstream of certs, in dependency order (the `NginxProxy`
-RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013):
-ceph-csi-operator + StorageClasses → ESO +
+Everything downstream of storage, in dependency order (the `NginxProxy`
+RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013): ESO +
 Bitwarden SDK Server (its access token is Ansible-seeded from the
 `homelab-infra` BWS project; app secrets come from a *separate* project —
 ADR-0027; **open, decide at this milestone:** whether ESO adopts the

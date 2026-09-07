@@ -13,6 +13,103 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-07 — ceph-csi live against the Proxmox Ceph: both StorageClasses provisioning, RBD on krbd
+
+**Related:** [ADR-0006](decisions/0006-ceph-csi-external-proxmox-ceph.md) ·
+[ADR-0031](decisions/0031-ceph-csi-operator-vendored-manifests-not-helm.md) ·
+[`proxmox-ceph-k8s-setup.md`](proxmox-ceph-k8s-setup.md) ·
+`gitops/{crds,infrastructure,infrastructure-config}/ceph-csi*` · commit `0d3b44c` (#16)
+
+ceph-csi-operator **v1.0.4** against the existing Proxmox Ceph (**Squid
+19.2.3**), with `ceph-rbd` (RWO, **cluster default**) and `cephfs` (RWX). The
+last infrastructure controller before ESO.
+
+The Ceph side is a new kind of artifact here: a generated-then-run-by-hand
+procedure ([`proxmox-ceph-k8s-setup.md`](proxmox-ceph-k8s-setup.md) +
+`render-ceph-setup.yml`), the same shape as the pfSense/FRR runbook and for the
+same reason — live production gear with no safe automation path. Concretely:
+`ceph` reads `/etc/pve/ceph.conf` out of pmxcfs (root-only), the `provisioner`
+SSH user's sudo is scoped to `qm`, and **cephx user creation is not in the
+Proxmox API at all**.
+
+| Evidence | |
+|---|---|
+| Ceph side | `ceph-k8s-verify.sh` **16/16 PASS** on `phoenix-1`: pool `k8s-rbd` size 3/min_size 2/app rbd, subvolumegroup `k8s` at `/volumes/k8s`, all 7 caps on both users, plus the negative check (RBD osd cap pool-scoped, no wildcard) |
+| Guardrail | `k8s-rbd` is **not** registered as a PVE storage — Proxmox cannot place VM disks in the Kubernetes pool |
+| Path | 3 mons reachable on msgr1+msgr2; **jumbo 8996 end-to-end, DF, unfragmented**; `rbd.ko`/`ceph.ko`/`libceph.ko` present on Flatcar 6.12.102 |
+| Source | `SourceVerified=True` on `latest@sha256:bfe98a5b…`; all 5 CRDs **Established** via server-side apply |
+| Drivers | operator + both ctrlplugins (4/4) + both nodeplugins (2/2) Running |
+| **RBD PVC** | Bound in ~1 s **without naming a class** (proving the default annotation); mounted `/dev/rbd0 … type ext4` — the **kernel** client mapped it |
+| **CephFS PVC** | Bound RWX; mounted `type ceph`, `name=k8s-cephfs`, path `/volumes/k8s/csi-vol-…`, `mon_addr=` all three mons on the Ceph public net |
+| Lifecycle | Wrote and read back on both, then deleted: **no orphaned PVs** — `reclaimPolicy: Delete` works on both classes |
+
+**`imageFeatures: layering` is now proven, not assumed.** ADR-0006 carried "RBD
+image features vs the Flatcar kernel" as an untested risk since July. The mount
+line `/dev/rbd0 … type ext4` is the proof: krbd — not fuse, not nbd — mapped the
+image. krbd supports neither `object-map`, `fast-diff` nor `deep-flatten`, and
+an image created with them fails at **attach on the node**, long after the PVC
+looks healthy.
+
+**Four things worth carrying forward:**
+
+1. **The operator's Helm chart cannot be installed by Flux at all** (ADR-0031).
+   Its `operatorconfig` (536 KB) and `driver` (505 KB) CRD templates are each
+   ~2× the 262144-byte client-side apply limit, helm-controller can't apply
+   server-side, and — unlike Calico's and cert-manager's charts — there is **no
+   `crds.enabled` toggle**: both templates are unconditional, the only
+   expression in either being a labels helper. Vendored manifests instead. That
+   makes ceph-csi the **third** occupant of the `crds/` tier; three independent
+   charts have now hit the same wall, so that tier is load-bearing
+   infrastructure rather than a Calico-specific workaround.
+2. **⚠ `wait: true` on `infrastructure-config` does NOT gate on the drivers
+   running** — this corrects a claim made while building it. `Driver`,
+   `ClientProfile` and `CephConnection` all expose an **empty status**, and
+   kstatus treats a statusless resource as Current immediately, so the tier went
+   Ready while the plugin pods were still `ContainerCreating`. **Consequence:
+   `apps` does not gate on storage being functional**, which is *not* what the
+   tier's cert-manager precedent implies — a `Certificate` carries a real Ready
+   condition, so there the gate genuinely means "issuance worked". Anything that
+   must not start before storage works needs its own check (a health check on
+   the Kustomization, or an init container).
+3. **`monitors` is a YAML list while post-build substitution is string-level** —
+   the "substitution can't go here" case in `gitops/CLAUDE.md`. Solved without
+   SOPS and without baking in a mon count: `cluster-topology` carries
+   `ceph_mons_yaml`, a single value that is already a complete JSON array (a
+   valid YAML flow sequence), substituted whole. The `to_json` quoting is
+   load-bearing — an unquoted `host:port` is not a valid scalar in flow context.
+4. **RWX shares PVE's existing CephFS under its own subvolumegroup** rather than
+   adding a second filesystem, which would need a second *active* MDS and spend
+   the standby redundancy PVE's production filesystem relies on (1 active + 2
+   standby, confirmed). Two cephx users, not one: `client.k8s-cephfs` needs
+   `mgr "allow rw"` because subvolume operations run through the mgr `volumes`
+   module and Ceph ships no narrower profile — splitting keeps that cap off the
+   RBD credential guarding Postgres/Qdrant/Redis.
+
+**Two verification traps, both of which produced a confident wrong answer:**
+
+- **Flatcar's bash has no `/dev/tcp`** (built without net-redirections), so a
+  port check written that way reports **every** port closed — including the k3s
+  API, which was open. Caught only by testing a known-open port as a control.
+  Use `curl telnet://host:port`.
+- **`ceph fs status` never prints the string `up:standby`** — it renders a human
+  table whose STATE column says `active`, and lists standbys under a `STANDBY
+  MDS` heading. `ceph-k8s-verify.sh` grepped for `up:standby` and so reported
+  "0 standby" on a cluster that had two, which would have argued for exactly the
+  wrong CephFS layout. Fixed to read `ceph fs dump -f json` `.standbys`, and
+  promoted from an informational line to a check that fails at zero.
+
+Also: the control node's **macOS Local Network Privacy** grant lapsed mid-work,
+blocking venv Python from the on-link PVE API while Apple-signed `curl`
+connected in 7 ms. The three-legged A/B is what settles it — the *same* Python
+process reached the **routed** k3s API fine and failed only on the same-link
+host (`ansible/README.md`).
+
+**Next:** ESO + Bitwarden SDK Server, where the bootstrap-seeded-Secret adoption
+question gets decided (`decisions/README.md`, "Open questions"). Note ceph-csi's
+two cephx Secrets are **not** upstream of ESO the way cert-manager's token is —
+they are seeded only because ceph-csi lands earlier in the delivery order, so
+that ADR could retire them outright rather than making them an overlay.
+
 ## 2026-09-05 — cert-manager + the wildcard cert: ADR-0013's cert half done, HTTPS live on the Gateway
 
 **Related:** [ADR-0013](decisions/0013-ingress-certs-dns-external-access.md) ·

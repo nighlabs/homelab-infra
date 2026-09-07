@@ -1,7 +1,7 @@
 # ADR-0006: Persistent storage: ceph-csi-operator against the existing Proxmox Ceph
 
 - **Date:** 2026-07 (initial design)
-- **Status:** Accepted — not yet implemented (ceph-csi lands after Calico BGP → Gateway → cert-manager in the delivery order)
+- **Status:** Accepted, verified — deployed 2026-09-07 (`worklog.md`). Both StorageClasses provision, mount and reclaim; the image-features risk below is closed (krbd mapped `layering`). Deployment method: [ADR-0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md)
 - **Supersedes / related:** [ADR-0004](0004-cluster-shape-kine-single-cp-proxmox-ha.md) (datastore durability rides on this); [ADR-0017](0017-static-addressing-no-dhcp.md) (the second NIC on the Ceph public VLAN); `../architecture.md` §3.5; root `CLAUDE.md` network topology
 
 ## Context

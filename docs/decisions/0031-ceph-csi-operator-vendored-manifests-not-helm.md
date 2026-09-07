@@ -1,7 +1,7 @@
 # ADR-0031: ceph-csi-operator is installed from vendored manifests, not its Helm chart
 
 - **Date:** 2026-09-06
-- **Status:** Accepted
+- **Status:** Accepted, verified — all 5 CRDs Established via server-side apply and both drivers Running, 2026-09-07 (`../worklog.md`)
 - **Supersedes / related:** implements the deployment half of
   [ADR-0006](0006-ceph-csi-external-proxmox-ceph.md); a third instance of
   [ADR-0020](0020-crd-tier-vendored-server-side-apply.md)'s admission rule;
