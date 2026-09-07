@@ -80,6 +80,23 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   0021/0027) and `eso_bws_access_token` (0027 ⚠). Decide + ADR at the ESO
   milestone.
 
+  ⚠ **ceph-csi's two cephx keys are a different case from cert-manager's token,
+  and the difference is easy to misread.** cert-manager genuinely *is* upstream
+  of ESO (0009: the SDK Server needs a cert). ceph-csi is **not** — ESO and the
+  SDK Server are stateless, so nothing about ESO needs a StorageClass, and
+  ceph-csi could have landed after it. So for these two keys, "retire the seed"
+  is actually on the table where for the Cloudflare token it is not.
+
+  The argument for keeping them seeded anyway is **rebuild-path length**, not
+  dependency: seeded, storage needs only Ansible + BWS; sourced from ESO, first
+  provisioning would additionally need a live LE cert, the Gateway, the LB IP,
+  BGP and Bitwarden reachability. Re-provisioning is the *normal* upgrade path
+  here (0019), so that path gets walked often, and 0004/0015 both put recovery
+  on top of Ceph. Running clusters are unaffected either way — 0009 notes
+  materialised Secrets persist, so ESO is needed at sync time, not pod start.
+  Current lean: **adopt, keep the seed**, same as the token but for a different
+  reason. Decide explicitly rather than inheriting the delivery order.
+
 ## Adding a record
 
 Copy the header shape of any existing file (`Date`, `Status`,

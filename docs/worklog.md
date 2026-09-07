@@ -106,9 +106,10 @@ host (`ansible/README.md`).
 
 **Next:** ESO + Bitwarden SDK Server, where the bootstrap-seeded-Secret adoption
 question gets decided (`decisions/README.md`, "Open questions"). Note ceph-csi's
-two cephx Secrets are **not** upstream of ESO the way cert-manager's token is —
-they are seeded only because ceph-csi lands earlier in the delivery order, so
-that ADR could retire them outright rather than making them an overlay.
+two cephx Secrets are **not** upstream of ESO the way cert-manager's token is:
+ESO and the Bitwarden SDK Server are both stateless, so nothing about ESO needs
+a StorageClass. **ceph-csi before ESO is a choice, not a dependency** — see that
+open question for why the order is worth keeping.
 
 ## 2026-09-05 — cert-manager + the wildcard cert: ADR-0013's cert half done, HTTPS live on the Gateway
 
