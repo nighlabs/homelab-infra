@@ -97,6 +97,34 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   Current lean: **adopt, keep the seed**, same as the token but for a different
   reason. Decide explicitly rather than inheriting the delivery order.
 
+- **Does `infrastructure-config` split into per-domain Kustomizations?** Decide
+  at the ESO milestone, because ESO is what forces it. That tier is a grab-bag
+  whose members share only "CRs whose CRDs came from a controller", and their
+  dependencies differ: cert-manager's issuers need the cert-manager controller;
+  ceph-csi's CRs need the ceph-csi operator and Ceph; **ESO's SecretStore needs
+  cert-manager's `Certificate`** (the Bitwarden SDK Server runs with a cert
+  from it — 0009). kustomize-controller applies a tier in **one pass with no
+  intra-tier ordering**, so that last edge is either satisfied by luck and
+  retries (the SecretStore flaps NotReady until the cert exists) or it needs an
+  explicit `dependsOn` — which means its own Kustomization either way.
+
+  Costs of the status quo, for the record: one Ready condition spanning three
+  unrelated failure domains, so "infrastructure-config NotReady" doesn't say
+  whether it is PKI, storage or secrets; one `timeout: 10m` tuned for the
+  slowest member (ACME issuance), inherited by CRs that are instant; and a cert
+  renewal failure gating `apps` when storage is fine. **Not** a cost: pruning —
+  a failed health check deletes nothing, since prune follows resources leaving
+  the source. And gating `apps` on all three is *correct* (apps needs certs,
+  storage and secrets); what's wrong is the granularity, not the gate.
+
+  ⚠ Real tension to settle in that ADR: today's tiers are **kind**-based
+  (crds → controllers → config → apps). Per-domain Kustomizations are a
+  *second* organizing principle layered on top, so either adopt it
+  consistently or don't — drifting into a hybrid is the bad outcome. Related:
+  moving storage genuinely earlier would need the ceph-csi **operator** moved
+  too, not just its CRs (the CRs need their controller running), i.e. a
+  `storage` tier spanning today's `infrastructure` and `infrastructure-config`.
+
 ## Adding a record
 
 Copy the header shape of any existing file (`Date`, `Status`,
