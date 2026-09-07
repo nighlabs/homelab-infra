@@ -15,3 +15,9 @@ resources:
   # carries only NGF's own CRDs) and httproutes exceeds the client-side apply
   # size limit — both admission rules met. See gateway-api/crds.yaml's header.
   - gateway-api
+  # ceph-csi-operator's five CRDs (ADR-0031). Meets the same admission rule the
+  # hard way: `operatorconfigs` (536 KB) and `drivers` (505 KB) are each about
+  # DOUBLE the client-side apply limit, and — unlike Calico — the chart offers no
+  # toggle to skip them, so the whole operator is installed from vendored
+  # manifests rather than Helm. See ceph-csi/kustomization.yaml's header.
+  - ceph-csi

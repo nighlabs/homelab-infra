@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# ceph-csi-operator (ADR-0006, ADR-0031) — the CONTROLLER only. Its CRs
+# (CephConnection, ClientProfile, the two Drivers) and the StorageClasses live
+# in ../../infrastructure-config/ceph-csi/.
+#
+# ⚠ NOT a HelmRelease, and that is forced rather than preferred (ADR-0031): the
+# chart's operatorconfig (536 KB) and driver (505 KB) CRD templates are each
+# roughly DOUBLE the 262144-byte client-side apply limit, helm-controller cannot
+# apply server-side, and the chart has no crds.enabled toggle to route around it
+# — the only template expression in either file is a labels helper. So the
+# upstream plain manifests are vendored instead, and the CRDs go to ../../crds/
+# where kustomize-controller applies them server-side. Same admission rule that
+# put Calico's and Gateway API's CRDs there.
+#
+# Vendored verbatim from ceph-csi-operator v1.0.4 `deploy/multifile/`:
+#   curl -sfL https://raw.githubusercontent.com/ceph/ceph-csi-operator/v1.0.4/deploy/multifile/operator.yaml  -o operator.yaml
+#   curl -sfL https://raw.githubusercontent.com/ceph/ceph-csi-operator/v1.0.4/deploy/multifile/csi-rbac.yaml   -o csi-rbac.yaml
+# Bump BOTH, plus ../../crds/ceph-csi/crd.yaml, in the SAME commit — the CRD
+# schema and the controller that reads it are one unit.
+#
+# ⚠ Never hand-edit the vendored files. Everything environment-specific is a CR
+# a tier down; there is nothing here that should need changing.
+resources:
+  - operator.yaml
+  - csi-rbac.yaml
+
+# Upstream hardcodes `ceph-csi-operator-system` in all 41 of its namespace
+# references (including the Namespace object itself, which kustomize renames).
+# We retarget to one namespace holding the operator, the driver pods and the
+# Ansible-seeded cephx Secrets.
+#
+# ⚠ ONE namespace is load-bearing, not tidiness. The operator creates the driver
+# ServiceAccounts (prefix `ceph-csi-operator-`) in whatever namespace the Driver
+# CR lives in, and csi-rbac.yaml binds exactly those SAs. Split the operator and
+# the Drivers across two namespaces and the bindings name ServiceAccounts that
+# do not exist there — the driver pods then fail on RBAC, not on Ceph, which is
+# a genuinely confusing place to start debugging.
+#
+# ⚠ A `namespace:` transformer is safe HERE only because this directory holds
+# nothing but core and RBAC kinds — kustomize has schemas for those and rewrites
+# ClusterRoleBinding subjects correctly. It would NOT be safe with a
+# cluster-scoped CR present: the transformer stamps a namespace on any resource
+# it cannot prove is cluster-scoped, which is exactly why Calico's BGP CRs need
+# their own directory (see ../calico-bgp/kustomization.yaml). That is the other
+# reason every ceph-csi CR is a tier down rather than here.
+namespace: ceph-csi

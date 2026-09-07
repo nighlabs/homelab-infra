@@ -566,6 +566,26 @@
             cluster_asn: "{{ cluster_bgp[cluster_name].asn | string }}"
             lb_range: "{{ cluster_bgp[cluster_name].lb_range }}"
             base_domain: "{{ base_domain }}"
+            # --- ceph-csi (ADR-0006) -------------------------------------
+            # Substituted into gitops/infrastructure-config/ceph-csi/. Pool and
+            # subvolumegroup are cleartext in group_vars and COULD be literals
+            # here — they're substituted anyway, per the repo rule that every
+            # shared value goes through the Secret. A literal in Git is a second
+            # copy of a value the Ceph side also holds, and it drifts silently:
+            # a StorageClass naming a pool that no longer exists fails at PVC
+            # bind time, not at reconcile time.
+            ceph_rbd_pool: "{{ ceph_csi.rbd_pool }}"
+            ceph_fs_name: "{{ ceph_csi.fs_name }}"
+            ceph_subvolume_group: "{{ ceph_csi.subvolume_group }}"
+            # ⚠ CephConnection.spec.monitors is a YAML LIST, and post-build
+            # substitution is string-level — the "substitution can't go here"
+            # case in gitops/CLAUDE.md. Rather than reach for SOPS or hard-code
+            # a mon count as ${ceph_mon_1..3}, this seeds ONE value that is a
+            # complete JSON array (valid YAML flow sequence), substituted whole
+            # into `monitors: ${ceph_mons_yaml}`. Mon count then changes here,
+            # not in a manifest. to_json quotes each element, which matters:
+            # an unquoted host:port is not a valid YAML scalar in flow context.
+            ceph_mons_yaml: "{{ ceph_csi.mons | to_json }}"
 
     # --- Seed the cert-manager DNS-01 token (bootstrap-secret tier) ----------
     # Same tier as cluster-topology, same reason: cert-manager sits UPSTREAM of
@@ -604,6 +624,55 @@
             namespace: cert-manager
           stringData:
             api-token: "{{ cloudflare_api_token }}"
+
+    # --- Seed the two cephx keys (bootstrap-secret tier) ---------------------
+    # Same tier and same reasoning as the Cloudflare token above, with one
+    # difference worth recording: cert-manager is genuinely UPSTREAM of ESO (the
+    # Bitwarden SDK Server needs a cert), so its seed is permanent. ceph-csi is
+    # not upstream of ESO — it merely lands earlier in the §6 delivery order. So
+    # if the ESO-adoption ADR ever reorders those two, these seeds could retire
+    # outright rather than becoming an overlay. Until then they must exist, or a
+    # from-scratch rebuild has no storage before ESO is up.
+    #
+    # The namespace, Secret names and KEY NAMES are the contract that
+    # gitops/infrastructure-config/ceph-csi/ references. ⚠ `userID` carries NO
+    # `client.` prefix — ceph-csi prepends it, and including it yields an
+    # authentication failure at attach time rather than a clear error.
+    - name: Ensure the ceph-csi namespace exists (for the cephx keys)
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ ceph_csi.namespace }}"
+
+    - name: Seed the ceph-csi cephx Secrets
+      delegate_to: localhost
+      no_log: true # credentials — never in output, even at -vvv
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ item.name }}"
+            namespace: "{{ ceph_csi.namespace }}"
+          stringData:
+            userID: "{{ item.user }}"
+            userKey: "{{ item.key }}"
+      loop:
+        - name: ceph-csi-rbd
+          user: "{{ ceph_csi.rbd_client }}"
+          key: "{{ ceph_k8s_rbd_key }}"
+        - name: ceph-csi-cephfs
+          user: "{{ ceph_csi.cephfs_client }}"
+          key: "{{ ceph_k8s_cephfs_key }}"
+      loop_control:
+        label: "{{ item.name }}"
 
     - name: Report the bootstrapped node(s)
       delegate_to: localhost

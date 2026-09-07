@@ -1,0 +1,182 @@
+---
+# Render the one-time Ceph-side setup for ceph-csi (ADR-0006).
+#
+# Same shape as render-frr-config.yml, and for the same reason: the target is
+# live production gear with no safe automation path, so DELIVERY is manual — but
+# the CONTENT is generated, versioned and asserted, and never hand-written.
+#
+# Here the missing automation path is concrete: the `ceph` CLI reads
+# /etc/pve/ceph.conf out of pmxcfs (root-only), the repo's `provisioner` SSH
+# user has sudo scoped to `qm`, and cephx user creation is not in the Proxmox
+# API at all. Rather than widen a standing privilege on a production Ceph
+# cluster for a step that runs approximately once, this play writes scripts a
+# human runs as root, once, and can read in full beforehand.
+#
+# Run:
+#   cd ansible && uv run ansible-playbook playbooks/render-ceph-setup.yml
+#
+# Outputs (git-ignored, 0700 dir / 0600 files):
+#   ansible/.ceph/ceph-k8s-setup.sh    create pool + subvolumegroup + 2 cephx users
+#   ansible/.ceph/ceph-k8s-verify.sh   read-only; confirms caps match what gitops assumes
+#   ansible/.ceph/ceph-k8s-keys.sh     prints the keys + fsid + mons for BWS
+#
+# Full procedure and warnings: docs/proxmox-ceph-k8s-setup.md
+#
+# This play touches nothing. It reads inventory + BWS and writes three local
+# files. It does not connect to Proxmox, to Ceph, or to any node.
+- name: Render the Proxmox-Ceph setup for ceph-csi
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ceph_out_dir: "{{ playbook_dir }}/../.ceph"
+  tasks:
+    # Secrets come from BWS at run time (there is no vault.yml). Must precede
+    # anything that touches a {{ bws.* }} value — ceph_csi.fs_name is one.
+    - name: Load secrets from Bitwarden Secrets Manager
+      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+
+    # --- What must already be in BWS to render at all ------------------------
+    # Only ONE secret is a hard prerequisite, and it is knowable before any of
+    # this runs: the name of PVE's existing CephFS. Everything else the cluster
+    # side needs (mons, fsid, the two keys) is PRODUCED by these scripts, so it
+    # is checked softly further down. Guarded by `is defined` rather than by
+    # dereferencing ceph_csi.fs_name, because group_vars is lazily templated —
+    # touching it while the secret is absent raises a Jinja attribute error
+    # instead of the message below.
+    - name: Assert the CephFS name is in BWS
+      ansible.builtin.assert:
+        that:
+          - bws.ceph_fs_name is defined
+          - (bws.ceph_fs_name | trim | length) > 0
+        fail_msg: >-
+          `ceph_fs_name` is not in Bitwarden Secrets Manager. It is PVE's
+          EXISTING CephFS name — the filesystem already holding snippets/ISOs/
+          backups — because this milestone joins that filesystem with its own
+          subvolumegroup rather than creating a second one (a second CephFS
+          needs a second ACTIVE MDS, spending the standby redundancy PVE's
+          production filesystem relies on).
+
+          Read it off a Proxmox node with `ceph fs ls`, then add it to BWS as
+          `ceph_fs_name` in the project the control-node machine account reads.
+          See ansible/BWS-SECRETS.md.
+        quiet: true
+
+    # --- Validate the names we are about to create ---------------------------
+
+    - name: Assert the object names are well formed
+      vars:
+        names:
+          - "{{ ceph_csi.rbd_pool }}"
+          - "{{ ceph_csi.subvolume_group }}"
+          - "{{ ceph_csi.rbd_client }}"
+          - "{{ ceph_csi.cephfs_client }}"
+      ansible.builtin.assert:
+        that:
+          - names | reject('match', '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') | list | length == 0
+          - ceph_csi.rbd_client != ceph_csi.cephfs_client
+        fail_msg: >-
+          ceph_csi names must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ and the two
+          client names must differ (they are separate cephx entities — the whole
+          point of splitting them). Got {{ names }}.
+        quiet: true
+
+    # The RBD pool must not collide with the pools that back the CephFS we are
+    # joining. Ceph names those `<fs>_data` / `<fs>_metadata` by convention, and
+    # creating an rbd-tagged pool over a CephFS data pool is not something to
+    # discover on a production cluster.
+    - name: Assert the RBD pool name does not collide with the CephFS pools
+      ansible.builtin.assert:
+        that:
+          - ceph_csi.rbd_pool not in [ceph_csi.fs_name ~ '_data', ceph_csi.fs_name ~ '_metadata', ceph_csi.fs_name]
+          - ceph_csi.rbd_pool != '.mgr'
+        fail_msg: >-
+          ceph_csi.rbd_pool ({{ ceph_csi.rbd_pool }}) collides with a pool that
+          already exists for another purpose. Pick a different name.
+        quiet: true
+      # The rendered script re-checks this ON the cluster, where the real pool
+      # list is; this assert only catches the two cases we can see from here.
+
+    # --- The cluster-side values: present yet? -------------------------------
+    # Deliberately NOT asserts. On a from-scratch run these five secrets CANNOT
+    # exist yet — ceph-k8s-keys.sh is what produces them. Failing here would
+    # make the play impossible to run the first time, which is the only time it
+    # is strictly required.
+    - name: Check whether the cluster-side BWS secrets exist yet
+      vars:
+        expected: [ceph_mons, ceph_fsid, ceph_k8s_rbd_key, ceph_k8s_cephfs_key]
+        missing: "{{ expected | reject('in', bws.keys() | list) | list }}"
+      ansible.builtin.debug:
+        msg: >-
+          {% if missing | length == 0 %}
+          All cluster-side BWS secrets are present ({{ expected | join(', ') }})
+          — this looks like a re-render, not a first run.
+          {% else %}
+          NOTE: {{ missing | join(', ') }} not in BWS yet. Expected on a FIRST
+          run: ceph-k8s-keys.sh is what produces them. Run the scripts, store
+          the values under those names, then bootstrap-cluster.yml can seed them.
+          {% endif %}
+
+    - name: Assert the mon addresses are on the Ceph public network
+      when: bws.ceph_mons is defined
+      vars:
+        mon_ips: "{{ ceph_csi.mons | map('regex_replace', ':.*$', '') | list }}"
+        off_net: >-
+          {{ mon_ips | reject('match', '^' ~ (ceph_public_network.subnet_base | regex_escape) ~ '\.')
+             | list }}
+      ansible.builtin.assert:
+        that:
+          - mon_ips | length > 0
+          - off_net | length == 0
+        fail_msg: >-
+          ceph_mons must list mon addresses on the Ceph PUBLIC network — the
+          only Ceph network a k3s node ever touches (root CLAUDE.md). These are
+          not on it: {{ off_net }}. ⚠ The cluster (replication) network is
+          UNTAGGED on the same bond, so an address from there looks plausible
+          and routes nowhere from a node. Read them off `ceph mon dump`.
+        quiet: true
+
+    - name: Assert the fsid looks like a uuid
+      when: bws.ceph_fsid is defined
+      ansible.builtin.assert:
+        that:
+          # `is match`, not regex_search: the latter returns the matched STRING,
+          # and a non-boolean conditional is a hard error on this ansible-core.
+          - ceph_csi.fsid | trim is match('^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$')
+        fail_msg: >-
+          ceph_fsid should be the 36-character cluster uuid from `ceph fsid`.
+          It doubles as ceph-csi's clusterID, so a wrong value fails at mount
+          time, not at apply time.
+        quiet: true
+
+    # --- Render ---------------------------------------------------------------
+
+    - name: Ensure the output directory exists
+      ansible.builtin.file:
+        path: "{{ ceph_out_dir }}"
+        state: directory
+        mode: "0700"
+
+    # 0600 and git-ignored. These carry no cephx key — but they do carry
+    # ceph_fs_name, which is a vaulted storage name, and ceph-k8s-keys.sh PRINTS
+    # credentials when run. Treat the directory as credential-adjacent.
+    - name: Render the Ceph-side scripts
+      ansible.builtin.template:
+        src: "{{ item }}.j2"
+        dest: "{{ ceph_out_dir }}/{{ item }}"
+        mode: "0600"
+      loop:
+        - ceph-k8s-setup.sh
+        - ceph-k8s-verify.sh
+        - ceph-k8s-keys.sh
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          Rendered to {{ ceph_out_dir }}/ — pool {{ ceph_csi.rbd_pool }},
+          subvolumegroup {{ ceph_csi.subvolume_group }} in the existing CephFS,
+          cephx client.{{ ceph_csi.rbd_client }} + client.{{ ceph_csi.cephfs_client }}.
+          Copy them to a Proxmox node and run as root, in order:
+          ceph-k8s-setup.sh -> ceph-k8s-verify.sh -> ceph-k8s-keys.sh.
+          ⚠ Read ceph-k8s-setup.sh first — it runs against the Ceph cluster that
+          serves live Proxmox VM storage. Procedure:
+          docs/proxmox-ceph-k8s-setup.md

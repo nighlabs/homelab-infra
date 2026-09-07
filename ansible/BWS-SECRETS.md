@@ -155,6 +155,31 @@ retype.
 `cert-manager` namespace (bootstrap-secret tier — see the play's comments and
 the ESO-adoption open question in `../docs/decisions/README.md`).
 
+### Storage (ceph-csi against the existing Proxmox Ceph)
+
+| Secret name | Format / example |
+|---|---|
+| `ceph_fs_name` | PVE's **existing** CephFS name, from `ceph fs ls` — we join it, we don't create it |
+| `ceph_mons` | Mon addresses, **one per line** (see below) — `10.0.2.21:6789` |
+| `ceph_fsid` | 36-char cluster uuid from `ceph fsid`; doubles as ceph-csi's `clusterID` |
+| **`ceph_k8s_rbd_key`** 🔑 | cephx key for `client.k8s-rbd` (`ceph auth get-key`) |
+| **`ceph_k8s_cephfs_key`** 🔑 | cephx key for `client.k8s-cephfs` |
+
+**Only `ceph_fs_name` is needed up front** — the other four are *produced* by
+`docs/proxmox-ceph-k8s-setup.md` §4.6, which prints them under exactly these
+names. `render-ceph-setup.yml` checks for them softly and says which are
+missing, so a first run is possible before they exist.
+
+> ⚠ `ceph_mons` must be **public-network** addresses. The Ceph cluster
+> (replication) network is untagged on the same bond as the public VLAN, so an
+> address from it looks plausible and routes nowhere from a k3s node. Read them
+> off `ceph mon dump`; the render asserts they're inside `ceph_subnet_base`.
+
+The two keys are seeded by `bootstrap-cluster.yml` into the `ceph-csi`
+namespace (bootstrap-secret tier — ceph-csi lands before ESO, so on a
+from-scratch rebuild ESO cannot supply them); `ceph_mons`, `ceph_fsid` and the
+pool/group names reach gitops/ as placeholders via `cluster-topology`.
+
 ### Per cluster — one secret per cluster in `inventory/nodes.yml`
 
 Named `<prefix>_<cluster>`. With only `homelab` today that's one required secret.

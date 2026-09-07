@@ -29,6 +29,10 @@ reference docs turned into a worklog.
   status. Read the ADR before re-litigating.
 - **pfSense / BGP:** [`pfsense-frr-bgp-setup.md`](pfsense-frr-bgp-setup.md) —
   the runbook for the FRR side of the peering.
+- **Proxmox Ceph / storage:** [`proxmox-ceph-k8s-setup.md`](proxmox-ceph-k8s-setup.md)
+  — the runbook for the Ceph side of ceph-csi: the pool, the subvolumegroup and
+  the two restricted cephx users, on the cluster that already serves live VM
+  storage.
 - **The eBPF trial:** [`calico-ebpf-single-node-trial.md`](calico-ebpf-single-node-trial.md)
   — the full record of the dataplane migration: preconditions, the test, the
   revert, and what one node cannot prove.
@@ -44,6 +48,7 @@ docs/
     NNNN-slug.md                       one per decision
   worklog.md                         chronological record, newest first
   pfsense-frr-bgp-setup.md           runbook: FRR/BGP on pfSense (reference)
+  proxmox-ceph-k8s-setup.md          runbook: Ceph side of ceph-csi (reference)
   calico-ebpf-single-node-trial.md   record of the eBPF dataplane trial
 ```
 

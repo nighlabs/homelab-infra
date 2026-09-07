@@ -1,0 +1,74 @@
+# The two StorageClasses ADR-0006 calls for.
+#
+# ⚠ `clusterID` on both MUST equal the ClientProfile's NAME (clientprofile.yaml).
+# That is ceph-csi-operator's config lookup key. A mismatch fails at PVC bind,
+# not at reconcile — the Kustomization goes Ready and PVCs sit Pending.
+#
+# All three secret refs point at the Ansible-seeded Secrets in this namespace
+# (bootstrap-secret tier — ceph-csi lands before ESO, so on a from-scratch
+# rebuild ESO cannot supply them). Their `userID` carries NO `client.` prefix;
+# ceph-csi prepends it.
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ceph-rbd
+  annotations:
+    # THE CLUSTER DEFAULT. A PVC that omits storageClassName lands here — which
+    # includes third-party charts that never name a class. Deliberate: RWO block
+    # is the right default for this cluster (Postgres, Qdrant, Redis), and RWX
+    # is the specialised case that should have to ask for itself.
+    #
+    # ⚠ Exactly one StorageClass may carry this. If a second default is ever
+    # added, PVCs that omit a class are rejected outright rather than picking one.
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: ceph
+  # The dedicated Kubernetes pool — never the pool PVE stores VM disks in. The
+  # cephx user's osd cap is scoped to this pool, so a wrong value here is an
+  # authorization failure rather than a write into production storage.
+  pool: ${ceph_rbd_pool}
+  # ⚠ `layering` ONLY, and this is a kernel-client constraint, not caution for
+  # its own sake. The Flatcar node maps these images with krbd (rbd.ko), which
+  # does NOT support object-map, fast-diff or deep-flatten; an image created
+  # with them fails to map at attach time, on the node, long after the PVC looks
+  # fine. This is the "RBD image features vs the Flatcar kernel" risk ADR-0006
+  # flags — pinned explicitly so it is a decision rather than a default.
+  imageFeatures: layering
+  csi.storage.k8s.io/fstype: ext4
+  csi.storage.k8s.io/provisioner-secret-name: ceph-csi-rbd
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi
+  csi.storage.k8s.io/controller-expand-secret-name: ceph-csi-rbd
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi
+  csi.storage.k8s.io/node-stage-secret-name: ceph-csi-rbd
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+# Immediate, not WaitForFirstConsumer: Ceph RBD is network storage reachable
+# identically from every node, so there is no topology to wait for. WFFC would
+# only delay binding. (This would change if a pool were ever CRUSH-pinned to a
+# subset of hosts.)
+volumeBindingMode: Immediate
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cephfs
+provisioner: cephfs.csi.ceph.com
+parameters:
+  clusterID: ceph
+  # PVE's EXISTING filesystem. We do not create it — we join it, confined to the
+  # subvolumegroup named on the ClientProfile (NOT here: the group is a profile
+  # concern, and stating it in both places is a drift you would only find when
+  # they disagree).
+  fsName: ${ceph_fs_name}
+  csi.storage.k8s.io/provisioner-secret-name: ceph-csi-cephfs
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi
+  csi.storage.k8s.io/controller-expand-secret-name: ceph-csi-cephfs
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi
+  csi.storage.k8s.io/node-stage-secret-name: ceph-csi-cephfs
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate

@@ -28,6 +28,13 @@ inventory/group_vars/**/vault.yml*
 # committed inputs are the template and the node map, not this output.
 .frr/
 
+# Rendered Proxmox-Ceph setup scripts (playbooks/render-ceph-setup.yml). They
+# embed ceph_fs_name (a vaulted storage name), and ceph-k8s-keys.sh PRINTS the
+# two cephx keys when run — so this is a credential-adjacent artifact. NEVER
+# commit. Regenerate on demand; the committed inputs are the templates and
+# group_vars, not this output. Procedure: docs/proxmox-ceph-k8s-setup.md
+.ceph/
+
 # In-repo Ansible collections path (collections_path in ansible.cfg). Restored
 # from requirements.yml via `uv run ansible-galaxy collection install`, like the
 # uv venv is from uv.lock — the pinned input is requirements.yml, not this tree.

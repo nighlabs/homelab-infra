@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# =============================================================================
+# GENERATED — DO NOT EDIT. Template: playbooks/templates/ceph-k8s-verify.sh.j2
+# Rendered by ansible/playbooks/render-ceph-setup.yml.
+#
+# READ-ONLY. Confirms the Ceph side matches what gitops/ is about to assume.
+# Prints no keys. Safe to re-run at any time, including on a healthy cluster
+# years later — this is the "is the storage tier still shaped right" check.
+#
+# Run on a Proxmox node:  bash ceph-k8s-verify.sh
+# =============================================================================
+set -Eeuo pipefail
+
+RBD_POOL={{ ceph_csi.rbd_pool | quote }}
+FS_NAME={{ ceph_csi.fs_name | quote }}
+SVG={{ ceph_csi.subvolume_group | quote }}
+RBD_CLIENT={{ ceph_csi.rbd_client | quote }}
+CEPHFS_CLIENT={{ ceph_csi.cephfs_client | quote }}
+SVG_PATH="/volumes/${SVG}"
+
+PASS=0; FAIL=0
+ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$*"; PASS=$((PASS+1)); }
+bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$*"; FAIL=$((FAIL+1)); }
+head_() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+[[ ${EUID} -eq 0 ]] || { echo "must run as root (ceph CLI needs /etc/pve/ceph.conf)."; exit 1; }
+
+head_ "Cluster"
+CEPH_V=$(ceph version | awk '{print $3}')
+ok "ceph ${CEPH_V}"
+printf '        health: %s\n' "$(ceph health | head -1)"
+
+head_ "RBD pool"
+if ceph osd pool get "${RBD_POOL}" size >/dev/null 2>&1; then
+  ok "pool '${RBD_POOL}' exists"
+  SIZE=$(ceph osd pool get "${RBD_POOL}" size --format json | python3 -c 'import sys,json;print(json.load(sys.stdin)["size"])')
+  MINS=$(ceph osd pool get "${RBD_POOL}" min_size --format json | python3 -c 'import sys,json;print(json.load(sys.stdin)["min_size"])')
+  [[ ${SIZE} -ge 3 ]] && ok "size=${SIZE}" || bad "size=${SIZE} (expected >=3; a k8s datastore on size<3 is a bad trade)"
+  [[ ${MINS} -ge 2 ]] && ok "min_size=${MINS}" || bad "min_size=${MINS} (expected >=2)"
+  ceph osd pool application get "${RBD_POOL}" --format json | grep -q '"rbd"' \
+    && ok "application=rbd" || bad "pool is not tagged for rbd"
+  # The guardrail that matters most: PVE must not be able to place VM disks here.
+  if pvesm status 2>/dev/null | awk '{print $1}' | grep -qx "${RBD_POOL}"; then
+    bad "pool is registered as a PVE storage — Proxmox could place VM disks in the Kubernetes pool (ADR-0006)"
+  else
+    ok "not registered as a PVE storage (PVE cannot write here)"
+  fi
+else
+  bad "pool '${RBD_POOL}' does not exist — run ceph-k8s-setup.sh"
+fi
+
+head_ "CephFS subvolumegroup"
+if ceph fs get "${FS_NAME}" >/dev/null 2>&1; then
+  ok "filesystem '${FS_NAME}' exists"
+  if ceph fs subvolumegroup ls "${FS_NAME}" --format json | grep -q "\"${SVG}\""; then
+    ok "subvolumegroup '${SVG}' exists (${SVG_PATH})"
+  else
+    bad "subvolumegroup '${SVG}' missing — run ceph-k8s-setup.sh"
+  fi
+  # MDS redundancy is why we share PVE's filesystem instead of creating a second
+  # one (a second fs needs a second ACTIVE MDS, spending a standby). So report it
+  # accurately — a wrong reading here argues for the wrong layout.
+  #
+  # ⚠ Read this from `ceph fs dump`, NOT `ceph fs status`. `fs status` renders a
+  # human table whose STATE column says `active`, and lists standbys under a
+  # `STANDBY MDS` heading — the string `up:standby` appears NOWHERE in it, so
+  # grepping for that always returns 0 and silently reports no redundancy.
+  # (Got exactly that wrong on 2026-09-07; `ceph mds` in the Proxmox API said
+  # 1 active + 2 standby at the same moment.) Standbys are cluster-wide, not
+  # per-filesystem, which is fine while this is the only filesystem.
+  STANDBYS=$(ceph fs dump -f json 2>/dev/null \
+             | python3 -c 'import sys,json; print(len(json.load(sys.stdin).get("standbys",[])))' 2>/dev/null || echo "?")
+  if [[ ${STANDBYS} == "0" ]]; then
+    bad "0 standby MDS — an MDS failure is an outage for PVE's storage too, and the shared-filesystem layout assumes spare standbys"
+  else
+    ok "standby MDS: ${STANDBYS}"
+  fi
+else
+  bad "filesystem '${FS_NAME}' does not exist"
+fi
+
+head_ "cephx users and caps"
+check_cap() {  # entity, cap-type, expected-substring
+  local entity="$1" kind="$2" want="$3" got
+  got=$(ceph auth get "${entity}" --format json 2>/dev/null \
+        | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['caps'].get('${kind}',''))" 2>/dev/null || true)
+  if [[ -z ${got} ]]; then
+    bad "${entity}: no '${kind}' cap (user missing?)"
+  elif [[ ${got} == *"${want}"* ]]; then
+    ok "${entity} ${kind}: ${got}"
+  else
+    bad "${entity} ${kind}: got '${got}', expected to contain '${want}'"
+  fi
+}
+
+check_cap "client.${RBD_CLIENT}"    mon "profile rbd"
+check_cap "client.${RBD_CLIENT}"    osd "profile rbd pool=${RBD_POOL}"
+check_cap "client.${RBD_CLIENT}"    mgr "profile rbd pool=${RBD_POOL}"
+
+check_cap "client.${CEPHFS_CLIENT}" mon "allow r"
+check_cap "client.${CEPHFS_CLIENT}" mgr "allow rw"
+check_cap "client.${CEPHFS_CLIENT}" osd "tag cephfs data=${FS_NAME}"
+check_cap "client.${CEPHFS_CLIENT}" mds "path=${SVG_PATH}"
+
+head_ "Negative check — the k8s users must NOT reach PVE's VM pool"
+# The whole point of a separate pool. `ceph auth caps` is declarative, so this
+# reads the cap text rather than attempting a write: an actual write test
+# against a production pool is not a test worth running.
+RBD_OSD=$(ceph auth get "client.${RBD_CLIENT}" --format json 2>/dev/null \
+          | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['caps'].get('osd',''))" 2>/dev/null || true)
+if [[ ${RBD_OSD} == *"pool=${RBD_POOL}"* && ${RBD_OSD} != *"allow *"* && ${RBD_OSD} != *"allow rwx"* ]]; then
+  ok "client.${RBD_CLIENT} osd cap is pool-scoped, no wildcard"
+else
+  bad "client.${RBD_CLIENT} osd cap is not safely pool-scoped: '${RBD_OSD}'"
+fi
+
+printf '\n\033[1m%d passed, %d failed\033[0m\n\n' "${PASS}" "${FAIL}"
+[[ ${FAIL} -eq 0 ]]

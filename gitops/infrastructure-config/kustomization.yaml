@@ -7,9 +7,17 @@ kind: Kustomization
 # which has wait: true — by the time anything here applies, every HelmRelease
 # below it is Ready and its CRDs are Established.
 #
-# Belongs here later, same reasoning: ceph-csi StorageClasses, ESO
-# SecretStores/ClusterSecretStores. Calico's BGP CRs predate this tier and stay
-# in infrastructure/calico-bgp (they're Ansible-primed before Flux ever runs —
-# a different ordering mechanism; see that directory's header).
+# Belongs here later, same reasoning: ESO SecretStores/ClusterSecretStores.
+# Calico's BGP CRs predate this tier and stay in infrastructure/calico-bgp
+# (they're Ansible-primed before Flux ever runs — a different ordering
+# mechanism; see that directory's header).
 resources:
   - cert-manager
+  # ceph-csi (ADR-0006): CephConnection + ClientProfile + the two Driver CRs,
+  # and the ceph-rbd / cephfs StorageClasses. ⚠ Their CRDs come from ../crds
+  # (vendored, ADR-0031) rather than from a chart in ../infrastructure — so
+  # unlike cert-manager's, these CRs are not blocked by same-pass CRD
+  # installation. They stay here anyway: they are configuration CONSUMED BY a
+  # controller, which is what this tier is for, and this tier's wait: true then
+  # makes "Ready" mean the drivers are actually running.
+  - ceph-csi
