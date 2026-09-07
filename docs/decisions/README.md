@@ -27,7 +27,7 @@ Rules:
 | [0003](0003-k3s.md) | Kubernetes distribution: k3s | Accepted |
 | [0004](0004-cluster-shape-kine-single-cp-proxmox-ha.md) | Cluster shape: SQLite via kine, one tainted control plane with HA from Proxmox, 1 CP + 3 workers | Accepted (one all-in-one node so far) |
 | [0005](0005-flatcar-k3s-sysext-ignition-config-drive.md) | Node OS: Flatcar with the k3s sysext; Ignition via the cloud-init config drive | Accepted |
-| [0006](0006-ceph-csi-external-proxmox-ceph.md) | Persistent storage: ceph-csi-operator against the existing Proxmox Ceph | Accepted — not yet implemented |
+| [0006](0006-ceph-csi-external-proxmox-ceph.md) | Persistent storage: ceph-csi-operator against the existing Proxmox Ceph | Accepted, verified (2026-09-07) |
 | [0007](0007-ansible-not-terraform.md) | Provisioning: Ansible only — Terraform/OpenTofu dropped | Accepted |
 | [0008](0008-flux-via-flux-operator.md) | GitOps: FluxCD via the Flux Operator, bootstrapped by Ansible last | Accepted (source detail superseded by 0028) |
 | [0009](0009-secrets-aescbc-and-eso-bitwarden.md) | Secrets: k3s secrets-encryption at rest; ESO + Bitwarden Secrets Manager for app secrets | Accepted — ESO half not yet implemented |
@@ -57,7 +57,7 @@ Rules:
 | [0028](0028-gitops-delivery-signed-oci-syncless-fluxinstance.md) | 2026-08-29 | Flux consumes a cosign-signed OCI artifact; sync-less FluxInstance; self-managed root | Accepted, verified |
 | [0029](0029-drop-helm-for-calico.md) | 2026-08-02 | Install the tigera operator from manifests instead of the Helm chart | **Proposed** |
 | [0030](0030-flatcar-os-update-policy.md) | 2026-08-02 | Flatcar auto-update/reboot policy | **Open** |
-| [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted |
+| [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified |
 
 ### Open questions without a record yet
 
@@ -79,6 +79,23 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   handover. Excluded whatever is decided: `cluster-topology` (permanent,
   0021/0027) and `eso_bws_access_token` (0027 ⚠). Decide + ADR at the ESO
   milestone.
+
+  ⚠ **ceph-csi's two cephx keys are a different case from cert-manager's token,
+  and the difference is easy to misread.** cert-manager genuinely *is* upstream
+  of ESO (0009: the SDK Server needs a cert). ceph-csi is **not** — ESO and the
+  SDK Server are stateless, so nothing about ESO needs a StorageClass, and
+  ceph-csi could have landed after it. So for these two keys, "retire the seed"
+  is actually on the table where for the Cloudflare token it is not.
+
+  The argument for keeping them seeded anyway is **rebuild-path length**, not
+  dependency: seeded, storage needs only Ansible + BWS; sourced from ESO, first
+  provisioning would additionally need a live LE cert, the Gateway, the LB IP,
+  BGP and Bitwarden reachability. Re-provisioning is the *normal* upgrade path
+  here (0019), so that path gets walked often, and 0004/0015 both put recovery
+  on top of Ceph. Running clusters are unaffected either way — 0009 notes
+  materialised Secrets persist, so ESO is needed at sync time, not pod start.
+  Current lean: **adopt, keep the seed**, same as the token but for a different
+  reason. Decide explicitly rather than inheriting the delivery order.
 
 ## Adding a record
 

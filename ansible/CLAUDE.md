@@ -22,13 +22,19 @@ Ready, Calico adopted with no diff war). Evidence: worklog entries for
 
 **Delivered from Git so far (both verified live, worklog 2026-09-05):** NGINX
 Gateway Fabric (Gateway API CRD tier, shared Gateway, LB reachable,
-source-IP preserved) and cert-manager (DNS-01 wildcard issued, HTTPS on the
-Gateway, `infrastructure-config` tier). **Next: ceph-csi-operator +
-StorageClasses** → ESO + Bitwarden SDK Server → Postgres + Redis → LiteLLM →
-… That work is in `gitops/`; this directory's part is seeding the
-bootstrap-tier secrets as they arrive — the cert-manager DNS-01 token (done,
-in `bootstrap-cluster.yml`) and the ESO access token when that milestone
-comes. ⚠ Do **not** fold "stop vendoring the Calico
+source-IP preserved), cert-manager (DNS-01 wildcard issued, HTTPS on the
+Gateway, `infrastructure-config` tier) and **ceph-csi** (both StorageClasses
+provisioning against the existing Proxmox Ceph; worklog 2026-09-07).
+**Next: ESO + Bitwarden SDK Server** → Postgres + Redis → LiteLLM → … That work
+is in `gitops/`; this directory's part is seeding the bootstrap-tier secrets as
+they arrive — the cert-manager DNS-01 token and ceph-csi's two cephx keys (both
+done, in `bootstrap-cluster.yml`) and the ESO access token when that milestone
+comes.
+
+⚠ The **Ceph side** is not provisioned by any play: `ceph` needs root on a PVE
+node (pmxcfs), the `provisioner` user's sudo is scoped to `qm`, and cephx user
+creation is not in the Proxmox API. `playbooks/render-ceph-setup.yml` renders
+scripts a human runs once — `../docs/proxmox-ceph-k8s-setup.md`. ⚠ Do **not** fold "stop vendoring the Calico
 CRDs" into it — `bootstrap-cluster.yml` primes from the vendored file, so that's
 its own step (ADR-0020).
 
@@ -248,9 +254,12 @@ Each of these produced a *silent-wrong* result, not a loud failure.
 - **Agent/worker join path** is not built; server-only flags in
   `k3s-config.yaml.j2` must not reach an agent config.
 - **Tests still owed:** the real API blip during a Proxmox HA restart of the CP
-  VM; a ceph-csi PVC (RBD + CephFS) against this Ceph release and the Flatcar
-  kernel's image features.
-- **Drop Helm for Calico** (ADR-0029, Proposed) — would delete the adoption
+  VM. (The ceph-csi PVC test is **done** — both classes provision, mount and
+  reclaim; krbd maps `imageFeatures: layering` on Flatcar 6.12.102. Worklog
+  2026-09-07.)
+- **Drop Helm for Calico** (ADR-0029, Proposed) — now with precedent: ceph-csi
+  installs from vendored manifests because its chart *cannot* be installed by
+  Flux at all (ADR-0031). Would delete the adoption
   problem, `helm` as a control-node prerequisite, and the `kubernetes.core`
   Helm-major pin. Not before the next milestone has a known-good cluster to
   diff against.
