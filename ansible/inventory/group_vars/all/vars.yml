@@ -7,10 +7,15 @@
 #
 # Everything sensitive — internal IPs, subnets, VLANs, gateways, hostnames,
 # storage names, the SSH public key, and the full API credential — lives in
-# **Bitwarden Secrets Manager** and is fetched at run time into the `secrets` fact
-# by playbooks/tasks/load-secrets.yml. There is no vault.yml. Nothing here
-# exposes the real environment; you can read the structure without any
-# credential, but not the values. Secret names to create: ../BWS-SECRETS.md.
+# **1Password** and is fetched at run time into the `secrets` fact by
+# playbooks/tasks/load-secrets.yml. There is no vault.yml. Nothing here exposes
+# the real environment; you can read the structure without any credential, but
+# not the values. Items, fields and setup: ../SECRETS.md.
+#
+# ⚠ This file is the ONLY place `secrets` is indexed (ADR-0033). A play or role
+# consumes `{{ proxmox_api_host }}`, never `{{ secrets.proxmox_api_host }}`.
+# Questions about which secrets EXIST go to the `secret_names` fact, not to
+# `secrets.keys()` — that is what keeps such tasks out of no_log's reach.
 #
 # ⚠ These references are LAZILY templated — they resolve when used, not when
 # group_vars loads. A play that forgets to include load-secrets.yml fails
@@ -592,33 +597,86 @@ ceph_csi:
 ceph_k8s_rbd_key: "{{ secrets.ceph_k8s_rbd_key }}"
 ceph_k8s_cephfs_key: "{{ secrets.ceph_k8s_cephfs_key }}"
 
-# --- Bitwarden Secrets Manager connection -----------------------------------
-# How playbooks/tasks/load-secrets.yml reaches BWS. The values below are
-# NOT credentials — the only credential is the machine-account access token,
+# --- Which secret store -----------------------------------------------------
+# 1Password is the store (ADR-0034). `bitwarden` selects the retained legacy
+# path for the duration of the cutover window, and exists so that "roll back"
+# means one -e rather than writing the old code again:
+#
+#   uv run ansible-playbook playbooks/render-frr-config.yml -e secrets_backend=bitwarden
+#
+# ⚠ Both backends must render BYTE-IDENTICAL output. That diff is the proof the
+# 1Password field layout matches what BWS held — much stronger than eyeballing
+# two lists of names. Delete the Bitwarden half once it has passed; keeping two
+# live stores forever is precisely the "two contradicting sources of truth"
+# ADR-0027 was written to repair.
+secrets_backend: "onepassword"
+
+# --- 1Password connection ---------------------------------------------------
+# How playbooks/tasks/load-secrets-onepassword.yml reaches 1Password. Nothing
+# below is a credential — the only credential is the service-account token,
 # which lives in the macOS Keychain and never touches this repo.
 
-# Organization UUID. Environment-identifying but not secret, and it cannot come
-# from BWS (you need it to make the call). RESOLVED in load-secrets.yml,
-# exactly like the access token: Keychain by default, overridable by BWS_ORG_ID
-# in the environment or -e bws_organization_id=... The Keychain item and command
-# are defined below next to the token's.
+# Vault TITLE holding the control-node secrets. Committed in cleartext, unlike
+# BWS's organization id, and that is a real simplification rather than a
+# relaxation: a 1Password service-account token encodes its own account, so
+# there is no second environment-identifying id to supply, to keychain, or to
+# confuse with a project id. The name is one WE choose and reveals nothing.
+#
+# ⚠ This vault must be a vault you created. A service account can never read a
+# built-in Personal/Private/Employee vault, nor the default Shared vault.
+op_vault: "homelab-infra"
 
-# Optional: restrict to one project. The access token is already scoped
-# read-only to a single project, so this is belt-and-braces for the case where a
-# token is later widened. Leave unset to accept everything the token can read.
-# bws_project_id: "<project uuid>"
+# The items to read, in the vault above. ONE `op item get` per entry, so this
+# list IS the API-call budget — the daily cap is per ACCOUNT and shared across
+# every service account (1,000/24h on Individual/Families), not per token.
+#
+# Values are grouped onto ONE item as labelled fields, in purpose SECTIONS.
+# ⚠ That is a deliberate reversal of ADR-0027, which rejected grouping because
+# "a BWS secret has no fields" — Name + Value + Notes, so grouping meant
+# hand-authoring JSON into a textarea with no validation. 1Password items have
+# first-class fields with a label and a type, each independently editable in a
+# real form, so the premise is simply void and grouping is now the correct
+# shape rather than a JSON hack (ADR-0034).
+#
+# ⚠ Field labels are the SECRET NAMES and must be unique across every item
+# here, not merely within one; the load task refuses on a duplicate, because
+# 1Password itself will not. Layout: ../SECRETS.md.
+#
+# The ESO service-account token gets its OWN item when that milestone lands, so
+# the credential gating cluster access stays separately rotatable and its
+# history isn't coupled to everything else. Add "eso-service-account" here then.
+op_items:
+  - "control-node"
+
+# Service-account auth needs op >= 2.18.0. Below it, `op` ignores
+# OP_SERVICE_ACCOUNT_TOKEN and falls back to an interactive session, which in a
+# playbook just hangs — so this is asserted, not assumed.
+op_min_version: "2.18.0"
+
+# Optional: pin the vault and items by UUID instead of resolving them by title.
+# Not a security control — a readability/rate-limit trade. Resolving a title
+# costs 1Password an extra lookup per call, and their own guidance for staying
+# under the cap is to pass ids. Titles are the default because a uuid in
+# group_vars is unreadable and this repo's call volume is nowhere near 1,000/day
+# (~25 for a full site.yml). Reach for these only if the cap ever bites.
+#   op_vault: "<vault uuid>"      # the same variable — it takes either form
+#   op_items: ["<item uuid>"]     # likewise
 
 # Where secret zero lives. Create it with:
-#   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -w
+#   security add-generic-password -a "$USER" -s OP_SERVICE_ACCOUNT_TOKEN -U -w
 # (-w must be LAST: with no value after it, security prompts — keeping it out of
 # shell history. Mid-args, -w swallows the next flag as its value and never asks.)
+#
+# ⚠ The token is displayed EXACTLY ONCE, when the service account is created,
+# and 1Password cannot show it again. Lose it and the fix is a NEW service
+# account — which, because vault grants are immutable, also means re-making the
+# grant decision. Keychain it in the same sitting.
 #
 # ⚠ The LOCAL login keychain, NOT the Passwords app — they are separate stores.
 # Passwords.app manages the synced iCloud Keychain; the `security` CLI reads
 # login.keychain-db. Items in one are invisible to the other, so macOS nudging
 # you toward Passwords changes nothing here. Keychain Access.app was REMOVED in
-# macOS 26 (verified on 26.6.1), so the CLI is the only way in — Bitwarden's own
-# docs still tell you to use that app.
+# macOS 26 (verified on 26.6.1), so the CLI is the only way in.
 #
 # Reads WITHOUT a prompt by default: `security` is trusted for items it created.
 # Add `-T ""` when creating the item (empty trusted-app list) and every read
@@ -627,12 +685,60 @@ ceph_k8s_cephfs_key: "{{ secrets.ceph_k8s_cephfs_key }}"
 # no biometry flag, and biometric items live in the Secure-Enclave-backed
 # data-protection keychain, which this CLI does not reach.
 #
-# ⚠ That is one prompt PER PLAY, not per run: this file is included once per
-# play, so a full site.yml prompts 4 times. And click Allow, never *Always
-# Allow*, or the caller joins the ACL and the prompt stops for good.
+# ⚠ Touch ID is available WITHOUT any repo change, and without `op`'s biometric
+# unlock: keep this scoped token, store it in a personal 1Password item, and
+# export it from your shell profile. The precedence chain already prefers the
+# environment. Do NOT switch the playbooks to `op signin`/biometrics — that
+# authenticates as YOU with full vault access and is interactive-only, which
+# throws away the least-privilege split the two-vault layout exists to protect.
 #
-# Either way the credential is scoped read-only to one project and carries an
-# expiry, rather than being a long-lived passphrase over every secret at once.
+# ⚠ One prompt PER PLAY, not per run: the load task is included once per play,
+# so a full site.yml prompts 4 times. And click Allow, never *Always Allow*, or
+# the caller joins the ACL and the prompt stops for good.
+#
+# Either way the credential is a service-account token scoped to named vaults,
+# optionally with an expiry, rather than a long-lived passphrase over
+# everything at once.
+#
+# ⚠ Trailing `2>/dev/null || true`, which the BWS token command below lacks —
+# and its absence there is a latent bug, not a design (ADR-0034). `security`
+# exits 44 when the item is missing, and the `pipe` lookup turns a non-zero
+# exit into a hard AnsibleError *while resolving the variable*. That happens
+# BEFORE the "Assert secret zero was found" task, so on a machine without the
+# item the carefully-written "here is how to create it" message could never
+# render — you got `lookup_plugin.pipe(...) returned 44` instead. Found the
+# first time this path ran on a machine with no item, which is to say: the one
+# time it mattered. The same shape as the `fail_msg` that never renders in
+# render-ceph-setup.yml.
+#
+# ⚠ The cost of masking: a LOCKED keychain or a DENIED authorization dialog
+# (exit 51) also becomes "no token found", whose message tells you to create an
+# item that already exists. The assert's fail_msg names that case explicitly
+# for exactly this reason — read it before creating a second item.
+op_keychain_service: "OP_SERVICE_ACCOUNT_TOKEN"
+op_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
+op_keychain_command: >-
+  security find-generic-password -w -s {{ op_keychain_service | quote }}
+  -a {{ op_keychain_account | quote }} 2>/dev/null || true
+
+# --- Bitwarden Secrets Manager connection (RETAINED FOR THE CUTOVER ONLY) ----
+# Reached only when secrets_backend == 'bitwarden'. Delete this block, the
+# backend task, library/bws_secret*.py, the bitwarden-sdk pin and the BWS_*
+# Keychain items once the byte-identical parallel run has passed (ADR-0034).
+#
+# Organization UUID. Environment-identifying but not secret, and it cannot come
+# from BWS (you need it to make the call). RESOLVED in
+# load-secrets-bitwarden.yml, exactly like the access token: Keychain by
+# default, overridable by BWS_ORG_ID in the environment or
+# -e bws_organization_id=...
+#
+# Optional: restrict to one project. Leave unset to accept everything the token
+# can read.
+# bws_project_id: "<project uuid>"
+#
+# Keychain semantics are identical to the op token's above — same store, same
+# -w-last rule, same -T "" prompt behaviour. Create it with:
+#   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -w
 bws_keychain_service: "BWS_ACCESS_TOKEN"
 bws_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
 bws_keychain_command: >-
