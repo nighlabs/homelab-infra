@@ -78,21 +78,31 @@ proxmox_validate_certs: false
 proxmox_node: "{{ bws.proxmox_node }}"
 # Inventory host alias we SSH into for snippet upload + `qm` fallbacks. This is
 # a generic, non-revealing alias defined in inventory/hosts.yml (the real
-# address/user it points to are vaulted there) — safe in cleartext.
+# address/user it points to are brokered below) — safe in cleartext.
 proxmox_ssh_host: "pve"
+
+# Where that alias actually points, and who it logs in as. Brokered here rather
+# than dereferenced in inventory/hosts.yml, which is the only consumer of the
+# address (ADR-0033): this file is the single place the secret store is read
+# from, and "only one consumer" is why these two were the last values without a
+# brokered name. hosts.yml still needs the hostvars['localhost'] indirection —
+# see the comment there; that is about WHICH host's namespace resolves them,
+# which is a separate problem from where the store is read.
+proxmox_ssh_addr: "{{ bws.proxmox_ssh_addr }}"
+proxmox_ssh_user: "{{ bws.proxmox_ssh_user }}"
 
 # How to invoke Proxmox's root-only `qm` CLI over SSH. PVE's CLI tools ignore
 # the API token/ACL system and require root, so when SSHing as a non-root
 # `provisioner` user (recommended — see README) we escalate with sudo, scoped
 # to just `qm` via /etc/sudoers.d/provisioner. As root, call it directly. Works
 # both ways, so the ssh user is a free choice.
-proxmox_qm: "{{ 'qm' if bws.proxmox_ssh_user == 'root' else 'sudo qm' }}"
+proxmox_qm: "{{ 'qm' if proxmox_ssh_user == 'root' else 'sudo qm' }}"
 # Same idea for the snippet-dir repair in flatcar_vm (PVE resets that dir's
 # group+setgid on storage activation). ⚠ The sudoers rules are FIXED-ARGUMENT,
 # so the repair commands must match them byte-for-byte — changing
 # the `proxmox_snippet_dir` secret, the group, or the mode means updating
 # /etc/sudoers.d/provisioner on every PVE node too (README step 4).
-proxmox_sudo: "{{ '' if bws.proxmox_ssh_user == 'root' else 'sudo ' }}"
+proxmox_sudo: "{{ '' if proxmox_ssh_user == 'root' else 'sudo ' }}"
 proxmox_snippet_group: "pve-snippets"
 proxmox_snippet_mode: "2770"
 
@@ -527,6 +537,18 @@ cloudflare_api_token: "{{ bws.cloudflare_api_token }}"
 # environment, so they stay readable in the runbook and in gitops/. Names and
 # addresses that describe the EXISTING cluster are vaulted, per the root
 # CLAUDE.md rule that storage names are environment-revealing.
+
+# PVE's existing CephFS name, brokered as a STANDALONE scalar as well as through
+# ceph_csi.fs_name below. ⚠ Not redundancy — render-ceph-setup.yml must be able
+# to read this ONE value on a first run, when ceph_mons/ceph_fsid do not exist
+# yet (the scripts it renders are what produce them). Touching `ceph_csi` at all
+# would template the whole dict, and `ceph_csi.mons` calls .splitlines() on an
+# undefined value and raises. That is why the old code reached past the broker to
+# `bws.ceph_fs_name` — this scalar is the brokered way to ask the same question
+# (ADR-0033). Keep it a plain reference: anything that dereferences another
+# vaulted value reintroduces exactly the coupling it exists to avoid.
+ceph_fs_name: "{{ bws.ceph_fs_name }}"
+
 ceph_csi:
   # --- Ours, cleartext: created by the runbook, generic by construction ------
   # New RBD pool for Kubernetes RWO volumes. NEVER the pool PVE stores VM disks
@@ -553,8 +575,10 @@ ceph_csi:
   # reaches gitops/ as a placeholder rather than a literal.
   fsid: "{{ bws.ceph_fsid }}"
   # PVE's existing CephFS name (vaulted as a storage name, like
-  # proxmox_snippet_storage). We do not create this — we join it.
-  fs_name: "{{ bws.ceph_fs_name }}"
+  # proxmox_snippet_storage). We do not create this — we join it. Sourced from
+  # the standalone `ceph_fs_name` above, not from the store directly, so there
+  # is exactly one reference to that secret.
+  fs_name: "{{ ceph_fs_name }}"
 
 # The two cephx keys. CREDENTIALS (root CLAUDE.md tiers): BWS-managed, seeded by
 # bootstrap-cluster.yml into the ceph-csi namespace, never in any manifest.

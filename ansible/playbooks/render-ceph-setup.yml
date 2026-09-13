@@ -39,15 +39,20 @@
     # Only ONE secret is a hard prerequisite, and it is knowable before any of
     # this runs: the name of PVE's existing CephFS. Everything else the cluster
     # side needs (mons, fsid, the two keys) is PRODUCED by these scripts, so it
-    # is checked softly further down. Guarded by `is defined` rather than by
-    # dereferencing ceph_csi.fs_name, because group_vars is lazily templated —
-    # touching it while the secret is absent raises a Jinja attribute error
-    # instead of the message below.
+    # is checked softly further down.
+    #
+    # ⚠ Presence is asked of `secret_names`, and the value read through the
+    # standalone `ceph_fs_name` broker — NOT through `ceph_csi.fs_name`. Reading
+    # any key of `ceph_csi` templates the whole dict, and on a first run
+    # `ceph_csi.mons` calls .splitlines() on an absent secret and raises a Jinja
+    # error in place of the message below. The ordering matters too: `assert`
+    # short-circuits on the first false condition, so the presence test must
+    # come first or the length test evaluates an undefined value (ADR-0033).
     - name: Assert the CephFS name is in BWS
       ansible.builtin.assert:
         that:
-          - bws.ceph_fs_name is defined
-          - (bws.ceph_fs_name | trim | length) > 0
+          - "'ceph_fs_name' in secret_names"
+          - (ceph_fs_name | trim | length) > 0
         fail_msg: >-
           `ceph_fs_name` is not in Bitwarden Secrets Manager. It is PVE's
           EXISTING CephFS name — the filesystem already holding snippets/ISOs/
@@ -104,7 +109,10 @@
     - name: Check whether the cluster-side BWS secrets exist yet
       vars:
         expected: [ceph_mons, ceph_fsid, ceph_k8s_rbd_key, ceph_k8s_cephfs_key]
-        missing: "{{ expected | reject('in', bws.keys() | list) | list }}"
+        # `secret_names` is already the sorted name list (ADR-0033) — no
+        # `.keys() | list` over the values dict, and this task never sees a
+        # secret value.
+        missing: "{{ expected | reject('in', secret_names) | list }}"
       ansible.builtin.debug:
         msg: >-
           {% if missing | length == 0 %}
@@ -117,7 +125,7 @@
           {% endif %}
 
     - name: Assert the mon addresses are on the Ceph public network
-      when: bws.ceph_mons is defined
+      when: "'ceph_mons' in secret_names"
       vars:
         mon_ips: "{{ ceph_csi.mons | map('regex_replace', ':.*$', '') | list }}"
         off_net: >-
@@ -136,7 +144,7 @@
         quiet: true
 
     - name: Assert the fsid looks like a uuid
-      when: bws.ceph_fsid is defined
+      when: "'ceph_fsid' in secret_names"
       ansible.builtin.assert:
         that:
           # `is match`, not regex_search: the latter returns the matched STRING,
