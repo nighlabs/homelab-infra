@@ -107,11 +107,26 @@ the apps side, **one vault per cluster**:
 | Vault | Read by | Holds |
 |---|---|---|
 | `homelab-infra` | the **control node** (one vault, fleet-wide) | everything in §2 — Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password — **and every cluster's ESO service-account token** |
-| `<cluster>-apps` — e.g. `homelab-apps` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. Created at the ESO milestone, one per cluster in `inventory/nodes.yml` |
+| `<cluster>-apps` — e.g. `homelab-apps` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. One per cluster in `inventory/nodes.yml` |
+
+**Create both up front**, even though the apps vault stays empty until the ESO
+milestone:
 
 ```sh
 op vault create homelab-infra
+op vault create homelab-apps
 ```
+
+⚠ Why not defer the empty one: so that an app secret which shows up before ESO
+exists has a **correct home on day one** rather than drifting into
+`control-node`, where it would then need migrating. Vaults are unlimited here,
+so an empty one costs nothing — under BWS this was the opposite call, because
+an empty project burned one of only three (ADR-0027).
+
+⚠ The **ESO service account** is still created later, at that milestone — not
+now. Its vault grant is immutable, so it should be created once the adoption
+question (`../docs/decisions/README.md`) is answered, and a token sitting
+unused is a credential to look after for no benefit.
 
 **Why the infra vault is fleet-wide but the apps vaults are per-cluster.** The
 control node provisions every cluster, so a per-cluster split there would only
