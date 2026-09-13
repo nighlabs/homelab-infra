@@ -95,9 +95,16 @@ a command is a *selector* (which vault to look in), not a permission boundary.
 The app integration authenticates as you, so access is account-wide by
 construction. **A service account is the only vault-scoped credential 1Password
 offers** (§1.4), and taking one means accepting a stored token again — the trade
-in the paragraph above, not a free upgrade. The only other axis that exists is a
-*separate 1Password account* holding just these vaults, which is a second
-account to manage for a boundary the operator already crosses.
+in the paragraph above, not a free upgrade.
+
+⚠ **A second 1Password account does NOT scope it either**, which is the
+tempting-but-wrong answer: 1Password documents that the app integration lets the
+CLI *"access any 1Password account you've added to the app"*. `op signin` and
+`--account` choose which account a command **runs against** — selectors, exactly
+like `--vault` — so during an authorized session `op --account personal …` still
+works. It would only scope if the homelab account were the **sole** account in
+that app install, i.e. a separate machine or a separate macOS user running the
+plays. That is a lot of machinery for a boundary the operator already crosses.
 
 ⚠ **It does not apply to ESO.** A pod has no desktop app, so ESO must use a
 scoped service account regardless (§1.4). The consumer split therefore still
