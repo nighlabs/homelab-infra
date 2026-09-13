@@ -35,7 +35,7 @@ a file in that subdirectory.
 ## Facts that don't change per-task
 
 **Network topology (Ceph, confirmed live config):** the real subnets, VLAN
-tags, bridge names, and mon addresses live in Bitwarden Secrets Manager and
+tags, bridge names, and mon addresses live in 1Password and
 reach the repo only as `{{ secrets.* }}` references (the variable *structure* is
 in `ansible/inventory/group_vars/all/vars.yml`) — deliberately not committed
 in any form. Described by role only here:
@@ -53,17 +53,27 @@ in any form. Described by role only here:
 - **LoadBalancer range** — one routed-only `/24` per cluster, attached to no
   interface anywhere; pfSense learns it over BGP.
 
-**Secrets, credentials, and topology blinding.** Bitwarden Secrets Manager
-(cloud-hosted) is the durable store for everything; the split is about *who
-reads it when* (`docs/decisions/0027-control-node-secrets-bws-runtime.md`,
-`0009-secrets-aescbc-and-eso-bitwarden.md`, `0021-topology-blinding-postbuild-substitution.md`):
+**Secrets, credentials, and topology blinding.** **1Password** (cloud-hosted)
+is the durable store for everything; the split is about *who reads it when*
+(`docs/decisions/0034-secrets-store-1password.md`,
+`0021-topology-blinding-postbuild-substitution.md`):
 
 | Tier | Example | Mechanism |
 |---|---|---|
-| **Credentials** | Proxmox API token, k3s join token | **BWS, read at run time** by the custom bulk-fetch module; secret zero (the BWS token) is a **macOS Keychain** item |
-| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from BWS |
-| **Runtime app secrets** | app passwords, API keys | ESO + Bitwarden SDK Server, from a *separate* BWS project |
+| **Credentials** | Proxmox API token, k3s join token | **1Password, read at run time** via the `op` CLI — one `op item get` per item, values as labelled fields |
+| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
+| **Runtime app secrets** | app passwords, API keys | ESO + the 1Password **SDK provider** (no in-cluster server), from a *separate* vault |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range, node IPs | Flux `postBuild.substituteFrom` the Ansible-seeded `cluster-topology` `Secret` — *placeholders* in Git |
+
+- **Secret zero does not exist on the control node.** `op` authenticates
+  against the local 1Password app (Touch ID), so there is no token on disk or
+  in a keychain. A scoped, read-only **service account** is used only where no
+  app can run: CI, a Linux control node, and **ESO in-cluster**. Vault grants
+  on a service account are **immutable** — decide them at creation.
+- **Two vaults, split by CONSUMER not by subject.** The control node reads
+  `homelab-infra`; ESO reads `homelab-apps` and *cannot* reach the other — a
+  SecretStore names exactly one vault, so "cluster compromise must not reach
+  the Proxmox token" is enforced by the API shape, not by discipline.
 
 - **Never commit a credential in any form, including ciphertext.** Encrypted
   secrets in Git are permanent, unrotatable without a commit, and unauditable.
@@ -72,17 +82,25 @@ reads it when* (`docs/decisions/0027-control-node-secrets-bws-runtime.md`,
 - **Topology is blinded with `${var}` placeholders + post-build substitution**,
   not SOPS. Reach for **SOPS/age only** where substitution can't go (whole
   blocks/lists, or values needed at kustomize-*build* time).
-- **ESO sits below cert-manager** — the Bitwarden SDK Server needs a
-  cert-manager certificate, so anything needed before ESO exists is
-  Ansible-seeded. ⚠ The chain stops there: certs are issued by **DNS-01**
-  (ADR-0013), which needs no Gateway and no LoadBalancer IP — those are what
-  *serving* the wildcard needs, not what *issuing* it needs. **`cluster-topology`
-  is Ansible-seeded permanently for a different reason**: Flux evaluates
-  `postBuild.substituteFrom` at build time for the `infrastructure` tier, and a
-  tier applies in one pass with no intra-tier ordering, so a Secret produced by
-  a controller *inside* that tier can never be a substitution source *for* it.
-  Cluster-bound ≠ ESO-managed. See ADR-0032 for the correction and for what
-  changes under a provider with no in-cluster server.
+- **ESO does NOT sit below cert-manager** — the 1Password SDK provider runs
+  **no in-cluster server and needs no certificate at all**, so that edge is
+  gone (ADR-0034). ESO's earliest position is *immediately after Calico*: it
+  needs CRDs Established, pod networking, egress to the vendor API (pod→node
+  NAT — **not** BGP, which advertises LoadBalancer ranges *inbound*), and its
+  own Ansible-seeded token `Secret`. Its admission-webhook certs come from its
+  own bundled `cert-controller`, never cert-manager. ⚠ Do not reintroduce the
+  old chain from memory — under Bitwarden the SDK Server did need a cert, and
+  that is where the rule came from.
+- **`cluster-topology` is Ansible-seeded permanently**, and not for any
+  dependency reason: Flux evaluates `postBuild.substituteFrom` at build time
+  for the `infrastructure` tier, and a tier applies in one pass with no
+  intra-tier ordering, so a Secret produced by a controller *inside* that tier
+  can never be a substitution source *for* it. Calico is also Ansible-primed
+  from the same values before Flux exists (ADR-0016). **Cluster-bound ≠
+  ESO-managed.**
+- **Certificates are issued by DNS-01** (ADR-0013), which needs no Gateway and
+  no LoadBalancer IP — those are what *serving* the wildcard needs, not what
+  *issuing* it needs.
 - **The repo and its OCI artifact are public.** Blinding applies to docs too:
   `${placeholder}` / `x.x.x.N`, never a real address.
 

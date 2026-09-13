@@ -172,7 +172,7 @@ k3s_service_cidr: "10.43.0.0/16"
 # provision-nodes.yml destroys the .ign once the node has booted (see
 # destroy_ignition_snippet).
 #
-# Assembled from ONE BWS SECRET PER CLUSTER, named `k3s_token_<cluster>`. Each
+# Assembled from ONE FIELD PER CLUSTER, named `k3s_token_<cluster>`. Each
 # is a plain scalar string, so every secret stays paste-into-a-field editable —
 # no JSON hand-authored into a textarea with no validation (ADR-0027).
 #
@@ -385,7 +385,7 @@ flux_cluster_size: "small"
 # branch the artifact is built from) and NOT by any running FluxInstance. The
 # artifact source itself is committed in gitops/deployment/<cluster>/source.yaml.
 # PUBLIC repo + PUBLIC package, so no pull secret; if either goes private, add a
-# BWS secret and set spec.secretRef on the OCIRepository (see BWS-SECRETS.md).
+# secret and set spec.secretRef on the OCIRepository (see SECRETS.md).
 flux_git_url: "https://github.com/nighlabs/homelab-infra.git"
 flux_git_ref: "refs/heads/main"
 
@@ -467,7 +467,7 @@ lb_range_base: "{{ secrets.lb_range_base }}"
 # peer password. Saving raw config replaces the generated frr.conf wholesale,
 # so this has to appear IN the rendered file, which is why that artifact is
 # git-ignored and mode 0600. A credential per the root CLAUDE.md tiers:
-# BWS-managed, never in a committed manifest.
+# store-managed, never in a committed manifest.
 frr_master_password: "{{ secrets.frr_master_password }}"
 
 # --- THE per-cluster BGP derivation ----------------------------------------
@@ -522,7 +522,7 @@ cluster_bgp: >-
 base_domain: "{{ secrets.base_domain }}"
 
 # Cloudflare API token for cert-manager's DNS-01 solver. A CREDENTIAL (root
-# CLAUDE.md tiers): BWS-managed, seeded by bootstrap-cluster.yml into the
+# CLAUDE.md tiers): store-managed, seeded by bootstrap-cluster.yml into the
 # cert-manager namespace, never in any manifest. Scope it in Cloudflare to
 # Zone > DNS > Edit on that one zone — it can create TXT records for ACME
 # challenges, which is all cert-manager needs.
@@ -537,7 +537,7 @@ cloudflare_api_token: "{{ secrets.cloudflare_api_token }}"
 # created ONCE, by hand, from a rendered script:
 # docs/proxmox-ceph-k8s-setup.md + playbooks/render-ceph-setup.yml.
 #
-# The cleartext/BWS split here is narrower than elsewhere, deliberately:
+# The cleartext/vaulted split here is narrower than elsewhere, deliberately:
 # names WE choose for objects that don't exist yet reveal nothing about the
 # environment, so they stay readable in the runbook and in gitops/. Names and
 # addresses that describe the EXISTING cluster are vaulted, per the root
@@ -572,7 +572,7 @@ ceph_csi:
   namespace: "ceph-csi"
 
   # --- Theirs, vaulted: describes the existing cluster -----------------------
-  # Mon addresses, ONE PER LINE in BWS (same shape as dns_servers /
+  # Mon addresses, ONE PER LINE in the store (same shape as dns_servers /
   # ssh_authorized_keys). These are on the Ceph PUBLIC network — the only Ceph
   # network a k3s node ever touches (root CLAUDE.md). Never the cluster network.
   mons: "{{ secrets.ceph_mons.splitlines() | map('trim') | reject('equalto', '') | list }}"
@@ -585,7 +585,7 @@ ceph_csi:
   # is exactly one reference to that secret.
   fs_name: "{{ ceph_fs_name }}"
 
-# The two cephx keys. CREDENTIALS (root CLAUDE.md tiers): BWS-managed, seeded by
+# The two cephx keys. CREDENTIALS (root CLAUDE.md tiers): store-managed, seeded by
 # bootstrap-cluster.yml into the ceph-csi namespace, never in any manifest.
 #
 # ⚠ Bootstrap-secret tier, and that is a CONSEQUENCE OF ORDERING, not a

@@ -13,7 +13,7 @@ with the alternatives rejected:
   routed-only — [ADR-0026](decisions/0026-per-cluster-derivation-from-index.md)
 
 **The config is generated** by `ansible/playbooks/render-frr-config.yml` from
-`inventory/nodes.yml` + BWS — don't hand-write or GUI-edit it. See §9. It was
+`inventory/nodes.yml` + 1Password — don't hand-write or GUI-edit it. See §9. It was
 applied and verified live on 2026-08-16 (`worklog.md`).
 
 > **⚠ This runs on live production gear.** The same pfSense box routes
@@ -22,8 +22,8 @@ applied and verified live on 2026-08-16 (`worklog.md`).
 > before starting.
 
 **Blinding rule:** this document is committed, so it contains **no real
-addresses or ASNs**. Values appear as `${placeholder}` matching the BWS secret
-names (`ansible/BWS-SECRETS.md`). Do not paste real values back into this file.
+addresses or ASNs**. Values appear as `${placeholder}` matching the 1Password field
+names (`ansible/SECRETS.md`). Do not paste real values back into this file.
 
 ---
 
@@ -53,18 +53,18 @@ hoping they stay consistent.
 | pfSense ASN | `bgp_peer_asn: 64512` (cleartext) | **One** AS for the whole router, shared by every cluster's peering — it's one device, one AS |
 | ASN base | `bgp_asn_base: 64600` (cleartext) | Leaves 64512–64599 free; keeps cluster ASNs visually distinct from pfSense's |
 | pfSense peer IP | `bgp_peer_ip: {{ dmz_network.gateway }}` | **Not a new variable** — see below |
-| LB supernet base | `lb_range_base` (BWS) | Environment-revealing, so never in Git |
-| FRR master password | `frr_master_password` (BWS) | A **credential** — never in a committed manifest |
+| LB supernet base | `lb_range_base` (1Password) | Environment-revealing, so never in Git |
+| FRR master password | `frr_master_password` (1Password) | A **credential** — never in a committed manifest |
 
 ASNs stay in cleartext deliberately: a number from the RFC 6996 private range
-reveals nothing about the environment. Addresses stay in BWS.
+reveals nothing about the environment. Addresses stay in 1Password.
 
 **The peer IP is the DMZ gateway.** pfSense's BGP address *is* its DMZ interface
-address, which *is* the nodes' default gateway — one value, already in BWS, so
+address, which *is* the nodes' default gateway — one value, already in 1Password, so
 there is no second variable to drift. ⚠ That equivalence breaks under **CARP**:
 the gateway would be a VIP while BGP must peer with the physical interface
 address. There is no CARP on that interface today (confirmed 2026-08-16); if
-that changes, `bgp_peer_ip` becomes its own BWS secret.
+that changes, `bgp_peer_ip` becomes its own 1Password field.
 
 ### ⚠ The LB range must be routed-only
 
@@ -161,7 +161,7 @@ a correct config that does nothing.
 
 - **Enable FRR** — check. Master switch; unchecked disables all of FRR.
 - **Master Password** — required. This is FRR's internal daemon password, not a
-  BGP peer password. It's the `frr_master_password` BWS secret; it's a
+  BGP peer password. It's the `frr_master_password` 1Password field; it's a
   credential, so per the root `CLAUDE.md` it never lands in Git.
 - **Default Router ID** — leave unset; §4 sets it per-protocol.
 
@@ -638,7 +638,7 @@ Writes two git-ignored files to `ansible/.frr/`:
 | `frr.conf` | §5 — Services > FRR Global Settings > Raw Config |
 | `bgp-nodes.txt` | §6 — members of the firewall alias |
 
-Both are rendered from `inventory/nodes.yml` + BWS, so the BGP neighbor
+Both are rendered from `inventory/nodes.yml` + 1Password, so the BGP neighbor
 list and the firewall alias cannot disagree. Same Jinja2-from-secrets pattern
 the repo already uses for Ignition.
 
@@ -647,12 +647,12 @@ pfSense or any node. Delivery is a manual paste, because pfSense CE ships no API
 
 > ⚠ **pfSense is a render target, not a source of truth.** Editing the raw
 > config directly is tempting for a one-line change, and it works — until the
-> next render, which regenerates the whole file from BWS and reverts your
+> next render, which regenerates the whole file from 1Password and reverts your
 > edit on paste. **Silently**: nothing errors, the value just goes backwards.
 >
 > The worst case is a rotated credential. Change the FRR master password on
-> the box but not in BWS, and the next paste quietly restores the old
-> password. Whatever you change on pfSense, change in BWS too — even if you
+> the box but not in 1Password, and the next paste quietly restores the old
+> password. Whatever you change on pfSense, change in 1Password too — even if you
 > don't re-render right away.
 >
 > Before any paste, diff the new render against what's running and confirm the
@@ -690,7 +690,7 @@ half of §1 stays a manual check.
 place that needs it. If that derivation ever changes, change it in both, or
 pfSense will peer with addresses no node holds.
 
-### BWS secrets
+### 1Password fields
 
 | Secret | Value |
 |---|---|
@@ -700,7 +700,7 @@ pfSense will peer with addresses no node holds.
 Only these two exist for the BGP work. The pfSense peer IP is
 `dmz_network.gateway` (the `dmz_gateway` secret) and both ASNs are cleartext
 constants in `group_vars/all/vars.yml` — see §1. Full manifest:
-`ansible/BWS-SECRETS.md`.
+`ansible/SECRETS.md`.
 
 The address-shaped values flow to the cluster as the `cluster-topology` Secret,
 consumed via Flux `postBuild.substituteFrom` — so committed manifests keep

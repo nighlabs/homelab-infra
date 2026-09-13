@@ -27,7 +27,7 @@ the way it is: `../docs/decisions/` (ADR-NNNN). What's been verified when:
   digest, not the manifest digest (the revision label embeds the commit SHA),
   which is why the workflow's trigger negates `gitops/**/*.md`.
 - The package is **public**, so there is no pull secret. If it ever goes
-  private: a BWS secret + `spec.secretRef` on the `OCIRepository`.
+  private: a 1Password-sourced Secret + `spec.secretRef` on the `OCIRepository`.
 
 ## Layout (four tiers)
 
@@ -50,7 +50,7 @@ infrastructure/           # controllers, in dependency order:
   nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart, shared Gateway, https redirect
   cert-manager/             #   controller only — its CRs live a tier down
   ceph-csi-operator/        #   VENDORED manifests, not a HelmRelease (ADR-0031)
-  kustomization.yaml        #   next: ESO + Bitwarden SDK -> ...
+  kustomization.yaml        #   next: ESO (1Password SDK provider) -> ...
 infrastructure-config/    # CRs CONSUMED BY those controllers (CRDs arrive with the chart,
   cert-manager/           #   so same-pass apply fails): ClusterIssuers + wildcard Certificate
   ceph-csi/               #   CephConnection, ClientProfile, 2 Drivers, 2 StorageClasses
@@ -166,7 +166,7 @@ spec:
 
 | Placeholder | Defined in |
 |---|---|
-| `${bgp_peer_ip}` | `dmz_network.gateway` (BWS) |
+| `${bgp_peer_ip}` | `dmz_network.gateway` (1Password) |
 | `${lb_range}` | `lb_range_base` + cluster `index` |
 | `${bgp_peer_asn}` | `bgp_peer_asn` (cleartext constant) |
 | `${cluster_asn}` | `bgp_asn_base` + cluster `index` |
@@ -194,7 +194,7 @@ spec:
   value that is already a complete JSON array (valid YAML flow sequence) and
   substitute it whole. `CephConnection.spec.monitors: ${ceph_mons_yaml}` does
   this, from `ceph_csi.mons | to_json` in `bootstrap-cluster.yml`, so the mon
-  count lives in BWS rather than being baked into the manifest as
+  count lives in 1Password rather than being baked into the manifest as
   `${ceph_mon_1..3}`. The `to_json` quoting is load-bearing — an unquoted
   `host:port` is not a valid scalar in flow context.
 - **Keep substituted resources out of kustomize `Components`** —
@@ -203,7 +203,7 @@ spec:
 - **SOPS/age is the fallback, not the default** — only where substitution
   can't go (whole blocks/lists, kustomize-*build*-time values). If ever
   needed: the age key arrives as Secret `sops-age` in `flux-system`, key file
-  `age.agekey`, Ansible-seeded from BWS; `apiVersion`/`kind`/`metadata` can
+  `age.agekey`, Ansible-seeded from 1Password; `apiVersion`/`kind`/`metadata` can
   never be encrypted.
 
 ## Calico BGP — CRs, not Helm values (ADR-0018, ADR-0023)

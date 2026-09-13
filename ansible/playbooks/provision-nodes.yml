@@ -20,9 +20,9 @@
       api_token_secret: "{{ proxmox_api_token_secret }}"
       validate_certs: "{{ proxmox_validate_certs }}"
   tasks:
-    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # Secrets come from 1Password at run time (there is no
     # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
-    - name: Load secrets from Bitwarden Secrets Manager
+    - name: Load secrets from the secret store
       ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # clusters: → a flat, cluster-annotated `nodes` map (+ the global uniqueness

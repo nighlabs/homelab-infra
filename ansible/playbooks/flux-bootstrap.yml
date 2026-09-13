@@ -24,7 +24,7 @@
 # `cluster-topology` Secret that Flux's postBuild substitution reads. Both are
 # asserted with actionable messages rather than failing obscurely.
 #
-# NOTE: this play needs NO credentials — no BWS, no keychain prompt. Every value
+# NOTE: this play needs NO credentials — no secret store, no unlock prompt. Every value
 # it uses is either a committed constant (group_vars "Flux" section) or comes
 # from the cluster itself via the kubeconfig. That is why there is no
 # load-secrets.yml include here; adding one would introduce a keychain

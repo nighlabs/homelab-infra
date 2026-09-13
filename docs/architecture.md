@@ -235,7 +235,7 @@ secrets-encryption: true        # aescbc at rest, on from boot 1
 node-ip: <eth0/DMZ ip>          # never the Ceph NIC
 advertise-address: <eth0/DMZ ip>
 tls-san: [<eth0 ip>, <hostname>, <per-cluster extras>]
-token: <per-cluster join token, from BWS>
+token: <per-cluster join token, from 1Password>
 # node-taint: control-plane=true:NoSchedule   (control-plane role only)
 ```
 
@@ -315,8 +315,8 @@ in dependency order:
   lifecycle, plus a `provisioner` SSH user with sudo scoped to `qm` and the
   snippet-dir repair — the snippet upload/delete is a file operation with no
   API. Setup in `ansible/README.md`.
-- **Secrets** come from Bitwarden Secrets Manager at run time; secret zero is a
-  macOS Keychain item (§3.6).
+- **Secrets** come from 1Password at run time, via the `op` CLI; on a
+  workstation there is no stored token at all (§3.6).
 - **Rebuild:** delete the VM, re-run the play, and the same MAC + IP + hostname
   + k3s come back; Flux then repopulates the cluster. The source of truth is the
   node map + Proxmox queried live, not a state file.
@@ -358,41 +358,58 @@ in dependency order:
 
 ### 3.6 Secrets
 
-[ADR-0009](decisions/0009-secrets-aescbc-and-eso-bitwarden.md),
-[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md),
+[ADR-0034](decisions/0034-secrets-store-1password.md),
+[ADR-0033](decisions/0033-secrets-fact-broker.md),
 [ADR-0021](decisions/0021-topology-blinding-postbuild-substitution.md).
 
-**Bitwarden Secrets Manager (cloud-hosted)** is the durable store for
-everything. The split is about *who reads it, when*:
+**1Password (cloud-hosted)** is the durable store for everything. The split is
+about *who reads it, when*:
 
 | Tier | Example | Mechanism |
 |---|---|---|
-| **Control-node credentials** | Proxmox API token, k3s join token, FRR password | **BWS, read at run time** by a custom bulk-fetch module; secret zero (the BWS access token) lives in the **macOS Keychain** |
-| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from BWS |
-| **Runtime app secrets** | app passwords, API keys | **External Secrets Operator + Bitwarden SDK Server**, from a *separate* BWS project |
+| **Control-node credentials** | Proxmox API token, k3s join token, FRR password | **1Password, read at run time** via the `op` CLI — one `op item get` per item, values as labelled fields on it |
+| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
+| **Runtime app secrets** | app passwords, API keys | **External Secrets Operator + the 1Password SDK provider** — no in-cluster server — from a *separate* vault |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range, node IPs | `${var}` placeholders in Git, substituted by Flux from the Ansible-seeded `cluster-topology` Secret |
 
 - **There is no `vault.yml`.** Nothing secret lives in the repo directory in
-  any form, including ciphertext. The secret manifest is `ansible/BWS-SECRETS.md`.
+  any form, including ciphertext. The secret manifest is `ansible/SECRETS.md`.
+- **On the control node there is no secret zero at all.** `op` authenticates
+  against the local 1Password app (Touch ID), so no token is stored on disk or
+  in a keychain. A scoped read-only **service account** is used only where no
+  app can run: CI, a Linux control node, and ESO in-cluster. ⚠ A service
+  account's vault grants are **immutable** — they are decided at creation and
+  cannot be widened later.
+- **One indirection layer.** `inventory/group_vars/all/vars.yml` is the only
+  file that indexes the store; everything else consumes brokered variables, and
+  questions about which secrets *exist* go to a separate, safe-to-log
+  `secret_names` fact (ADR-0033).
 - **Datastore at rest:** k3s `secrets-encryption` (aescbc) from boot 1. A
   KMS-as-KEK upgrade is possible later, traded against a cold-start dependency.
-- **ESO sits below cert-manager** — the Bitwarden SDK Server needs a
-  cert-manager certificate, so anything needed before ESO exists is
-  Ansible-seeded at bootstrap. ⚠ The chain stops at the certificate: this
-  cluster issues by **DNS-01** (ADR-0013), which solves with no inbound path, so
-  no Gateway and no LoadBalancer IP are involved — those are what *serving* the
-  wildcard needs. **`cluster-topology` is Ansible-seeded permanently on separate
+- **ESO does NOT sit below cert-manager.** The 1Password SDK provider runs no
+  in-cluster server and needs no certificate, so that edge no longer exists;
+  ESO's earliest position is *immediately after Calico* (CRDs Established, pod
+  networking, egress to the vendor API via pod→node NAT, and its own
+  Ansible-seeded token Secret). Its admission-webhook certs come from its own
+  bundled `cert-controller`. ⚠ Under Bitwarden the SDK Server *did* need a
+  cert-manager certificate — that is where the old rule came from; don't
+  reintroduce it from memory. Anything needed before ESO exists is still
+  Ansible-seeded at bootstrap, because ESO is not yet running, not because of a
+  certificate. Certificates are issued by **DNS-01** (ADR-0013), which solves
+  with no inbound path, so no Gateway and no LoadBalancer IP are involved —
+  those are what *serving* the wildcard needs.
+- **`cluster-topology` is Ansible-seeded permanently on separate
   grounds**: Flux evaluates `postBuild.substituteFrom` at build time for the
   `infrastructure` tier, and kustomize-controller applies a tier in one pass
   with no intra-tier ordering, so a Secret produced by a controller inside that
   tier can never be a substitution source for it — and Calico is Ansible-primed
   from the same values before Flux exists (ADR-0016). *Cluster-bound ≠
-  ESO-managed.* [ADR-0032](decisions/0032-secrets-store-1password-migration.md)
-  records this correction and what changes under a provider that runs no
-  in-cluster server.
-- **Two BWS projects, split by consumer:** `homelab-infra` (read by the control
-  node) and an apps project (read by ESO, created at that milestone). A cluster
-  compromise must not reach the Proxmox token.
+  ESO-managed.*
+- **Two vaults, split by consumer:** `homelab-infra` (read by the control node)
+  and `homelab-apps` (read by ESO, created at that milestone). A cluster
+  compromise must not reach the Proxmox token — and under 1Password that is
+  structural rather than a matter of discipline, since a SecretStore names
+  exactly one vault and cannot reach a second.
 - **Undefined `${var}` substitutes to the empty string and reconciles green.**
   The kustomize-controller feature gate `StrictPostBuildSubstitutions=true` is
   mandatory and asserted by `flux-bootstrap.yml`.
@@ -480,7 +497,7 @@ model_list:
 ### 4.1 Networks, by role
 
 Real subnets, VLAN tags, bridge names and addresses are **not in Git** — they
-live in BWS and reach the repo only as `{{ secrets.* }}` references and `${var}`
+live in 1Password and reach the repo only as `{{ secrets.* }}` references and `${var}`
 placeholders. By role:
 
 | Network | Carries | Where |
@@ -726,7 +743,7 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
    ✅ ceph-csi — ceph-csi-operator v1.0.4 against the existing Proxmox Ceph
    (Squid 19.2.3): `ceph-rbd` (RWO, cluster default) and `cephfs` (RWX), both
    provisioning, mounting and reclaiming; RBD mapped by krbd. Then
-   ⬜ External Secrets Operator + Bitwarden SDK Server → Postgres + Redis →
+   ⬜ External Secrets Operator (1Password SDK provider) → Postgres + Redis →
    LiteLLM → confirm a chat completion routes end-to-end to the Mac.
 7. ⬜ **Then:** Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 8. ⬜ **Split DNS + access:** internal resolver, Tailscale split DNS,
@@ -763,8 +780,10 @@ Operational layers beyond the core design. Decided; implementation pending.
 - **Backups — NAS as the S3 target** ([ADR-0015](decisions/0015-backups-nas-s3-and-break-glass.md)):
   Velero (CSI snapshots + Kopia) for PVCs + resources; CNPG native backup
   (Barman → S3) for Postgres with PITR; Qdrant snapshot API. Schedule a periodic
-  **restore drill**. Crown jewels (Bitwarden recovery + periodic encrypted SM
-  export, an offsite copy of the repo, the data backups) go to offline backup.
+  **restore drill**. Crown jewels (the 1Password account's Emergency Kit +
+  recovery code, a periodic encrypted vault export, an offsite copy of the
+  repo, the data backups) go to offline backup. ⚠ ADR-0015's break-glass
+  argument survives the store change; only the export mechanism differs.
 - **Dependency currency — Renovate.** First-class Flux support for
   HelmRelease/OCIRepository/image tags; a regex manager tracks the pinned
   Flatcar image, k3s sysext, Calico, flux-operator, vllm-mlx and llama-swap in

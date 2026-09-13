@@ -67,17 +67,18 @@ all-in-one k3s server), all of it from a single from-scratch
   without a diff war.
 
 **Next:** the rest of the stack from Git in dependency order — NGINX Gateway
-Fabric + cert-manager → ceph-csi → External Secrets Operator + Bitwarden SDK
-Server → Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel. Then the
+Fabric + cert-manager → ceph-csi → External Secrets Operator (1Password SDK
+provider — no in-cluster secrets server) → Postgres + Redis → LiteLLM → Qdrant
+→ RAG → Open WebUI → OTel. Then the
 control-plane taint and worker nodes, then the Mac tier. Detail in
 [`docs/architecture.md` §7](docs/architecture.md#7-bring-up-order--built-and-remaining).
 
 ## Quick start
 
 Provisioning runs from a control node with `uv`, `butane`, and `helm` installed,
-a scoped Proxmox API token, an SSH user on the PVE host, and a Bitwarden Secrets
+a scoped Proxmox API token, an SSH user on the PVE host, and a 1Password
 Manager access token in the macOS Keychain. The full prerequisite list, the
-one-time Proxmox and BWS setup, and the definition-of-done checks live in
+one-time Proxmox and 1Password setup, and the definition-of-done checks live in
 [`ansible/README.md`](ansible/README.md) — start there. The short version, from
 the repo root:
 
@@ -85,19 +86,19 @@ the repo root:
 uv sync
 cd ansible
 uv run ansible-galaxy collection install -r requirements.yml
-# create the BWS project + secrets per BWS-SECRETS.md, put the token in the Keychain, then:
+# create the vault + item per ansible/SECRETS.md, turn on the op CLI integration, then:
 uv run ansible-playbook site.yml
 ```
 
 `site.yml` builds the Flatcar template, provisions every node in
 `inventory/nodes.yml` (k3s bakes in via Ignition), waits for k3s and primes
 Calico, then bootstraps Flux — which takes ownership from there. **There is no
-`vault.yml`**; secrets are read from BWS at run time.
+`vault.yml`**; secrets are read from 1Password at run time.
 
 ## Network topology
 
 The real subnets, VLAN tags, bridge names and addresses are **not committed in
-any form** — they live in Bitwarden Secrets Manager and reach the repo only as
+any form** — they live in 1Password and reach the repo only as
 `{{ secrets.* }}` references and `${var}` placeholders. By role:
 
 - **DMZ / k3s cluster network** — a dedicated VLAN on the 1Gb bond;
@@ -133,8 +134,8 @@ in the linked record:
   and Cloudflare reservations. Cluster CIDRs live in `10.0.0.0/8`
   (`10.42.0.0/16` pods, `10.43.0.0/16` services) ([ADR-0011](docs/decisions/0011-cluster-cidrs-never-cgnat.md)).
 - **Never commit a credential in any form, including ciphertext.** Secrets come
-  from Bitwarden Secrets Manager at run time; topology is blinded with `${var}`
-  placeholders ([ADR-0027](docs/decisions/0027-control-node-secrets-bws-runtime.md),
+  from 1Password at run time; topology is blinded with `${var}`
+  placeholders ([ADR-0034](docs/decisions/0034-secrets-store-1password.md),
   [ADR-0021](docs/decisions/0021-topology-blinding-postbuild-substitution.md)).
 - **Never put a remote `contents.source:` in Ignition.** The initramfs has no
   network here, so a remote fetch boot-loops the node. Fetch post-pivot from a

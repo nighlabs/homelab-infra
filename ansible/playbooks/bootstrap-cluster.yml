@@ -24,9 +24,9 @@
     # never hold the kubeconfig, so they're excluded here.
     server_roles: ["all-in-one", "server", "control-plane"]
   tasks:
-    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # Secrets come from 1Password at run time (there is no
     # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
-    - name: Load secrets from Bitwarden Secrets Manager
+    - name: Load secrets from the secret store
       ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # clusters: → a flat `nodes` map, each node annotated with its `cluster`.
@@ -277,9 +277,9 @@
       "${bgp_peer_ip}": "{{ bgp_peer_ip }}"
       "${bgp_peer_asn}": "{{ bgp_peer_asn }}"
   tasks:
-    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # Secrets come from 1Password at run time (there is no
     # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
-    - name: Load secrets from Bitwarden Secrets Manager
+    - name: Load secrets from the secret store
       ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     - name: Assert the committed Calico pod CIDR matches k3s_cluster_cidr
@@ -523,7 +523,7 @@
 
     # --- Seed the cluster-topology Secret (Flux postBuild source) ------------
     # Tier 2 of the root CLAUDE.md secrets model: "anything needed before ESO
-    # exists is Ansible-seeded". ESO CANNOT supply this — the Bitwarden SDK
+    # exists is Ansible-seeded". ESO CANNOT supply this — ESO
     # Server needs a cert-manager cert, which needs a Gateway, which needs a
     # LoadBalancer IP, which is what this Secret's values configure. That cycle
     # is documented and deliberate; don't try to close it by moving ESO up.
@@ -589,7 +589,7 @@
 
     # --- Seed the cert-manager DNS-01 token (bootstrap-secret tier) ----------
     # Same tier as cluster-topology, same reason: cert-manager sits UPSTREAM of
-    # ESO (the Bitwarden SDK Server needs a cert-manager cert), so on a
+    # ESO in the delivery order, so on a
     # from-scratch rebuild ESO can never supply this. Whether ESO later ADOPTS
     # the Secret once it's live is an OPEN question (docs/decisions/README.md,
     # "Open questions") — but this seed remains either way: adoption would be
@@ -628,7 +628,7 @@
     # --- Seed the two cephx keys (bootstrap-secret tier) ---------------------
     # Same tier and same reasoning as the Cloudflare token above, with one
     # difference worth recording: cert-manager is genuinely UPSTREAM of ESO (the
-    # Bitwarden SDK Server needs a cert), so its seed is permanent. ceph-csi is
+    # is not yet running), so its seed is permanent. ceph-csi is
     # not upstream of ESO — it merely lands earlier in the §6 delivery order. So
     # if the ESO-adoption ADR ever reorders those two, these seeds could retire
     # outright rather than becoming an overlay. Until then they must exist, or a

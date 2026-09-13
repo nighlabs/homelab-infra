@@ -18,11 +18,11 @@
 # Outputs (git-ignored, 0700 dir / 0600 files):
 #   ansible/.ceph/ceph-k8s-setup.sh    create pool + subvolumegroup + 2 cephx users
 #   ansible/.ceph/ceph-k8s-verify.sh   read-only; confirms caps match what gitops assumes
-#   ansible/.ceph/ceph-k8s-keys.sh     prints the keys + fsid + mons for BWS
+#   ansible/.ceph/ceph-k8s-keys.sh     prints the keys + fsid + mons for 1Password
 #
 # Full procedure and warnings: docs/proxmox-ceph-k8s-setup.md
 #
-# This play touches nothing. It reads inventory + BWS and writes three local
+# This play touches nothing. It reads inventory + 1Password and writes three local
 # files. It does not connect to Proxmox, to Ceph, or to any node.
 - name: Render the Proxmox-Ceph setup for ceph-csi
   hosts: localhost
@@ -30,12 +30,12 @@
   vars:
     ceph_out_dir: "{{ playbook_dir }}/../.ceph"
   tasks:
-    # Secrets come from BWS at run time (there is no vault.yml). Must precede
+    # Secrets come from 1Password at run time (no vault.yml). Must precede
     # anything that touches a {{ secrets.* }} value — ceph_csi.fs_name is one.
-    - name: Load secrets from Bitwarden Secrets Manager
+    - name: Load secrets from the secret store
       ansible.builtin.include_tasks: tasks/load-secrets.yml
 
-    # --- What must already be in BWS to render at all ------------------------
+    # --- What must already be in 1Password to render at all ------------------
     # Only ONE secret is a hard prerequisite, and it is knowable before any of
     # this runs: the name of PVE's existing CephFS. Everything else the cluster
     # side needs (mons, fsid, the two keys) is PRODUCED by these scripts, so it
@@ -48,22 +48,22 @@
     # error in place of the message below. The ordering matters too: `assert`
     # short-circuits on the first false condition, so the presence test must
     # come first or the length test evaluates an undefined value (ADR-0033).
-    - name: Assert the CephFS name is in BWS
+    - name: Assert the CephFS name is in the secret store
       ansible.builtin.assert:
         that:
           - "'ceph_fs_name' in secret_names"
           - (ceph_fs_name | trim | length) > 0
         fail_msg: >-
-          `ceph_fs_name` is not in Bitwarden Secrets Manager. It is PVE's
+          `ceph_fs_name` is not in 1Password. It is PVE's
           EXISTING CephFS name — the filesystem already holding snippets/ISOs/
           backups — because this milestone joins that filesystem with its own
           subvolumegroup rather than creating a second one (a second CephFS
           needs a second ACTIVE MDS, spending the standby redundancy PVE's
           production filesystem relies on).
 
-          Read it off a Proxmox node with `ceph fs ls`, then add it to BWS as
-          `ceph_fs_name` in the project the control-node machine account reads.
-          See ansible/BWS-SECRETS.md.
+          Read it off a Proxmox node with `ceph fs ls`, then add it as a
+          `ceph_fs_name` field on the control-node item.
+          See ansible/SECRETS.md.
         quiet: true
 
     # --- Validate the names we are about to create ---------------------------
@@ -106,7 +106,7 @@
     # exist yet — ceph-k8s-keys.sh is what produces them. Failing here would
     # make the play impossible to run the first time, which is the only time it
     # is strictly required.
-    - name: Check whether the cluster-side BWS secrets exist yet
+    - name: Check whether the cluster-side secrets exist yet
       vars:
         expected: [ceph_mons, ceph_fsid, ceph_k8s_rbd_key, ceph_k8s_cephfs_key]
         # `secret_names` is already the sorted name list (ADR-0033) — no
@@ -116,10 +116,10 @@
       ansible.builtin.debug:
         msg: >-
           {% if missing | length == 0 %}
-          All cluster-side BWS secrets are present ({{ expected | join(', ') }})
+          All cluster-side secrets are present ({{ expected | join(', ') }})
           — this looks like a re-render, not a first run.
           {% else %}
-          NOTE: {{ missing | join(', ') }} not in BWS yet. Expected on a FIRST
+          NOTE: {{ missing | join(', ') }} not in the store yet. Expected on a FIRST
           run: ceph-k8s-keys.sh is what produces them. Run the scripts, store
           the values under those names, then bootstrap-cluster.yml can seed them.
           {% endif %}

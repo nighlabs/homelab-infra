@@ -25,7 +25,7 @@ Gateway Fabric (Gateway API CRD tier, shared Gateway, LB reachable,
 source-IP preserved), cert-manager (DNS-01 wildcard issued, HTTPS on the
 Gateway, `infrastructure-config` tier) and **ceph-csi** (both StorageClasses
 provisioning against the existing Proxmox Ceph; worklog 2026-09-07).
-**Next: ESO + Bitwarden SDK Server** → Postgres + Redis → LiteLLM → … That work
+**Next: ESO (1Password SDK provider — no in-cluster server)** → Postgres + Redis → LiteLLM → … That work
 is in `gitops/`; this directory's part is seeding the bootstrap-tier secrets as
 they arrive — the cert-manager DNS-01 token and ceph-csi's two cephx keys (both
 done, in `bootstrap-cluster.yml`) and the ESO access token when that milestone
@@ -48,11 +48,11 @@ server path is built), and the Mac role. Node 2's join is a **dataplane event**
 
 | Play | Owns | Needs |
 |---|---|---|
-| `build-template.yml` | Flatcar proxmoxve image → import → template (vmid 9000). ⚠ Guarded on `qm status` failing, so it **runs green and silently skips** whenever the template exists; a successful run is not evidence of a fresh template (ADR-0030). | BWS |
-| `provision-nodes.yml` | per node: render Butane → `butane --strict` → upload `.ign` (SSH) → clone + pin MACs + disk + `cicustom` (API) → boot → wait for SSH → detach `cicustom` then delete the `.ign` (ADR-0025) | BWS |
-| `bootstrap-cluster.yml` | per cluster: wait for `/readyz`, fetch + rewrite the kubeconfig to `.kube/<cluster>.config`, seed `cluster-topology` + the cert-manager `cloudflare-api-token` Secret (bootstrap-secret tier), server-side-apply the vendored CRDs, `helm` the tigera-operator from `gitops/infrastructure/calico/values.yaml`, apply the BGP CRs + #12890 workaround + endpoint ConfigMap via `flux build kustomization --strict-substitute`, wait Ready | BWS, `helm` |
+| `build-template.yml` | Flatcar proxmoxve image → import → template (vmid 9000). ⚠ Guarded on `qm status` failing, so it **runs green and silently skips** whenever the template exists; a successful run is not evidence of a fresh template (ADR-0030). | 1Password |
+| `provision-nodes.yml` | per node: render Butane → `butane --strict` → upload `.ign` (SSH) → clone + pin MACs + disk + `cicustom` (API) → boot → wait for SSH → detach `cicustom` then delete the `.ign` (ADR-0025) | 1Password |
+| `bootstrap-cluster.yml` | per cluster: wait for `/readyz`, fetch + rewrite the kubeconfig to `.kube/<cluster>.config`, seed `cluster-topology` + the cert-manager `cloudflare-api-token` Secret (bootstrap-secret tier), server-side-apply the vendored CRDs, `helm` the tigera-operator from `gitops/infrastructure/calico/values.yaml`, apply the BGP CRs + #12890 workaround + endpoint ConfigMap via `flux build kustomization --strict-substitute`, wait Ready | 1Password, `helm` |
 | `flux-bootstrap.yml` | helm-install the flux-operator (`flux_operator_version`), apply ONE sync-less `FluxInstance` with the `StrictPostBuildSubstitutions` patch, assert the gate landed, seed `gitops/deployment/<cluster>/{source,sync}.yaml`, wait for `flux-system`/`crds`/`infrastructure`/`apps` Ready | the previous play's kubeconfig + Secret; **no credentials** |
-| `render-frr-config.yml` | pfSense/FRR raw config + firewall-alias members → `.frr/` (git-ignored), from the node map; asserts index/ASN/LB-range collisions **and its asserts are verified to fire** | BWS |
+| `render-frr-config.yml` | pfSense/FRR raw config + firewall-alias members → `.frr/` (git-ignored), from the node map; asserts index/ASN/LB-range collisions **and its asserts are verified to fire** | 1Password |
 
 Every play that reads a `{{ secrets.* }}` value includes
 `tasks/load-secrets.yml` first — one bulk API call into the `secrets` fact
@@ -78,7 +78,7 @@ Everything host-shaped derives from `node_number` (DMZ IP, Ceph IP, both MACs,
 vmid) and everything cluster-shaped from `index` (ASN = `bgp_asn_base + index`,
 LB range = `<lb_range_base>.<index>.0/24`). Per-cluster overrides:
 `k3s_version` (`k3s_minor` is derived; preflight asserts minor ⊂ version);
-per-cluster BWS secrets `k3s_token_<cluster>` / `k3s_tls_sans_<cluster>`.
+per-cluster 1Password fields `k3s_token_<cluster>` / `k3s_tls_sans_<cluster>`.
 `calico_version` is deliberately **fleet-wide** — it's dual-owned with `gitops/`
 (ADR-0019).
 

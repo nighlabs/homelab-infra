@@ -32,9 +32,9 @@
     frr_out_dir: "{{ playbook_dir }}/../.frr"
     frr_redact_password: false
   tasks:
-    # Secrets come from Bitwarden Secrets Manager at run time (there is no
+    # Secrets come from 1Password at run time (there is no
     # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
-    - name: Load secrets from Bitwarden Secrets Manager
+    - name: Load secrets from the secret store
       ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # clusters: → a flat, cluster-annotated `nodes` map, plus the global
@@ -187,7 +187,7 @@
         state: directory
         mode: "0700"
 
-    # 0600: this embeds frr_master_password (from BWS). Git-ignored via
+    # 0600: this embeds frr_master_password (from the secret store). Git-ignored via
     # ansible/.gitignore, but the mode is the control that doesn't depend on
     # anyone reading a gitignore.
     - name: Render frr.conf

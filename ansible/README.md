@@ -13,7 +13,7 @@ are in `CLAUDE.md`; the design is `../docs/architecture.md`.
 ## Layout
 
 ```
-ansible.cfg              # inventory/roles/library paths, BWS notes
+ansible.cfg              # inventory/roles/library paths, secret-store notes
 requirements.yml         # community.proxmox collection (+ butane on PATH)
 inventory/
   hosts.yml              # localhost + the PVE host (SSH, for snippet/qm)
@@ -21,9 +21,9 @@ inventory/
   group_vars/            # adjacent to the inventory so it loads for every playbook
     all/                 # a DIRECTORY -> every file loads for group `all`
       vars.yml           # structure + {{ secrets.* }} refs (nothing sensitive)
-BWS-SECRETS.md           # WHAT TO CREATE IN BITWARDEN — the secret manifest
-library/
-  bws_secrets.py         # bulk BWS fetch (one API call, not one per secret)
+SECRETS.md               # WHAT TO CREATE IN 1PASSWORD — the secret manifest
+library/                 # ⚠ only the RETAINED Bitwarden fetch; the 1Password
+  bws_secrets.py         #   path needs no custom module (it shells out to `op`)
 roles/
   flatcar_template/      # download proxmoxve image -> import -> template (idempotent)
   flatcar_vm/            # render Butane -> Ignition, clone, pin MACs, disk, cicustom, boot
@@ -59,7 +59,8 @@ this. If a future Helm major breaks the Calico prime, `helm_binary` in
 
 **Python packages** — pulled by `uv sync` from `pyproject.toml`/`uv.lock`:
 `ansible-core` (provides `ansible-playbook` / `-galaxy` / `-vault`), `proxmoxer`,
-`requests`, `kubernetes`, `bitwarden-sdk`.
+`requests`, `kubernetes`, and `bitwarden-sdk` (⚠ retained for the cutover
+window only — see ADR-0034).
 
 **Ansible collections** — pulled by `ansible-galaxy … -r requirements.yml` into
 the in-repo `.ansible/`: `community.proxmox`, `kubernetes.core`.
@@ -79,24 +80,25 @@ the rest from `ansible/`.
 2. `uv run ansible-galaxy collection install -r requirements.yml` — installs
    `community.proxmox` into the in-repo `.ansible/` path (isolated, like the venv).
 3. Install the **external binaries** from **Control-node prerequisites** above
-   (`butane`, `helm`; `kubectl` recommended) — they're not pip/uv-managed.
-4. **Set up Bitwarden Secrets Manager — see [`BWS-SECRETS.md`](BWS-SECRETS.md).**
-   That file is the complete manifest: the project + read-only machine account
-   to create, the access token **and** the org id to put in your macOS
-   **Keychain** (`BWS_ORG_ID` via env or `-e` still works), and every secret name
-   with its expected format. It includes the Proxmox API
-   credential (create it per **[Proxmox API token & user](#proxmox-api-token--user-one-time-on-a-pve-node)**
+   (`butane`, `helm`, **`op`**; `kubectl` recommended) — they're not pip/uv-managed.
+4. **Set up 1Password — see [`SECRETS.md`](SECRETS.md).** That file is the
+   complete manifest: the vaults to create, how `op` authenticates, and every
+   field name with its expected format. It includes the Proxmox API credential
+   (create it per **[Proxmox API token & user](#proxmox-api-token--user-one-time-on-a-pve-node)**
    below) and the environment specifics (IPs, subnets/VLANs, gateways,
    hostnames, storage names, SSH public key).
 
-   **There is no `vault.yml` and no vault passphrase.** Secrets are fetched at
-   run time in a single API call; secret zero is the Keychain item. Why:
-   `docs/decisions/0027-control-node-secrets-bws-runtime.md`.
+   **There is no `vault.yml` and no vault passphrase** — and on a workstation
+   there is no secret zero either: `op` authenticates against the local
+   1Password app (Touch ID), so no token is stored anywhere. A scoped read-only
+   **service account** is needed only where no app can run (CI, a Linux control
+   node, ESO in-cluster); ⚠ its vault grants are **immutable**, so decide them
+   at creation. Why: `docs/decisions/0034-secrets-store-1password.md`.
 5. `inventory/group_vars/all/vars.yml` needs no editing for secrets — it's just
    structure plus `{{ secrets.* }}` references. Only generic, non-revealing
    defaults (MAC OUI, Flatcar channel/version) remain in cleartext there.
 6. `inventory/hosts.yml` needs no editing — the PVE host's address and login
-   user resolve from BWS too.
+   user are brokered through `vars.yml` like everything else (ADR-0033).
 
 ## Proxmox API token & user (one-time, on a PVE node)
 
@@ -127,7 +129,7 @@ pveum user token add ansible@pve provisioning --privsep 0
 ```
 
 Step 4 prints the token **value** exactly once — copy it into the
-`proxmox_api_token_secret` secret in BWS. It can't be retrieved later; if lost, delete
+`proxmox_api_token_secret` field in 1Password. It can't be retrieved later; if lost, delete
 and recreate the token.
 
 **Fuss-free alternative:** skip the custom role (steps 2–3) and grant the
@@ -248,8 +250,8 @@ at `snippets/<subdir>/<file>`.)
 > so a leftover snippet hides it until the next new node. That is why it went
 > unnoticed until a rebuild, and why it was a standing blocker for worker nodes.
 
-Then set the `proxmox_ssh_user` secret to `provisioner` in BWS (the default in
-`BWS-SECRETS.md`). The roles invoke `qm` via the `proxmox_qm` helper
+Then set the `proxmox_ssh_user` field to `provisioner` in 1Password (the default in
+`SECRETS.md`). The roles invoke `qm` via the `proxmox_qm` helper
 (`inventory/group_vars/all/vars.yml`), which resolves to `sudo qm` for a
 non-root user and plain `qm` for root — so it works either way.
 
@@ -309,7 +311,7 @@ Two things about it that are easy to trip over:
   kubeconfig *and* its `cluster-topology` Secret. Both are asserted with messages
   that say so, but it can't recover either on its own: this play never touches a
   node.
-- It needs **no credentials at all** — no BWS, no keychain prompt. Everything it
+- It needs **no credentials at all** — no secret store, no unlock prompt. Everything it
   uses is a committed constant or comes from the cluster via the kubeconfig.
 
 `bootstrap-cluster.yml` is **per-cluster**: it elects one bootstrap primary per
@@ -330,7 +332,7 @@ answering means the config was consumed. And once it has been, the snippet is
 dead weight of the worst kind: it embeds the **k3s join token**, Ignition reads
 it exactly once (`ignition.firstboot` is cleared on that boot), and it sits on
 storage every hypervisor in the cluster can reach. The token's other two copies —
-BWS, and `/etc/rancher/k3s/config.yaml` on the node — are both load-bearing;
+1Password, and `/etc/rancher/k3s/config.yaml` on the node — are both load-bearing;
 this one isn't.
 
 > **⚠ The order is load-bearing: `cicustom` comes off the VM config BEFORE the
@@ -403,7 +405,7 @@ orphaned `ansible/.kube/<old>.config` — both are yours to delete.
 Add one entry under the cluster's `nodes:` in `inventory/nodes.yml` with a unique
 `node_number` (1..254); the DMZ IP (`<dmz_subnet_base>.<n>`), Ceph-public IP
 (`<ceph_subnet_base>.<n>`), MACs, and `vmid` (1000+n) are all derived from it
-(subnet bases come from BWS).
+(subnet bases come from 1Password).
 
 `node_number` and hostname uniqueness is **global — across every cluster**, not
 per-cluster: all clusters share the DMZ/Ceph subnets and the Proxmox vmid space,
@@ -426,7 +428,7 @@ After boot, over SSH to the node's DMZ IP (`<dmz_subnet_base>.<n>`):
 - `ip a` — static addresses on both NICs; `eth1` MTU **8996**, not 1500
 - `ip link show` — NIC MACs match the derived `<mac_oui>:00:<n hex>:0{0,1}`
 - `ip route show dev eth1` — only the connected subnet, **no default route**
-- `resolvectl status` / `getent hosts <name>` — DNS via the resolver from BWS
+- `resolvectl status` / `getent hosts <name>` — DNS via the resolver from 1Password
 - `hostnamectl` — matches the node map key
 - `df -h` / `mount` — data disk (vdb) mounted at `/var/lib/rancher` (k3s's
   default data-dir root; k3s state lands here, off the OS disk)

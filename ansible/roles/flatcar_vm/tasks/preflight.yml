@@ -60,7 +60,7 @@
 # extra TLS SANs are looked up by node.cluster (annotated onto every node by
 # playbooks/tasks/load-node-map.yml). See group_vars/all/vars.yml for why.
 #
-# The join token is required for any k3s node — fail fast if BWS is missing it
+# The join token is required for any k3s node — fail fast if the store lacks it
 # rather than baking a tokenless (insecure/broken) server config.
 - name: "{{ hostname }} — assert its cluster has a k3s join token"
   ansible.builtin.assert:
@@ -69,9 +69,9 @@
       - (k3s_tokens[node.cluster] | default('') | string | length) > 0
     fail_msg: >-
       node '{{ hostname }}' is a k3s node in cluster '{{ node.cluster }}', but
-      there is no non-empty `k3s_token_{{ node.cluster }}` secret in BWS.
+      there is no non-empty `k3s_token_{{ node.cluster }}` secret in the store.
       Every cluster needs its OWN token — create that secret in the
-      homelab-infra project (see ansible/BWS-SECRETS.md, "Per cluster"). Run
+      homelab-infra vault (see ansible/SECRETS.md, "Clusters"). Run
       with -v to see the names the load step actually fetched; a misspelling
       shows up there. Keeping the same value renders byte-identical config, so
       no node needs re-provisioning on account of this.
@@ -83,13 +83,13 @@
 # cluster suffix) silently drops every extra API-server cert SAN from that
 # cluster's nodes — and you'd discover it when something couldn't verify the API
 # cert, long after provisioning. Make it loud: every `k3s_tls_sans_*` secret
-# that BWS returned must name a cluster that exists in inventory/nodes.yml.
-- name: "assert every k3s_tls_sans_* secret in BWS names a real cluster"
+# the store returned must name a cluster that exists in inventory/nodes.yml.
+- name: "assert every k3s_tls_sans_* secret names a real cluster"
   ansible.builtin.assert:
     that:
       - _unknown_san_clusters | length == 0
     fail_msg: >-
-      BWS has k3s_tls_sans_* secret(s) for cluster(s) that don't exist in
+      The store has k3s_tls_sans_* secret(s) for cluster(s) that don't exist in
       inventory/nodes.yml: {{ _unknown_san_clusters | join(', ') }}. Known
       clusters: {{ clusters | list | join(', ') }}. That secret is optional, so
       the mismatch would otherwise FAIL SILENTLY — its SANs just never reach any
