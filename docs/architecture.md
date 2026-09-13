@@ -406,7 +406,7 @@ about *who reads it, when*:
   from the same values before Flux exists (ADR-0016). *Cluster-bound ≠
   ESO-managed.*
 - **Two vaults, split by consumer:** `homelab-infra` (read by the control node)
-  and `homelab-apps` (read by ESO, created at that milestone). A cluster
+  and `apps-homelab` (read by ESO, created at that milestone). A cluster
   compromise must not reach the Proxmox token — and under 1Password that is
   structural rather than a matter of discipline, since a SecretStore names
   exactly one vault and cannot reach a second.

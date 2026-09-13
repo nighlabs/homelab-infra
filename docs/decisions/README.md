@@ -84,7 +84,7 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   Ansible-seed-only (0009, 0034). **Not yet decided** — the seed-only wording
   in 0009 records the mechanism, not a permanence decision. Current lean:
   adopt, inside the consumer split — ESO still never reads `homelab-infra`
-  (cluster-destined secrets would live in **that cluster's `<cluster>-apps`
+  (cluster-destined secrets would live in **that cluster's `apps-<cluster>`
   vault**; exposure doesn't widen because these secrets end up as in-cluster
   `Secret`s either way), and **the Ansible seed remains regardless** — a from-scratch
   rebuild needs the token before ESO exists, so adoption is an overlay, never a
@@ -104,7 +104,7 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   ⚠ **The immutable-grant deadline no longer binds the control node.** It does
   still bind **each cluster's ESO** service account, whose vault grant is fixed
   at creation: if adoption means ESO reading cluster-destined secrets, those
-  must live in that cluster's own `<cluster>-apps` vault, which it already
+  must live in that cluster's own `apps-<cluster>` vault, which it already
   reads — so the lean above stays reachable. (The control node authenticates as
   the operator via the desktop app and has no service account to constrain —
   ADR-0034.)

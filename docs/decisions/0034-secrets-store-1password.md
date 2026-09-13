@@ -115,7 +115,7 @@ token is used when present, and the desktop app when not.
 ### Vault layout: ADR-0027's split by CONSUMER, preserved and strengthened
 
 One fleet-wide `homelab-infra` for the control node, and — **changing ADR-0027's
-shape** — **one `<cluster>-apps` vault and one ESO service account per cluster**,
+shape** — **one `apps-<cluster>` vault and one ESO service account per cluster**,
 rather than a single shared apps project. ⚠ `eso_op_service_account_token_<cluster>`
 stays in `homelab-infra` — *the thing that grants access cannot live behind the
 access it grants* — cluster-suffixed exactly like `k3s_token_<cluster>`
@@ -128,6 +128,14 @@ accounts and unlimited vaults**, so the per-cluster split that the blast-radius
 argument always wanted is simply affordable now. It is the same reasoning that
 already makes k3s join tokens per-cluster: *a compromised cluster must not take
 the fleet with it.*
+
+⚠ **Vault naming follows two different axes, on purpose.** `homelab-infra` is
+named for the **repo** (ADR-0027's project name, itself from
+`ghcr.io/nighlabs/homelab-infra`) and is fleet-wide; `apps-<cluster>` is named
+for the **cluster key** in `nodes.yml`. The `apps-` prefix rather than an
+`-apps` suffix is what keeps that visible — `homelab-infra` + `homelab-apps`
+read as a matched pair and are not, which at cluster #2 would invite reading
+the infra vault as cluster `homelab`'s.
 
 The infra vault stays fleet-wide deliberately: the control node provisions every
 cluster, so splitting it would fragment one Proxmox credential across vaults the
