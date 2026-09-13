@@ -9,6 +9,16 @@
 # flatcar_vm role provisions a VM the same way regardless of which cluster it
 # joins. One flat map gives both, without every consumer walking two levels.
 #
+# ⚠ THAT REASON IS AN ASSUMPTION, not a law: it holds because there is exactly
+# ONE Proxmox cluster and ONE Ceph. Add a second Proxmox cluster and it is
+# false — different subnets, a different `qm` vmid space — so the collision
+# domain for `node_number` becomes the SITE, and this assert goes from correct
+# to wrong-by-being-too-strict, rejecting a perfectly valid node map.
+# ⚠ Do not "fix" that by loosening the assert when it first fires. Read
+# docs/decisions/0035-site-scope-multiple-proxmox-clusters.md (Open) — the
+# scope question has to be answered first, and hostname uniqueness is a
+# separate call from node_number uniqueness.
+#
 #   clusters: {homelab: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
 #     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: homelab}}
 

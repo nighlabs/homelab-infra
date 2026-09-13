@@ -29,6 +29,16 @@
 # reusing a number in a second cluster collides on both an IP and a vmid. Node
 # hostnames must likewise be globally unique. Both are asserted (see
 # playbooks/tasks/load-node-map.yml) before anything is created.
+#
+# ⚠ "GLOBAL" here means "across k3s clusters", and it is true only because there
+# is exactly ONE Proxmox cluster with ONE Ceph. A second Proxmox cluster brings
+# its own subnets and its own vmid space, so node_number's collision domain is
+# really the SITE — and this file would then need a `site:` key per cluster to
+# say which one a cluster runs on. Every proxmox_*/ceph_*/dmz_* value in
+# group_vars/all/vars.yml is a flat scalar for the same reason.
+# Not a bug today; an unlabelled assumption, now labelled. The scopes, the
+# naming rule, and exactly what breaks:
+# docs/decisions/0035-site-scope-multiple-proxmox-clusters.md (Open).
 
 clusters:
   # The single cluster today. A second one = another key here with its own

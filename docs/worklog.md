@@ -120,6 +120,26 @@ when the extra titles would be silently ignored and their fields swept into the
 first item. It now refuses, and says the real answer: by then this one-shot play
 should already be deleted. Verified both ways.
 
+**Raised while reviewing the vault layout: a THIRD scope the repo doesn't have**
+— [ADR-0035](decisions/0035-site-scope-multiple-proxmox-clusters.md), Open.
+Everything is fleet-wide or per-k3s-cluster today, but `proxmox_*`, `ceph_*` and
+`dmz_*` are neither: they belong to a **site** (one Proxmox cluster + its Ceph +
+its L2), and several k3s clusters can share one. Nothing is wrong today — there
+is one of each — but the assumption was stated as a *fact* in two places, which
+is the expensive kind. ⚠ Concretely: the global `node_number` uniqueness assert
+is justified in `load-node-map.yml` by "all clusters share the DMZ/Ceph subnets
+and the Proxmox vmid space", so at site #2 it goes from correct to
+**wrong-by-being-too-strict** — it would reject a valid node map, and the
+tempting fix (loosen the assert) is the wrong one. Both sites of that assumption
+are now labelled and point at the ADR.
+
+The reassuring half: the *store* needs no new machinery. Field labels are a flat
+global namespace suffixed by owning scope (`proxmox_api_host_<site>` alongside
+`k3s_token_<cluster>`), items are organisational only — ⚠ they cannot be the
+namespace, because labels must be globally unique across items — so the loader,
+the broker and `secret_names` are untouched. That falls straight out of
+ADR-0033's flat `secrets` shape.
+
 **Open, and it is a subscription question rather than an engineering one:**
 1Password's daily cap is **per account, shared across every service account** —
 1,000/24h on Individual/Families. Ansible is nowhere near it (~4 calls per
