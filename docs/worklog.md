@@ -133,6 +133,32 @@ and the Proxmox vmid space", so at site #2 it goes from correct to
 tempting fix (loosen the assert) is the wrong one. Both sites of that assumption
 are now labelled and point at the ADR.
 
+**Three of its rules were settled on review (2026-09-13), leaving only the
+implementation open:**
+
+- ⚠ **`node_number` / hostname uniqueness stays GLOBAL — but as a REQUIREMENT,
+  not as a consequence.** The distinction is the whole value here. The old
+  justification ("all clusters share the DMZ/Ceph subnets and the vmid space")
+  expires at site #2, which would make a correct guard look wrong and invite
+  someone to loosen it. The rule is kept on new footing: a node may move to
+  another Proxmox node, another site, or a completely separate network, and a
+  globally unique number means such a move is never an identity change. The
+  assert is untouched; only its reason changed, in both places that stated it.
+- ⚠ **`cloudflare_api_token` is ZONE-scoped, not fleet-scoped.** `vars.yml`
+  undersold it as forkable "if per-cluster revocation is wanted" — it is a
+  **correctness** constraint: the token is restricted to specific zone
+  resources, so a token for zone A cannot solve DNS-01 for zone B. It is one
+  scope with `base_domain` and they must fork together, or a cluster can name a
+  hostname it cannot get a certificate for. Subdomains of one zone keep a single
+  token serving everything.
+- **Vaults are for access, suffixes are for description.** Considered using
+  per-site vaults as the namespace (bare `proxmox_api_host` in each) and
+  rejected it for now: the control node provisions *every* site, so there is no
+  access boundary to draw, and a per-site vault would be a namespace wearing an
+  access-control costume. It would also fork ADR-0033's flat `secrets` contract
+  into two shapes. ⚠ Revisit if a scoped-per-site operator ever becomes real —
+  that would make sites a genuine boundary, exactly as clusters are for ESO.
+
 The reassuring half: the *store* needs no new machinery. Field labels are a flat
 global namespace suffixed by owning scope (`proxmox_api_host_<site>` alongside
 `k3s_token_<cluster>`), items are organisational only — ⚠ they cannot be the

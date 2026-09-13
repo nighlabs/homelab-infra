@@ -9,15 +9,20 @@
 # flatcar_vm role provisions a VM the same way regardless of which cluster it
 # joins. One flat map gives both, without every consumer walking two levels.
 #
-# ⚠ THAT REASON IS AN ASSUMPTION, not a law: it holds because there is exactly
-# ONE Proxmox cluster and ONE Ceph. Add a second Proxmox cluster and it is
-# false — different subnets, a different `qm` vmid space — so the collision
-# domain for `node_number` becomes the SITE, and this assert goes from correct
-# to wrong-by-being-too-strict, rejecting a perfectly valid node map.
-# ⚠ Do not "fix" that by loosening the assert when it first fires. Read
-# docs/decisions/0035-site-scope-multiple-proxmox-clusters.md (Open) — the
-# scope question has to be answered first, and hostname uniqueness is a
-# separate call from node_number uniqueness.
+# ⚠ THE REASON ABOVE IS A CONSEQUENCE; THE RULE IS A REQUIREMENT. Don't confuse
+# them, because the consequence expires and the rule does not. Shared subnets
+# and a shared vmid space are true only while there is ONE Proxmox cluster with
+# ONE Ceph; a second one has its own subnets and its own `qm` vmid space, so
+# *that* argument for global uniqueness evaporates.
+#
+# Global uniqueness is kept anyway, deliberately (ADR-0035): a node may be moved
+# to another Proxmox node, another site, or a completely separate network, and a
+# globally unique node_number means such a move is never an identity change —
+# no renumbering, no IP/vmid reshuffle, nothing to reconcile. Hostnames likewise.
+#
+# ⚠ So when a second Proxmox cluster arrives, do NOT loosen this assert to
+# per-site on the grounds that the collision domain shrank. The collision domain
+# did shrink; the requirement is simply stricter than it, on purpose.
 #
 #   clusters: {homelab: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
 #     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: homelab}}

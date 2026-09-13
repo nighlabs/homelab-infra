@@ -64,19 +64,19 @@ Rules:
 | [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Answered by 0034** — retained as the investigation |
 | [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact; the fact is `secrets`, not a vendor name | Accepted, verified |
 | [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted — implemented, parallel-run verification pending |
-| [0035](0035-site-scope-multiple-proxmox-clusters.md) | 2026-09-12 | A third scope — **site** (one Proxmox cluster + its Ceph) — between fleet-wide and per-k3s-cluster | **Open** — decide when a 2nd Proxmox cluster is real |
+| [0035](0035-site-scope-multiple-proxmox-clusters.md) | 2026-09-12 | A third scope — **site** (one Proxmox cluster + its Ceph) — between fleet-wide and per-k3s-cluster | **Open** (implementation) — but the naming rule, global `node_number` uniqueness, and DNS-zone scoping are **decided** |
 
 ### Open questions without a record yet
 
 Tracked in the relevant `CLAUDE.md` until they're decided:
 
 - Internal-resolver approach for split DNS (0013).
-- **Do hostnames stay globally unique across sites?** The one part of
-  [ADR-0035](0035-site-scope-multiple-proxmox-clusters.md) that shouldn't wait
-  if a second Proxmox cluster is plausible: it is baked into kubeconfig context
-  names and node identity, so changing it later is a rename across live
-  clusters rather than a config edit. `node_number` uniqueness is a *separate*
-  call — its collision domain is genuinely per-site.
+- **Which DNS-zone shape?** ([ADR-0035](0035-site-scope-multiple-proxmox-clusters.md))
+  Subdomains of one zone (`<cluster>.example.net`, one Cloudflare token for
+  everything) or separate zones (one token each). ⚠ `base_domain` and
+  `cloudflare_api_token` are one scope and must fork together — a zone-scoped
+  token cannot solve DNS-01 for another zone. Decide with the split-horizon
+  resolver question above; they are the same conversation.
 - Rendering Calico's CRDs at OCI build time instead of vendoring (0020).
 - Control-node kubeconfig hygiene — `ansible/CLAUDE.md`, "Open items".
 - Whether ESO, once live, **adopts** the cluster-destined bootstrap-seeded

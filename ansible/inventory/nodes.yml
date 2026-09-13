@@ -30,15 +30,17 @@
 # hostnames must likewise be globally unique. Both are asserted (see
 # playbooks/tasks/load-node-map.yml) before anything is created.
 #
-# ⚠ "GLOBAL" here means "across k3s clusters", and it is true only because there
-# is exactly ONE Proxmox cluster with ONE Ceph. A second Proxmox cluster brings
-# its own subnets and its own vmid space, so node_number's collision domain is
-# really the SITE — and this file would then need a `site:` key per cluster to
-# say which one a cluster runs on. Every proxmox_*/ceph_*/dmz_* value in
-# group_vars/all/vars.yml is a flat scalar for the same reason.
-# Not a bug today; an unlabelled assumption, now labelled. The scopes, the
-# naming rule, and exactly what breaks:
-# docs/decisions/0035-site-scope-multiple-proxmox-clusters.md (Open).
+# ⚠ GLOBAL IS A REQUIREMENT, not just a consequence of today's layout (ADR-0035).
+# The collision argument above (shared subnets, shared vmid space) holds only
+# while there is ONE Proxmox cluster; a second one has its own of each. Global
+# uniqueness is kept regardless, because a node may move to another Proxmox
+# node, another site, or a completely separate network — and a globally unique
+# number means that move is never an identity change. Pick the next free number
+# fleet-wide, not per cluster.
+#
+# ⚠ A second Proxmox cluster WOULD need a `site:` key per cluster here, because
+# every proxmox_*/ceph_*/dmz_* value in group_vars/all/vars.yml is a flat scalar
+# — one Proxmox, one Ceph, one L2. That is the deferred half of ADR-0035.
 
 clusters:
   # The single cluster today. A second one = another key here with its own

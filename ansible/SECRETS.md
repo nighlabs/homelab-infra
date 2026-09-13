@@ -317,6 +317,13 @@ topology — still not for Git, but a different tier (root `CLAUDE.md`).
 | `base_domain` | text | the apex zone, bare — `example.net`, no wildcard, no trailing dot |
 | **`cloudflare_api_token`** 🔑 | concealed | Cloudflare API token with **Zone > DNS > Edit** *and* **Zone > Zone > Read** (cert-manager looks the zone id up by name), zone resources scoped to that one zone. ⚠ An **account-owned** token works but returns `Invalid API Token` from `/user/tokens/verify` — verify with `GET /zones` instead |
 
+⚠ **These two are ZONE-scoped, not fleet-scoped** — they only look fleet-wide
+because there is one zone today. The token is restricted to specific zone
+resources, so a token for zone A cannot solve DNS-01 for zone B; if
+`base_domain` ever forks, the token **must** fork with it. One scope, not two
+(ADR-0035). Subdomains of a single zone (`<cluster>.example.net`) keep one
+token serving everything.
+
 `base_domain` reaches gitops/ as the `${base_domain}` placeholder via
 `cluster-topology`; the token is seeded by `bootstrap-cluster.yml` into the
 `cert-manager` namespace (bootstrap-secret tier — see the play's comments and
