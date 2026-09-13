@@ -1,7 +1,7 @@
 # ADR-0027: Ansible reads Bitwarden Secrets Manager at run time; `vault.yml` is retired; secret zero is a macOS Keychain item
 
 - **Date:** 2026-08-17 (decided and migrated) · 2026-08-30 (org id moved to the Keychain too)
-- **Status:** Accepted — live
+- **Status:** **Superseded by [ADR-0034](0034-secrets-store-1password.md)** — the store is now 1Password, read with the `op` CLI. ⚠ Two of this record's *reasons* were reversed on their own terms there, not merely outgrown: "a BWS secret has no fields" (so grouping is now correct) and "shelling out is brittle when the SDK is already a dependency" (it no longer is). Its Keychain, consumer-split and no-state-file reasoning carried over.
 - **Supersedes / related:** supersedes the "secrets live in Ansible Vault" statements of the original design and the later "vault.yml is a BWS-materialized cache" position in the root `CLAUDE.md`; [ADR-0009](0009-secrets-aescbc-and-eso-bitwarden.md) (BWS for *app* secrets via ESO — the same store, a different consumer), [ADR-0021](0021-topology-blinding-postbuild-substitution.md) (why `cluster-topology` stays Ansible-seeded). Manifest of what exists in BWS: `ansible/BWS-SECRETS.md`. Code: `ansible/library/bws_secrets.py`, `ansible/playbooks/tasks/load-bws-secrets.yml`, `ansible/inventory/group_vars/all/vars.yml`.
 
 ## Context

@@ -12,7 +12,10 @@ Rules:
   [`../worklog.md`](../worklog.md) — link it, don't duplicate the tables.
 - Statuses: **Accepted** (in force), **Accepted — not yet implemented**,
   **Proposed** (argued for, not done), **Open** (question with no decision),
-  **Superseded by …**.
+  **Superseded by …**, **Partially superseded by … (which part)** — for a
+  record with independent layers where only one is replaced (0009), and
+  **Answered by …** — for an Open question a later record decides, where the
+  investigation is worth keeping (0032).
 - Blinding as everywhere else: `${placeholder}` / `x.x.x.N`, never a real
   address.
 
@@ -30,7 +33,7 @@ Rules:
 | [0006](0006-ceph-csi-external-proxmox-ceph.md) | Persistent storage: ceph-csi-operator against the existing Proxmox Ceph | Accepted, verified (2026-09-07) |
 | [0007](0007-ansible-not-terraform.md) | Provisioning: Ansible only — Terraform/OpenTofu dropped | Accepted |
 | [0008](0008-flux-via-flux-operator.md) | GitOps: FluxCD via the Flux Operator, bootstrapped by Ansible last | Accepted (source detail superseded by 0028) |
-| [0009](0009-secrets-aescbc-and-eso-bitwarden.md) | Secrets: k3s secrets-encryption at rest; ESO + Bitwarden Secrets Manager for app secrets | Accepted — ESO half not yet implemented |
+| [0009](0009-secrets-aescbc-and-eso-bitwarden.md) | Secrets: k3s secrets-encryption at rest; ESO + Bitwarden Secrets Manager for app secrets | **Partially superseded by 0034 (layer 2 only)** — layer 1 unchanged and live; ESO half not yet implemented |
 | [0010](0010-calico-over-cilium.md) | CNI: Calico | Accepted |
 | [0011](0011-cluster-cidrs-never-cgnat.md) | Cluster CIDRs live in `10.0.0.0/8` — never CGNAT | Accepted |
 | [0012](0012-metallb-bgp.md) | Load balancer: MetalLB in BGP mode | **Superseded by 0018** |
@@ -53,13 +56,14 @@ Rules:
 | [0024](0024-calico-ebpf-dataplane-no-kube-proxy.md) | 2026-08-02 | Calico eBPF dataplane; kube-proxy disabled | Accepted, verified |
 | [0025](0025-destroy-ignition-snippet-after-first-boot.md) | 2026-08-03 | The Ignition snippet is destroyed after first boot (it embeds the join token) | Accepted, verified |
 | [0026](0026-per-cluster-derivation-from-index.md) | 2026-08-16 | Cluster `index` → ASN + LB range; per-cluster token/SANs/version; LB range routed-only | Accepted, verified |
-| [0027](0027-control-node-secrets-bws-runtime.md) | 2026-08-17 | Ansible reads BWS at run time; `vault.yml` retired; secret zero in the macOS Keychain | Accepted, live |
+| [0027](0027-control-node-secrets-bws-runtime.md) | 2026-08-17 | Ansible reads BWS at run time; `vault.yml` retired; secret zero in the macOS Keychain | **Superseded by 0034** |
 | [0028](0028-gitops-delivery-signed-oci-syncless-fluxinstance.md) | 2026-08-29 | Flux consumes a cosign-signed OCI artifact; sync-less FluxInstance; self-managed root | Accepted, verified |
 | [0029](0029-drop-helm-for-calico.md) | 2026-08-02 | Install the tigera operator from manifests instead of the Helm chart | **Proposed** |
 | [0030](0030-flatcar-os-update-policy.md) | 2026-08-02 | Flatcar auto-update/reboot policy | **Open** |
 | [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified |
-| [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Open** — decide before the ESO milestone |
+| [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Answered by 0034** — retained as the investigation |
 | [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact; the fact is `secrets`, not a vendor name | Accepted, verified |
+| [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted — implemented, parallel-run verification pending |
 
 ### Open questions without a record yet
 
@@ -70,27 +74,32 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
 - Control-node kubeconfig hygiene — `ansible/CLAUDE.md`, "Open items".
 - Whether ESO, once live, **adopts** the cluster-destined bootstrap-seeded
   Secrets (first case: cert-manager's Cloudflare DNS-01 token), or they stay
-  Ansible-seed-only (0009, 0027). **Not yet decided** — the seed-only wording
+  Ansible-seed-only (0009, 0034). **Not yet decided** — the seed-only wording
   in 0009 records the mechanism, not a permanence decision. Current lean:
-  adopt, inside 0027's consumer split — ESO's machine account still never
-  reads `homelab-infra` (cluster-destined secrets would live in the apps
-  project, with the *control-node* account granted read on both; exposure
-  doesn't widen because these secrets end up as in-cluster `Secret`s either
-  way), and **the Ansible seed remains regardless** — a from-scratch rebuild
-  needs the token before ESO exists, so adoption is an overlay, never a
+  adopt, inside the consumer split — ESO still never reads `homelab-infra`
+  (cluster-destined secrets would live in the **`homelab-apps` vault**;
+  exposure doesn't widen because these secrets end up as in-cluster `Secret`s
+  either way), and **the Ansible seed remains regardless** — a from-scratch
+  rebuild needs the token before ESO exists, so adoption is an overlay, never a
   handover. Excluded whatever is decided: `cluster-topology` (permanent,
-  0021/0027) and `eso_bws_access_token` (0027 ⚠). Decide + ADR at the ESO
-  milestone.
+  0021/0034) and `eso_op_service_account_token` (0034 ⚠). Decide + ADR at the
+  ESO milestone.
 
-  ⚠ **Conditional on the store.** The asymmetry below (cert-manager upstream of
-  ESO, ceph-csi not) holds because the Bitwarden SDK Server needs a
-  cert-manager cert. [ADR-0032](0032-secrets-store-1password-migration.md)
-  considers a provider with **no in-cluster server and no certificate at all**;
-  under it cert-manager stops being upstream of ESO, the two cases below
-  collapse into one, and both are then governed only by rebuild-path length.
-  Also ⚠ **decide this before creating any 1Password service account** — their
-  vault grants are immutable, and the "control-node account reads both
-  projects" lean cannot be added after the fact.
+  ⚠ **The store change already settled half of this.** The asymmetry below
+  (cert-manager upstream of ESO, ceph-csi not) held only because the Bitwarden
+  SDK Server needed a cert-manager cert. Under
+  [ADR-0034](0034-secrets-store-1password.md) there is **no in-cluster server
+  and no certificate at all**, so cert-manager is no longer upstream of ESO:
+  **the two cases below have collapsed into one**, governed only by
+  rebuild-path length. Read them with that in mind — the distinction they draw
+  is now historical.
+
+  ⚠ **The immutable-grant deadline no longer binds the control node.** It does
+  still bind **ESO's** service account, whose vault grant is fixed at creation:
+  if adoption means ESO reading cluster-destined secrets, those must live in
+  `homelab-apps`, which it already reads — so the lean above stays reachable.
+  (The control node authenticates as the operator via the desktop app and has
+  no service account to constrain — ADR-0034.)
 
   ⚠ **ceph-csi's two cephx keys are a different case from cert-manager's token,
   and the difference is easy to misread.** cert-manager genuinely *is* upstream
@@ -100,9 +109,9 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   is actually on the table where for the Cloudflare token it is not.
 
   The argument for keeping them seeded anyway is **rebuild-path length**, not
-  dependency: seeded, storage needs only Ansible + BWS; sourced from ESO, first
+  dependency: seeded, storage needs only Ansible + the secret store; sourced from ESO, first
   provisioning would additionally need a live LE cert, the Gateway, the LB IP,
-  BGP and Bitwarden reachability. Re-provisioning is the *normal* upgrade path
+  BGP and vendor-API reachability. Re-provisioning is the *normal* upgrade path
   here (0019), so that path gets walked often, and 0004/0015 both put recovery
   on top of Ceph. Running clusters are unaffected either way — 0009 notes
   materialised Secrets persist, so ESO is needed at sync time, not pod start.
@@ -114,21 +123,20 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   whose members share only "CRs whose CRDs came from a controller", and their
   dependencies differ: cert-manager's issuers need the cert-manager controller;
   ceph-csi's CRs need the ceph-csi operator and Ceph; **ESO's SecretStore needs
-  cert-manager's `Certificate`** (the Bitwarden SDK Server runs with a cert
-  from it — 0009). kustomize-controller applies a tier in **one pass with no
+  cert-manager's `Certificate`** (the Bitwarden SDK Server ran with a cert from
+  it — 0009; ⚠ no longer true under 0034). kustomize-controller applies a tier in **one pass with no
   intra-tier ordering**, so that last edge is either satisfied by luck and
   retries (the SecretStore flaps NotReady until the cert exists) or it needs an
   explicit `dependsOn` — which means its own Kustomization either way.
 
-  ⚠ **That forcing edge is store-dependent.** It exists because the Bitwarden
-  SDK Server needs a certificate. Under
-  [ADR-0032](0032-secrets-store-1password-migration.md)'s provider there is no
-  server and no cert, so the SecretStore needs only its controller one tier up
-  — the edge dissolves and this question keeps only the soft costs listed
-  below, becoming an observability argument with no correctness argument behind
-  it. The one way to reintroduce a hard edge is to source cert-manager's
-  Cloudflare token *from* ESO, which couples this question to the adoption one
-  above: decide them together.
+  ⚠ **That forcing edge is GONE, not merely store-dependent.** It existed
+  because the Bitwarden SDK Server needed a certificate; under
+  [ADR-0034](0034-secrets-store-1password.md) there is no server and no cert,
+  so the SecretStore needs only its controller one tier up. This question now
+  keeps only the soft costs listed below — an observability argument with no
+  correctness argument behind it. The one way to reintroduce a hard edge is to
+  source cert-manager's Cloudflare token *from* ESO, which couples this
+  question to the adoption one above: **decide them together.**
 
   Costs of the status quo, for the record: one Ready condition spanning three
   unrelated failure domains, so "infrastructure-config NotReady" doesn't say

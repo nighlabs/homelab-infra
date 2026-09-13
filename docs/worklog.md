@@ -13,6 +13,102 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-12 — Moved the secret store to 1Password, read with the `op` CLI; the control node now keeps no secret zero
+
+**Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) (new) ·
+[ADR-0032](decisions/0032-secrets-store-1password-migration.md) (answered) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) (superseded) ·
+[ADR-0009](decisions/0009-secrets-aescbc-and-eso-bitwarden.md) (layer 2 only) ·
+[ADR-0033](decisions/0033-secrets-fact-broker.md) · Code:
+`ansible/playbooks/tasks/load-secrets*.yml`,
+`ansible/playbooks/render-1password-import.yml`, `ansible/SECRETS.md`.
+
+ADR-0032 raised this as an Open question and stopped there. Decided in favour,
+and implemented the control-node half the same day — the broker seal above is
+what made it a two-file change instead of a ~40-site sweep.
+
+**Three reversals, all deliberate, all recorded rather than glossed:**
+
+| Reversed | Because |
+|---|---|
+| ADR-0027: "shelling out is brittle **when the SDK is already a dependency**" | It isn't. 1Password's Python SDK would be a *new* 0.x dep with breaking minors and a native libssl/glibc requirement; `op` is a static Go binary and `--format json` is a contract, not a scraped table. |
+| ADR-0027: grouping rejected because **"a BWS secret has no fields"** | 1Password items have typed, labelled fields. The premise is void, so grouping is now correct rather than a JSON hack — and it is what keeps the call count at one per item. |
+| ADR-0032: **"do not make `op` biometrics the default"** | Overruled *for the control node only*. Secret zero doesn't relocate — it ceases to exist. ESO still uses a scoped service account, because a pod has no desktop app. |
+
+**The auth change is the one worth remembering.** With the desktop-app
+integration there is no token on disk, in a keychain, or in the repo. The trade
+is real and is stated in the ADR: `op` then authenticates as the operator, with
+read/write on every vault they own. It is acceptable because the operator at the
+keyboard already had that access — the token was a boundary against a stolen
+laptop, not against them, and a silently-readable Keychain item was a *worse*
+answer to that threat than Touch ID plus a session timeout. It also deletes the
+immutable-grant trap from this side: with no control-node service account, the
+only fixed grant left is ESO's.
+
+**Migration by rendering, not retyping.** `render-1password-import.yml` reads
+the old store and renders a 1Password item template — same shape as
+`render-ceph-setup.yml`, same reason. ⚠ A *template file*, not `op item create
+name=value`, because 1Password's own CLI warns that assignment statements are
+visible in argv and shell history. It renders rather than writes because
+creating the item needs write access, which no run-time credential here has.
+
+**Verification so far** (live BWS store, 29 secrets, against a `.frr`/`.ceph`
+baseline taken before any change):
+
+| Check | Result |
+|---|---|
+| Import renderer output | valid item JSON; 29 fields → 6 sections, **nothing** in the catch-all (asserted, not observed); labels unique; both STRING and CONCEALED present |
+| Bitwarden backend through the new dispatcher | byte-identical renders, re-checked after every commit — the control for the whole migration |
+| 1Password path reaches `op` | reports desktop-app mode and the correct "enable the integration" instruction with no account configured; `op` 2.39.0 clears the >= 2.18.0 assert |
+| `--syntax-check`, all seven playbooks | pass |
+
+⚠ **The parallel run has NOT happened** — no vault or item exists yet. Until
+`render-frr-config.yml` and `render-ceph-setup.yml` are byte-identical under
+*both* backends, the Bitwarden half stays. ADR-0034 lists what gets deleted, and
+it is deleted together.
+
+**Two findings that outlive the migration:**
+
+- ⚠ **A latent ADR-0027 bug, exposed the first time it mattered.** The Keychain
+  `pipe` lookup turns `security`'s exit-44 into a hard AnsibleError *while
+  resolving the variable* — before the assert that explains how to create the
+  item. So on any machine without the item, the carefully-written "here is the
+  `security add-generic-password` command" message **could never render**; you
+  got `lookup_plugin.pipe(...) returned 44`. Same shape as the
+  `render-ceph-setup.yml` trap found hours earlier: a good error message behind
+  a failure that fires first. Fixed on the 1Password path; the masking cost (a
+  locked keychain now reads as "no token") is named in the fail_msg.
+- ⚠ **`op` treats the PRESENCE of `OP_SERVICE_ACCOUNT_TOKEN` as mode selection.**
+  Exporting it empty selects service-account mode and then fails to
+  authenticate, instead of falling back to the desktop app — and the resulting
+  error talks about a bad token on a machine that was never meant to have one.
+  The task therefore builds the environment conditionally rather than passing
+  `""`. Caught by reasoning about the fallback, not by hitting it.
+
+**Also corrected while sweeping:** "ESO sits below cert-manager" is now **false**
+— no in-cluster server, no certificate — so both copies of that rule were
+replaced, each noting where it came from so it isn't reinstated from memory.
+`cluster-topology` was split into its own bullet: it had been written as a rider
+on that chain, but survives for unrelated reasons (one-pass tier application;
+Calico primed before Flux), and leaving it attached to a now-false claim would
+have made it look retired. The `infrastructure-config` split question lost its
+only hard forcing edge as a result, and is now coupled to the ESO-adoption
+question — they must be decided together.
+
+⚠ **The sweep was scoped by explicit file list**, never `grep -rl | xargs`:
+`docs/worklog.md` is append-only and `docs/decisions/*` are records. ADR-0032
+warned about exactly this.
+
+**Open, and it is a subscription question rather than an engineering one:**
+1Password's daily cap is **per account, shared across every service account** —
+1,000/24h on Individual/Families. Ansible is nowhere near it (~4 calls per
+`site.yml`). ESO would be: ~480/day at the default `1h` refresh with 20
+`ExternalSecret`s, and per external-secrets#4925 an invalid token can exhaust a
+*daily* quota at retry cadence in ~20 minutes. Set `refreshInterval`
+deliberately at that milestone, and re-evaluate the plan tier.
+
+---
+
 ## 2026-09-12 — Sealed the secrets broker: `secret_names` published, `bws.*` gone from call sites, fact renamed to `secrets`
 
 **Related:** [ADR-0033](decisions/0033-secrets-fact-broker.md) (now Accepted, verified) ·

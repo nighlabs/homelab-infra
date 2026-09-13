@@ -1,7 +1,7 @@
 # ADR-0032: Whether to replace Bitwarden Secrets Manager with 1Password
 
 - **Date:** 2026-09-12 (raised)
-- **Status:** **Open** — decide before the ESO milestone starts, not after
+- **Status:** **Answered by [ADR-0034](0034-secrets-store-1password.md)** (2026-09-12) — decided in favour of moving, before the ESO milestone as this record urged. Retained as the investigation the decision rests on. ⚠ Two of its recommendations were *not* followed, deliberately: the Python SDK module (the `op` CLI is used instead) and mandatory service-account auth (the control node uses the desktop app and keeps no secret zero). ADR-0034 records why.
 - **Supersedes / related:** [ADR-0027](0027-control-node-secrets-bws-runtime.md) (control-node secrets from BWS at run time — this would supersede it), [ADR-0009](0009-secrets-aescbc-and-eso-bitwarden.md) (its *layer 2*, ESO + Bitwarden, is unbuilt; layer 1, aescbc at rest, is unaffected), [ADR-0021](0021-topology-blinding-postbuild-substitution.md) (its `cluster-topology` reasoning is corrected below), [ADR-0033](0033-secrets-fact-broker.md) (the broker seal, worth doing either way), [ADR-0015](0015-backups-nas-s3-and-break-glass.md) (the break-glass export mechanism would change). Code: `ansible/library/bws_secrets.py`, `ansible/playbooks/tasks/load-bws-secrets.yml`, `ansible/BWS-SECRETS.md`.
 
 ## Context

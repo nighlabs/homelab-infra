@@ -1,7 +1,12 @@
 # ADR-0009: Secrets: k3s secrets-encryption at rest; External Secrets Operator + Bitwarden Secrets Manager for runtime app secrets
 
 - **Date:** 2026-07 (initial design)
-- **Status:** Accepted — the at-rest half is live (secrets-encryption on from boot 1); the ESO half is not yet implemented
+- **Status:** **Partially superseded by [ADR-0034](0034-secrets-store-1password.md) — layer 2 only.**
+  ⚠ **Layer 1 (k3s `secrets-encryption`, aescbc at rest) is unchanged and live**
+  (on from boot 1). Layer 2's store is now 1Password via the ESO **SDK
+  provider**, which runs **no in-cluster server** — so this record's "ESO cannot
+  be pulled earlier, the SDK Server needs a cert-manager cert" no longer holds,
+  and the ESO half remains not yet implemented.
 - **Supersedes / related:** [ADR-0021](0021-topology-blinding-postbuild-substitution.md) (topology, which is *not* a secret and goes a different route); [ADR-0027](0027-control-node-secrets-bws-runtime.md) (control-node secrets — a third tier, decided later); root `CLAUDE.md` "Secrets, credentials, and topology blinding"; `../architecture.md` §3.6
 
 ## Context
