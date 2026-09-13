@@ -58,6 +58,8 @@ Rules:
 | [0029](0029-drop-helm-for-calico.md) | 2026-08-02 | Install the tigera operator from manifests instead of the Helm chart | **Proposed** |
 | [0030](0030-flatcar-os-update-policy.md) | 2026-08-02 | Flatcar auto-update/reboot policy | **Open** |
 | [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified |
+| [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Open** — decide before the ESO milestone |
+| [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact | **Proposed** |
 
 ### Open questions without a record yet
 
@@ -79,6 +81,16 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   handover. Excluded whatever is decided: `cluster-topology` (permanent,
   0021/0027) and `eso_bws_access_token` (0027 ⚠). Decide + ADR at the ESO
   milestone.
+
+  ⚠ **Conditional on the store.** The asymmetry below (cert-manager upstream of
+  ESO, ceph-csi not) holds because the Bitwarden SDK Server needs a
+  cert-manager cert. [ADR-0032](0032-secrets-store-1password-migration.md)
+  considers a provider with **no in-cluster server and no certificate at all**;
+  under it cert-manager stops being upstream of ESO, the two cases below
+  collapse into one, and both are then governed only by rebuild-path length.
+  Also ⚠ **decide this before creating any 1Password service account** — their
+  vault grants are immutable, and the "control-node account reads both
+  projects" lean cannot be added after the fact.
 
   ⚠ **ceph-csi's two cephx keys are a different case from cert-manager's token,
   and the difference is easy to misread.** cert-manager genuinely *is* upstream
@@ -107,6 +119,16 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   intra-tier ordering**, so that last edge is either satisfied by luck and
   retries (the SecretStore flaps NotReady until the cert exists) or it needs an
   explicit `dependsOn` — which means its own Kustomization either way.
+
+  ⚠ **That forcing edge is store-dependent.** It exists because the Bitwarden
+  SDK Server needs a certificate. Under
+  [ADR-0032](0032-secrets-store-1password-migration.md)'s provider there is no
+  server and no cert, so the SecretStore needs only its controller one tier up
+  — the edge dissolves and this question keeps only the soft costs listed
+  below, becoming an observability argument with no correctness argument behind
+  it. The one way to reintroduce a hard edge is to source cert-manager's
+  Cloudflare token *from* ESO, which couples this question to the adoption one
+  above: decide them together.
 
   Costs of the status quo, for the record: one Ready condition spanning three
   unrelated failure domains, so "infrastructure-config NotReady" doesn't say

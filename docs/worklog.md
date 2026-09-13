@@ -13,6 +13,67 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-12 — Explored replacing BWS with 1Password; found two claims already wrong
+
+**Related:** [ADR-0032](decisions/0032-secrets-store-1password-migration.md) (Open) ·
+[ADR-0033](decisions/0033-secrets-fact-broker.md) (Proposed) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) ·
+[ADR-0009](decisions/0009-secrets-aescbc-and-eso-bitwarden.md) ·
+[ADR-0021](decisions/0021-topology-blinding-postbuild-substitution.md)
+
+No migration performed and none decided. Recorded as an Open ADR because the
+investigation turned up things that outlive the question, and because the
+answer gets more expensive after the ESO milestone rather than before.
+
+**Two corrections landed, both true regardless of any store change:**
+
+| Found | Fix |
+|---|---|
+| `tasks/load-bws-secrets.yml` claimed Keychain unlock "is Touch ID rather than a typed passphrase". `vars.yml` says the opposite, in detail, and is right — `security` has no biometry flag. | Comment rewritten, pointing at the authoritative note. |
+| The "ESO cannot be pulled earlier" chain is written as SDK Server → cert → **Gateway → LoadBalancer IP → BGP**. The last two links do not belong: this cluster issues by **DNS-01**, which solves with no inbound path. Gateway and LB IP are what *serving* the wildcard needs, not *issuing* it. | Reference text corrected in root `CLAUDE.md` and `architecture.md` §3.6. ADR-0009/0021 left standing — records are not edited to change the past; ADR-0032 carries the correction. |
+
+The second one also cost `cluster-topology`'s stated justification, so the
+reference text now gives the two reasons that actually hold: a tier applies in
+**one pass with no intra-tier ordering**, so a Secret produced by a controller
+inside `infrastructure` can never be a `postBuild` source for `infrastructure`;
+and Calico is Ansible-primed from the same values before Flux exists (ADR-0016).
+The conclusion — permanently Ansible-seeded — was never in doubt; only the
+argument for it was wrong.
+
+**On the swap itself.** `feat/eso` was zero commits ahead of `main` with a
+clean tree, so the cluster half is greenfield — not a migration, just a
+different choice at an unstarted milestone, and the cheaper one there (the
+1Password SDK provider runs **no in-cluster server**, so no Deployment,
+Service, `Certificate` or image digest). The control-node half is ~3–4 days,
+more than half of it prose.
+
+⚠ The finding that would decide it: 1Password's daily rate limit is **per
+account, shared across every service account** — 1,000/24h on
+Individual/Families. Ansible fits easily (~20 calls per `site.yml` with grouped
+items). ESO does not: ~480/day at the default refresh with 20 `ExternalSecret`s,
+and per external-secrets#4925 an invalid token consumes quota at retry cadence
+and can exhaust a **daily** limit in ~20 minutes — locking out ESO *and* the
+control node, including the playbook that would fix it. Below Teams this is a
+regression against BWS's undocumented-but-burst-shaped throttling.
+
+One genuine reversal is available if it proceeds: ADR-0027 rejected grouping
+secrets because *"a BWS secret has no fields"*. 1Password items have typed,
+labelled fields, so that premise is simply void — grouping by purpose becomes
+correct rather than a JSON hack, and it is also what keeps the call count down.
+
+**ADR-0033 split out deliberately.** Grepping for consumers showed the `bws`
+fact escaping its `vars.yml` broker in four files. Two are ordinary omissions;
+two are **structural** — `preflight.yml`'s `k3s_tls_sans_*` guard and
+`render-ceph-setup.yml`'s presence checks ask questions about the *set of
+secret names*, which a brokered value cannot express, so there is no correct
+way to write them today. The module already returns a safe-to-log `names` list
+that is printed but never published as a fact. Publishing it as `secret_names`
+fixes both, and drops those tasks out of the `no_log` blast radius of a
+structure whose values they never read. Correct either way, so it is not
+buried inside the contested decision.
+
+---
+
 ## 2026-09-07 — ceph-csi live against the Proxmox Ceph: both StorageClasses provisioning, RBD on krbd
 
 **Related:** [ADR-0006](decisions/0006-ceph-csi-external-proxmox-ceph.md) ·

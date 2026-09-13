@@ -72,10 +72,17 @@ reads it when* (`docs/decisions/0027-control-node-secrets-bws-runtime.md`,
 - **Topology is blinded with `${var}` placeholders + post-build substitution**,
   not SOPS. Reach for **SOPS/age only** where substitution can't go (whole
   blocks/lists, or values needed at kustomize-*build* time).
-- **ESO cannot be pulled earlier in the chain** — the Bitwarden SDK Server
-  needs a cert-manager cert, which needs a Gateway, which needs a LoadBalancer
-  IP, which needs the BGP config. That cycle is real, so anything BGP needs is
-  Ansible-seeded **permanently**. Don't try to solve it by moving ESO up.
+- **ESO sits below cert-manager** — the Bitwarden SDK Server needs a
+  cert-manager certificate, so anything needed before ESO exists is
+  Ansible-seeded. ⚠ The chain stops there: certs are issued by **DNS-01**
+  (ADR-0013), which needs no Gateway and no LoadBalancer IP — those are what
+  *serving* the wildcard needs, not what *issuing* it needs. **`cluster-topology`
+  is Ansible-seeded permanently for a different reason**: Flux evaluates
+  `postBuild.substituteFrom` at build time for the `infrastructure` tier, and a
+  tier applies in one pass with no intra-tier ordering, so a Secret produced by
+  a controller *inside* that tier can never be a substitution source *for* it.
+  Cluster-bound ≠ ESO-managed. See ADR-0032 for the correction and for what
+  changes under a provider with no in-cluster server.
 - **The repo and its OCI artifact are public.** Blinding applies to docs too:
   `${placeholder}` / `x.x.x.N`, never a real address.
 

@@ -376,9 +376,20 @@ everything. The split is about *who reads it, when*:
   any form, including ciphertext. The secret manifest is `ansible/BWS-SECRETS.md`.
 - **Datastore at rest:** k3s `secrets-encryption` (aescbc) from boot 1. A
   KMS-as-KEK upgrade is possible later, traded against a cold-start dependency.
-- **ESO cannot be pulled earlier in the chain** — the Bitwarden SDK Server needs
-  a cert-manager cert → a Gateway → a LoadBalancer IP → BGP config. So anything
-  BGP needs is Ansible-seeded, **permanently**, not just at first bootstrap.
+- **ESO sits below cert-manager** — the Bitwarden SDK Server needs a
+  cert-manager certificate, so anything needed before ESO exists is
+  Ansible-seeded at bootstrap. ⚠ The chain stops at the certificate: this
+  cluster issues by **DNS-01** (ADR-0013), which solves with no inbound path, so
+  no Gateway and no LoadBalancer IP are involved — those are what *serving* the
+  wildcard needs. **`cluster-topology` is Ansible-seeded permanently on separate
+  grounds**: Flux evaluates `postBuild.substituteFrom` at build time for the
+  `infrastructure` tier, and kustomize-controller applies a tier in one pass
+  with no intra-tier ordering, so a Secret produced by a controller inside that
+  tier can never be a substitution source for it — and Calico is Ansible-primed
+  from the same values before Flux exists (ADR-0016). *Cluster-bound ≠
+  ESO-managed.* [ADR-0032](decisions/0032-secrets-store-1password-migration.md)
+  records this correction and what changes under a provider that runs no
+  in-cluster server.
 - **Two BWS projects, split by consumer:** `homelab-infra` (read by the control
   node) and an apps project (read by ESO, created at that milestone). A cluster
   compromise must not reach the Proxmox token.
