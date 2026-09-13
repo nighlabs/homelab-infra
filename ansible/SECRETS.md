@@ -107,32 +107,40 @@ the apps side, **one vault per cluster**:
 | Vault | Read by | Holds |
 |---|---|---|
 | `homelab-infra` | the **control node** (one vault, fleet-wide) | everything in §2 — Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password — **and every cluster's ESO service-account token** |
-| `apps-<cluster>` — e.g. `apps-homelab` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. One per cluster in `inventory/nodes.yml` |
+| `homelab-apps-<cluster>` — e.g. `homelab-apps-homelab` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. One per cluster in `inventory/nodes.yml` |
 
-⚠ **The two names are on DIFFERENT AXES, and the prefix is what says so.**
-Worth reading once, because they used to look like a matched `homelab-*` pair
-and were not:
+**Vault names are `homelab-` + scope + (cluster).** Every vault shares the
+prefix, so they group together in 1Password and are obvious at a glance; what
+follows the prefix states the scope:
 
-- **`homelab-infra` is named after the REPO** (`ghcr.io/nighlabs/homelab-infra`),
-  inherited from ADR-0027's Bitwarden project name. It is **fleet-wide**. The
-  fact that it starts with `homelab` is a coincidence of the repo's name — it
-  has nothing to do with the cluster that happens to be called `homelab`.
-- **`apps-<cluster>` is named after the CLUSTER KEY** in `inventory/nodes.yml`,
-  the same key that names the kubeconfig context and
-  `gitops/deployment/<cluster>/`.
+    homelab-infra            fleet-wide
+    homelab-apps-<cluster>   exactly one cluster
 
-The `apps-` **prefix** (rather than a `-apps` suffix) is deliberate: it puts the
-scope first, keeps every cluster's vault together in the vault list, and stops
-`homelab-infra` / `homelab-apps` reading as one pair. At cluster #2 that
-mattered — `homelab-infra`, `homelab-apps`, `edge-apps` invites you to read the
-infra vault as cluster `homelab`'s, which it is not.
+⚠ **`homelab-` is the ESTATE, not the cluster.** It comes from the repo
+(`ghcr.io/nighlabs/homelab-infra`, and ADR-0027's Bitwarden project name before
+that) and covers Proxmox, Ceph, the network, k3s and — later — the Mac tier.
+That the *cluster* is also called `homelab` is a coincidence of naming, which is
+why `homelab-apps-homelab` doubles up: estate, then scope, then cluster key. A
+cluster called `edge` reads `homelab-apps-edge`, which is the shape to picture.
+
+⚠ **Deliberately not `k8s-`.** `homelab-infra` holds the Proxmox API token, SSH
+keys, Ceph credentials and the pfSense/FRR password — mostly not Kubernetes —
+and [ADR-0001](../docs/decisions/0001-native-inference-on-the-mac.md) keeps the
+Mac inference tier out of Kubernetes entirely, so its secrets will land in that
+same vault. A `k8s-` prefix would claim a scope the vault does not have, which
+is the failure mode this whole section exists to avoid.
+
+⚠ **Also not `<cluster>-apps`.** That gave `homelab-infra` + `homelab-apps`,
+which read as a matched pair while sitting on different axes — and at cluster #2
+(`homelab-infra`, `homelab-apps`, `edge-apps`) it invites reading the infra
+vault as cluster `homelab`'s, which it is not.
 
 **Create both up front**, even though the apps vault stays empty until the ESO
 milestone:
 
 ```sh
 op vault create homelab-infra
-op vault create apps-homelab
+op vault create homelab-apps-homelab
 ```
 
 ⚠ Why not defer the empty one: so that an app secret which shows up before ESO
@@ -196,7 +204,7 @@ unattended/Linux control node.
 # ESO — ONE PER CLUSTER, granted that cluster's apps vault ONLY.
 # It must never reach homelab-infra, and never another cluster's vault.
 op service-account create eso-homelab \
-  --vault apps-homelab:read_items
+  --vault homelab-apps-homelab:read_items
 
 # only if you also need unattended runs of these plays:
 op service-account create homelab-control-node \
@@ -223,7 +231,7 @@ new token. Consequences worth reading twice:
 - ⚠ **Defaulting to mode 1 removes this trap from the control-node side
   altogether**, which is a real argument for it: with no control-node service
   account, the only immutable grant in play is ESO's, and that one is
-  unambiguous (`apps-homelab`, read-only).
+  unambiguous (`homelab-apps-homelab`, read-only).
 - **`read_items` only.** Nothing in the run-time path writes. The one thing that
   does write — the migration in §4 — runs as *you*, not as any service account.
 - **The token is displayed exactly once** and 1Password cannot show it again.

@@ -62,7 +62,7 @@ is the durable store for everything; the split is about *who reads it when*
 |---|---|---|
 | **Credentials** | Proxmox API token, k3s join token | **1Password, read at run time** via the `op` CLI — one `op item get` per item, values as labelled fields |
 | **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
-| **Runtime app secrets** | app passwords, API keys | ESO + the 1Password **SDK provider** (no in-cluster server), from that cluster's own `apps-<cluster>` vault |
+| **Runtime app secrets** | app passwords, API keys | ESO + the 1Password **SDK provider** (no in-cluster server), from that cluster's own `homelab-apps-<cluster>` vault |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range, node IPs | Flux `postBuild.substituteFrom` the Ansible-seeded `cluster-topology` `Secret` — *placeholders* in Git |
 
 - **Secret zero does not exist on the control node.** `op` authenticates
@@ -72,7 +72,7 @@ is the durable store for everything; the split is about *who reads it when*
   on a service account are **immutable** — decide them at creation.
 - **Vaults split by CONSUMER, and per-cluster on the apps side.** The control
   node reads one fleet-wide `homelab-infra`; each cluster's ESO reads only its
-  own `apps-<cluster>` and *cannot* reach the infra vault or another cluster's
+  own `homelab-apps-<cluster>` and *cannot* reach the infra vault or another cluster's
   — a SecretStore names exactly one vault, so "cluster compromise must not
   reach the Proxmox token, or the rest of the fleet" is enforced by the API
   shape, not by discipline. Same blast-radius rule as per-cluster k3s tokens

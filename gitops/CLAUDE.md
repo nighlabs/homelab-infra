@@ -299,8 +299,8 @@ token *from* ESO. `docs/decisions/README.md`, "Open questions".
 `../ansible/SECRETS.md` deliberately stops at the vault boundary and covers
 only what the control node creates and reads:
 
-- A `ClusterSecretStore` naming **this cluster's own** `apps-<cluster>` vault
-  (`apps-homelab` for `homelab`). It cannot reach `homelab-infra`, nor another
+- A `ClusterSecretStore` naming **this cluster's own** `homelab-apps-<cluster>` vault
+  (`homelab-apps-homelab` for `homelab`). It cannot reach `homelab-infra`, nor another
   cluster's apps vault — a store names exactly one vault, which is what makes
   the consumer split structural rather than a matter of discipline.
 - ⚠ **One vault and one service account PER CLUSTER**, same blast-radius

@@ -115,7 +115,7 @@ token is used when present, and the desktop app when not.
 ### Vault layout: ADR-0027's split by CONSUMER, preserved and strengthened
 
 One fleet-wide `homelab-infra` for the control node, and — **changing ADR-0027's
-shape** — **one `apps-<cluster>` vault and one ESO service account per cluster**,
+shape** — **one `homelab-apps-<cluster>` vault and one ESO service account per cluster**,
 rather than a single shared apps project. ⚠ `eso_op_service_account_token_<cluster>`
 stays in `homelab-infra` — *the thing that grants access cannot live behind the
 access it grants* — cluster-suffixed exactly like `k3s_token_<cluster>`
@@ -129,13 +129,15 @@ argument always wanted is simply affordable now. It is the same reasoning that
 already makes k3s join tokens per-cluster: *a compromised cluster must not take
 the fleet with it.*
 
-⚠ **Vault naming follows two different axes, on purpose.** `homelab-infra` is
-named for the **repo** (ADR-0027's project name, itself from
-`ghcr.io/nighlabs/homelab-infra`) and is fleet-wide; `apps-<cluster>` is named
-for the **cluster key** in `nodes.yml`. The `apps-` prefix rather than an
-`-apps` suffix is what keeps that visible — `homelab-infra` + `homelab-apps`
-read as a matched pair and are not, which at cluster #2 would invite reading
-the infra vault as cluster `homelab`'s.
+⚠ **Vault names are `homelab-` + scope + (cluster)** — `homelab-infra`,
+`homelab-apps-<cluster>` — so they group in 1Password and state their own scope.
+The `homelab-` prefix is the **estate** (the repo, and ADR-0027's project name
+before it), not the cluster that happens to share the word. Two forms were
+rejected: `<cluster>-apps`, because `homelab-infra` + `homelab-apps` read as a
+matched pair while sitting on different axes; and `k8s-`, because the infra
+vault holds the Proxmox API token, SSH keys, Ceph credentials and the FRR
+password, and ADR-0001 keeps the Mac tier out of Kubernetes — a prefix must not
+claim a scope its vault lacks.
 
 The infra vault stays fleet-wide deliberately: the control node provisions every
 cluster, so splitting it would fragment one Proxmox credential across vaults the

@@ -120,16 +120,19 @@ when the extra titles would be silently ignored and their fields swept into the
 first item. It now refuses, and says the real answer: by then this one-shot play
 should already be deleted. Verified both ways.
 
-⚠ **Vault naming corrected before anything was created:** the apps vaults were
-first written `<cluster>-apps`, giving `homelab-infra` + `homelab-apps` — which
-read as a matched pair but sit on **different axes**. `homelab-infra` is named
-for the REPO (ADR-0027's project name, from `ghcr.io/nighlabs/homelab-infra`)
-and is fleet-wide; the other is named for the CLUSTER KEY. At cluster #2 that
-becomes `homelab-infra`, `homelab-apps`, `edge-apps` and invites reading the
-infra vault as cluster `homelab`'s. Now `apps-<cluster>` — scope first, every
-cluster's vault sorted together, no false pair. Free to fix because no vault
-existed yet; the same class of mistake as a guard whose stated reason doesn't
-match its actual scope, which this session has now hit three times.
+⚠ **Vault naming settled before anything was created:** `homelab-` + scope +
+(cluster) — `homelab-infra`, `homelab-apps-<cluster>` — so they group in
+1Password and state their own scope. Two forms were rejected. `<cluster>-apps`
+gave `homelab-infra` + `homelab-apps`, which read as a matched pair while
+sitting on **different axes** (the first is named for the REPO and is
+fleet-wide; the second for the CLUSTER KEY) — at cluster #2 that becomes
+`homelab-infra`, `homelab-apps`, `edge-apps` and invites reading the infra vault
+as cluster `homelab`'s. And `k8s-`, because `homelab-infra` holds the Proxmox
+API token, SSH keys, Ceph credentials and the FRR password, and ADR-0001 keeps
+the Mac tier out of Kubernetes — so that prefix would be wrong twice over. Free
+to settle because no vault existed yet; the same class of mistake as a guard
+whose stated reason doesn't match its actual scope, which this session has now
+hit three times.
 
 **Raised while reviewing the vault layout: a THIRD scope the repo doesn't have**
 — [ADR-0035](decisions/0035-site-scope-multiple-proxmox-clusters.md), Open.
