@@ -268,10 +268,50 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 ## Next
 
 Everything downstream of storage, in dependency order (the `NginxProxy`
-RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013): ESO +
-Bitwarden SDK Server (its access token is Ansible-seeded from the
-`homelab-infra` BWS project; app secrets come from a *separate* project —
-ADR-0027; **open, decide at this milestone:** whether ESO adopts the
-cluster-destined bootstrap-seeded Secrets such as the cert-manager Cloudflare
-token — `docs/decisions/README.md`, "Open questions") → Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel.
-Design: `../docs/architecture.md` §3.8, §4.5–4.9, §7.
+RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013): **ESO
+with the 1Password SDK provider** → Postgres + Redis → LiteLLM → Qdrant → RAG →
+Open WebUI → OTel. Design: `../docs/architecture.md` §3.8, §4.5–4.9, §7.
+
+### What the store change (ADR-0034) means for this tier
+
+⚠ **There is NO in-cluster secrets server.** The Bitwarden design needed a
+`Deployment` + `Service` + `Certificate` + a pinned image digest for the SDK
+Server; the 1Password SDK provider talks to the vendor API directly. Nothing to
+run, nothing to pin, no cert. This is the single biggest reason the swap was
+made before the milestone rather than after — porting ESO twice was the
+expensive path.
+
+⚠ **ESO's earliest position moves to "immediately after Calico"** — exactly
+where the reserved slots already put it, so no re-tiering. What still
+constrains it: CRDs Established, pod networking, egress to the vendor API
+(pod→node NAT, **not** BGP, which advertises LoadBalancer ranges *inbound*),
+and its own Ansible-seeded token Secret. ESO's admission webhook certs come
+from its own bundled `cert-controller`, never cert-manager.
+
+⚠ **Two open questions became coupled and must be decided together** — the
+`infrastructure-config` per-domain split and whether ESO *adopts* the
+bootstrap-seeded Secrets. The split's only hard forcing edge was "ESO's
+SecretStore needs cert-manager's `Certificate`", and that edge no longer
+exists; the one way to reintroduce one is to source cert-manager's Cloudflare
+token *from* ESO. `docs/decisions/README.md`, "Open questions".
+
+**Vendor-specific shape**, when it is written — this is the right home for it;
+`../ansible/SECRETS.md` deliberately stops at the vault boundary and covers
+only what the control node creates and reads:
+
+- A `ClusterSecretStore` naming the **`homelab-apps`** vault. It cannot reach
+  `homelab-infra` — a store names exactly one vault, which is what makes
+  ADR-0027's consumer split structural rather than a matter of discipline.
+- Auth from an Ansible-seeded Secret holding `eso_op_service_account_token`,
+  which lives in the **`homelab-infra`** vault (the control node seeds it; ESO
+  must never be able to rotate the credential gating its own access).
+- ⚠ The ESO service account's vault grant is **immutable** and was made when
+  the accounts were created. It cannot be widened later.
+- ⚠ **Rate limits are the real design constraint, not throughput.** The daily
+  cap is per *account*, shared across every service account, and is 1,000/24h
+  on Individual/Families. Steady state is roughly
+  `N_externalsecrets × (24h / refreshInterval)` — ~480/day at the default `1h`
+  with 20 `ExternalSecret`s. Set `refreshInterval` deliberately; do not leave
+  it at the default and hope. See ADR-0034's rate-limit section before
+  starting, including the error-amplification case where an invalid token
+  exhausts a *daily* quota in minutes and locks out the control node too.

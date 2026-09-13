@@ -29,9 +29,13 @@ dependencies = [
     # playbooks/bootstrap-cluster.yml to prime Calico and wait for node Ready.
     # (The `helm` CLI is a separate Go binary — see the header note.)
     "kubernetes>=30.1",
-    # Bitwarden Secrets Manager SDK — used by library/bws_secrets.py to fetch
-    # every secret in one call at run time (there is no vault.yml; see
-    # docs/decisions/0027-control-node-secrets-bws-runtime.md).
+    # ⚠ RETAINED FOR THE CUTOVER WINDOW ONLY. Secrets now come from 1Password
+    # via the `op` CLI, which is an external binary and therefore NOT a Python
+    # dependency — see ansible/README.md "Control-node prerequisites" and
+    # docs/decisions/0034-secrets-store-1password.md. This pin exists so
+    # `-e secrets_backend=bitwarden` keeps working until the byte-identical
+    # parallel run has passed; delete it, library/bws_secret*.py and
+    # playbooks/tasks/load-secrets-bitwarden.yml together.
     # ⚠ Pinned to a major, deliberately: bitwarden/sm-ansible#59 is an open
     # SDK-compatibility issue, so this must not float.
     "bitwarden-sdk>=1.0.0,<2.0.0",

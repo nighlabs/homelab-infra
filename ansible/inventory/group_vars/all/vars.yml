@@ -662,7 +662,21 @@ op_min_version: "2.18.0"
 #   op_vault: "<vault uuid>"      # the same variable — it takes either form
 #   op_items: ["<item uuid>"]     # likewise
 
-# Where secret zero lives. Create it with:
+# ⚠ OPTIONAL, and normally ABSENT. The default auth on a workstation is the
+# 1Password DESKTOP APP integration (Touch ID), which needs no token anywhere —
+# secret zero does not relocate, it ceases to exist. The load task supplies a
+# token only if one is found, so an empty Keychain here is the expected state,
+# not a misconfiguration. Turn the app integration on at:
+#   1Password app -> Settings -> Developer -> "Integrate with 1Password CLI"
+#
+# A service-account token is for what the app cannot reach: CI, a Linux control
+# node, an unattended run — and ESO in-cluster, which is a separate credential
+# entirely (see ../SECRETS.md §1.4). ⚠ ADR-0032 argued for making the token
+# mandatory; ADR-0034 overrules that for the control node and records the trade
+# — the app authenticates as YOU, read/write on every vault you own, versus a
+# read-only token on two named vaults.
+#
+# If you do want one on a Mac, create the item with:
 #   security add-generic-password -a "$USER" -s OP_SERVICE_ACCOUNT_TOKEN -U -w
 # (-w must be LAST: with no value after it, security prompts — keeping it out of
 # shell history. Mid-args, -w swallows the next flag as its value and never asks.)
@@ -685,12 +699,11 @@ op_min_version: "2.18.0"
 # no biometry flag, and biometric items live in the Secure-Enclave-backed
 # data-protection keychain, which this CLI does not reach.
 #
-# ⚠ Touch ID is available WITHOUT any repo change, and without `op`'s biometric
-# unlock: keep this scoped token, store it in a personal 1Password item, and
-# export it from your shell profile. The precedence chain already prefers the
-# environment. Do NOT switch the playbooks to `op signin`/biometrics — that
-# authenticates as YOU with full vault access and is interactive-only, which
-# throws away the least-privilege split the two-vault layout exists to protect.
+# ⚠ Want Touch ID? That is the desktop app integration — i.e. simply not having
+# this Keychain item. These prompts are the COST of the token path, not a
+# feature of it. If you specifically want Touch ID *and* a scoped read-only
+# token, put the token in a personal 1Password item and export it from your
+# shell profile; the precedence chain already prefers the environment.
 #
 # ⚠ One prompt PER PLAY, not per run: the load task is included once per play,
 # so a full site.yml prompts 4 times. And click Allow, never *Always Allow*, or
