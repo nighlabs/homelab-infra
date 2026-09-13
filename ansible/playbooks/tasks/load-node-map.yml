@@ -24,8 +24,8 @@
 # per-site on the grounds that the collision domain shrank. The collision domain
 # did shrink; the requirement is simply stricter than it, on purpose.
 #
-#   clusters: {homelab: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
-#     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: homelab}}
+#   clusters: {testnode: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
+#     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: testnode}}
 
 - name: Flatten clusters → a cluster-annotated node map
   ansible.builtin.set_fact:

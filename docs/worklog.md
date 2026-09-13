@@ -13,6 +13,71 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-13 — Renamed the k3s cluster `homelab` → `testnode`
+
+**Related:** [ADR-0026](decisions/0026-per-cluster-derivation-from-index.md)
+(the cluster key and what derives from it) ·
+[ADR-0034](decisions/0034-secrets-store-1password.md) (the vault it renames) ·
+[ADR-0028](decisions/0028-gitops-delivery-signed-oci-syncless-fluxinstance.md)
+(the Flux entrypoint path).
+
+The cluster key is load-bearing: it names the kubeconfig cluster/user/context,
+`.kube/<cluster>.config`, the Flux entrypoint `gitops/deployment/<cluster>/`,
+the per-cluster secrets `k3s_token_<cluster>` / `k3s_tls_sans_<cluster>`, and
+now the apps vault `homelab-apps-<cluster>`. All moved together.
+
+⚠ **`homelab` means two different things in this repo, and a blind
+find-and-replace would have broken the second.** The ESTATE is `homelab-infra`
+— the repo (`ghcr.io/nighlabs/homelab-infra`), ADR-0027's project name, and the
+`homelab-` vault prefix — and it does **not** move. Only the *cluster* named
+`homelab` did. The sweep was anchored on `\bhomelab\b(?!-)` so `-infra` /
+`-apps` / the prefix were protected, and `docs/decisions/` + `docs/worklog.md`
+were excluded as records.
+
+⚠ **Two things that regex missed, both worth knowing:**
+
+- **`\b` does not match between `_` and a letter**, so `k3s_token_homelab` and
+  `k3s_tls_sans_homelab` were silently protected — exactly the fields that most
+  needed renaming. Caught by grepping `_homelab\b` afterwards rather than by
+  trusting the sweep.
+- **`homelab-admin`** is the kubeconfig USER, derived as `<cluster>-admin`, so
+  the `(?!-)` guard protecting the estate prefix also protected it. Fixed
+  separately.
+
+**A side benefit:** no cluster is named after the estate any more, so vault
+names stop repeating themselves — `homelab-apps-testnode`, not
+`homelab-apps-homelab`. Worth keeping that way; a cluster named for the estate
+is what made `homelab-infra` / `homelab-apps` read as a matched pair when they
+sit on different axes.
+
+**The old store cannot be renamed, so the import renderer does it.** Bitwarden
+still holds `k3s_token_homelab` and its write machine account was deleted after
+the last migration (ADR-0027), so `render-1password-import.yml` gained an
+explicit one-shot `op_field_renames` map — labels only, values byte-for-byte —
+which prints what it renames before anything is written. Without it the import
+would have created `k3s_token_homelab` in a repo whose only cluster is
+`testnode`, and provisioning would have stopped at preflight *after* the vault
+was already populated wrongly. Verified: `k3s_token_homelab -> k3s_token_testnode`,
+still classified `clusters` / CONCEALED.
+
+**Verification.** `render-frr-config.yml` diffs against the pre-rename baseline
+in **names only** — peer group, prefix-lists (`HOMELAB-IN` → `TESTNODE-IN`) and
+comments. ASN 64601, the LB range and every node address are byte-identical,
+confirming ADR-0026's property that cluster-scoped values derive from `index`
+and not from the name. `render-ceph-setup.yml` is completely unchanged, which is
+the expected result for a site-scoped artifact (ADR-0035). All playbooks
+syntax-check.
+
+⚠ **Two follow-ups this creates:**
+1. **pfSense must be re-pasted.** The peer-group and prefix-list names changed
+   on the router side; the node addresses and ASNs did not. Until then FRR still
+   has `homelab`-named objects.
+2. **The running cluster is not renamed in place.** `gitops/deployment/homelab/`
+   moved, so the live cluster's Flux root points at a path the artifact no
+   longer contains. This is a re-provision, which is the plan anyway.
+
+---
+
 ## 2026-09-12 — Moved the secret store to 1Password, read with the `op` CLI; the control node now keeps no secret zero
 
 **Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) (new) ·

@@ -240,7 +240,7 @@ node_boot_timeout: 300
 # below resolve per-cluster.
 #
 # Where the fetched+rewritten kubeconfigs land on the control node — ONE PER
-# CLUSTER, named for it (`.kube/homelab.config`), because a single shared path
+# CLUSTER, named for it (`.kube/testnode.config`), because a single shared path
 # would have each cluster's bootstrap clobber the last one's. Server URL is
 # rewritten from 127.0.0.1 to the node's DMZ IP and the entries renamed off k3s's
 # `default` (k3s names cluster+user+context all `default`, so two clusters would
@@ -294,7 +294,7 @@ calico_version: "v3.32.1"
 # (`clusters/<name>/`, the standard Flux pattern), which is a restructure worth
 # doing when a second cluster actually exists rather than in advance of one.
 # `gitops/deployment/<cluster>/` is that natural seam, and as of 2026-08-17 it is
-# actually keyed by CLUSTER (`homelab`) rather than by node — the Flux bootstrap
+# actually keyed by CLUSTER (`testnode`) rather than by node — the Flux bootstrap
 # derives its sync path from `cluster_name`, so the rename was forced by making
 # the path derived instead of hand-kept. The rest of the per-cluster split
 # (`clusters/<name>/` for the CRD tier, HelmRelease and values) is still ahead.
@@ -398,7 +398,7 @@ flux_git_branch: "{{ flux_git_ref | regex_replace('^refs/heads/', '') }}"
 
 # The per-cluster entrypoint directory (repo-root-relative, for the git preflight
 # above), DERIVED from the cluster name — which is why gitops/deployment/
-# subdirectories are named for the cluster key in inventory/nodes.yml (`homelab`)
+# subdirectories are named for the cluster key in inventory/nodes.yml (`testnode`)
 # and not for a node. ⚠ Note the ARTIFACT-relative path Flux actually uses drops
 # the `gitops/` prefix (the artifact root IS gitops/): the root Kustomization's
 # path is `./deployment/<cluster>`, hardcoded in sync.yaml, not derived here.
@@ -474,9 +474,9 @@ frr_master_password: "{{ secrets.frr_master_password }}"
 # Every cluster-scoped BGP value, computed once from that cluster's `index`.
 # Keyed by cluster name:
 #
-#   cluster_bgp.homelab.asn       -> 64601   (bgp_asn_base + index)
-#   cluster_bgp.homelab.lb_range  -> <base>.1.0/24
-#   cluster_bgp.homelab.lb_net    -> <base>.1        (leading octets, for asserts)
+#   cluster_bgp.testnode.asn       -> 64601   (bgp_asn_base + index)
+#   cluster_bgp.testnode.lb_range  -> <base>.1.0/24
+#   cluster_bgp.testnode.lb_net    -> <base>.1        (leading octets, for asserts)
 #
 # ⚠ THIS IS THE ONLY PLACE THE ARITHMETIC LIVES. Both consumers index into it —
 # playbooks/render-frr-config.yml (pfSense side) and

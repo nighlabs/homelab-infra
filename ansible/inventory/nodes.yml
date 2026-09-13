@@ -45,7 +45,7 @@
 clusters:
   # The single cluster today. A second one = another key here with its own
   # `index`, its own nodes, and non-overlapping node_numbers.
-  homelab:
+  testnode:
     # Cluster index — the one number every cluster-scoped BGP value derives
     # from (group_vars/all/vars.yml, "BGP / LoadBalancer"):
     #

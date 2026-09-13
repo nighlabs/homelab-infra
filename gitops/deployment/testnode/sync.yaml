@@ -2,7 +2,7 @@
 # directory, replacing the `flux-system` Kustomization the FluxInstance used to
 # generate from spec.sync. Ansible primes it (playbooks/flux-bootstrap.yml);
 # Flux then adopts it and, because this file sits INSIDE the path it reconciles
-# (./deployment/homelab), drift-corrects itself and source.yaml on every pull.
+# (./deployment/testnode), drift-corrects itself and source.yaml on every pull.
 #
 # ⚠ SELF-MANAGEMENT IS A LAYOUT PROPERTY, NOT AN AUTOMATIC ONE. `flux bootstrap`
 # gets it by writing gotk-sync.yaml into its own TargetPath; we get it by
@@ -24,7 +24,7 @@ spec:
   # GONE — here and in crds/infrastructure/apps.yaml. Miss this and the symptom
   # is a Ready source next to a Kustomization failing "kustomization path not
   # found" (the failure already burned into this repo's history once).
-  path: ./deployment/homelab
+  path: ./deployment/testnode
   prune: true
   # No postBuild: this tier carries only the source + the three tier entrypoints,
   # none of which hold ${...} placeholders — same reasoning as crds.yaml. If a

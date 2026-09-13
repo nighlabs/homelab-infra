@@ -18,12 +18,12 @@ the way it is: `../docs/decisions/` (ADR-NNNN). What's been verified when:
   signed by this repo's workflow identity (ADR-0028). **Pushing to `main` does
   not reach the cluster on its own** — merge → CI signs → Flux pulls.
 - **The artifact root is `gitops/` itself.** Every path Flux is given is
-  artifact-relative: `./deployment/homelab`, `./crds`, `./infrastructure`,
+  artifact-relative: `./deployment/testnode`, `./crds`, `./infrastructure`,
   `./apps` — **no `./gitops` prefix**. Get this wrong and the source goes Ready
   while the Kustomization fails "path not found".
 - The `latest` tag is mutable by design and is moved only *after* the digest
   is signed. To freeze on a known-good artifact, set `ref.digest` in
-  `deployment/homelab/source.yaml`. `--reproducible` stabilises the layer
+  `deployment/testnode/source.yaml`. `--reproducible` stabilises the layer
   digest, not the manifest digest (the revision label embeds the commit SHA),
   which is why the workflow's trigger negates `gitops/**/*.md`.
 - The package is **public**, so there is no pull secret. If it ever goes
@@ -68,7 +68,7 @@ apps/                     # workloads only (empty until the infra layer is up)
   committed root is self-inflicted lockout, recovered by re-running
   `flux-bootstrap.yml` (which is why that play stays idempotent).
 - **The directory name IS the cluster key** from `ansible/inventory/nodes.yml`
-  (`homelab`) — `flux_sync_path` derives from it. Rename both or neither.
+  (`testnode`) — `flux_sync_path` derives from it. Rename both or neither.
 - **`infrastructure/` vs `apps/`:** controllers (CNI, ingress, CSI, secrets) in
   `infrastructure/`; only workloads in `apps/`. `apps` `dependsOn`
   `infrastructure`, so nothing reconciles before the controllers are Ready.
@@ -300,7 +300,7 @@ token *from* ESO. `docs/decisions/README.md`, "Open questions".
 only what the control node creates and reads:
 
 - A `ClusterSecretStore` naming **this cluster's own** `homelab-apps-<cluster>` vault
-  (`homelab-apps-homelab` for `homelab`). It cannot reach `homelab-infra`, nor another
+  (`homelab-apps-testnode` for `testnode`). It cannot reach `homelab-infra`, nor another
   cluster's apps vault — a store names exactly one vault, which is what makes
   the consumer split structural rather than a matter of discipline.
 - ⚠ **One vault and one service account PER CLUSTER**, same blast-radius

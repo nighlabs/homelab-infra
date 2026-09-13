@@ -107,7 +107,7 @@ the apps side, **one vault per cluster**:
 | Vault | Read by | Holds |
 |---|---|---|
 | `homelab-infra` | the **control node** (one vault, fleet-wide) | everything in §2 — Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password — **and every cluster's ESO service-account token** |
-| `homelab-apps-<cluster>` — e.g. `homelab-apps-homelab` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. One per cluster in `inventory/nodes.yml` |
+| `homelab-apps-<cluster>` — e.g. `homelab-apps-testnode` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. One per cluster in `inventory/nodes.yml` |
 
 **Vault names are `homelab-` + scope + (cluster).** Every vault shares the
 prefix, so they group together in 1Password and are obvious at a glance; what
@@ -116,12 +116,13 @@ follows the prefix states the scope:
     homelab-infra            fleet-wide
     homelab-apps-<cluster>   exactly one cluster
 
-⚠ **`homelab-` is the ESTATE, not the cluster.** It comes from the repo
+⚠ **`homelab-` is the ESTATE, not a cluster.** It comes from the repo
 (`ghcr.io/nighlabs/homelab-infra`, and ADR-0027's Bitwarden project name before
 that) and covers Proxmox, Ceph, the network, k3s and — later — the Mac tier.
-That the *cluster* is also called `homelab` is a coincidence of naming, which is
-why `homelab-apps-homelab` doubles up: estate, then scope, then cluster key. A
-cluster called `edge` reads `homelab-apps-edge`, which is the shape to picture.
+**No cluster is called `homelab`**, so nothing in a vault name repeats itself:
+`homelab-apps-testnode`, `homelab-apps-edge`. ⚠ Keep it that way — naming a
+cluster after the estate is what made the earlier `homelab-infra` /
+`homelab-apps` pair read as one thing when they sit on different axes.
 
 ⚠ **Deliberately not `k8s-`.** `homelab-infra` holds the Proxmox API token, SSH
 keys, Ceph credentials and the pfSense/FRR password — mostly not Kubernetes —
@@ -133,14 +134,14 @@ is the failure mode this whole section exists to avoid.
 ⚠ **Also not `<cluster>-apps`.** That gave `homelab-infra` + `homelab-apps`,
 which read as a matched pair while sitting on different axes — and at cluster #2
 (`homelab-infra`, `homelab-apps`, `edge-apps`) it invites reading the infra
-vault as cluster `homelab`'s, which it is not.
+vault as cluster `testnode`'s, which it is not.
 
 **Create both up front**, even though the apps vault stays empty until the ESO
 milestone:
 
 ```sh
 op vault create homelab-infra
-op vault create homelab-apps-homelab
+op vault create homelab-apps-testnode
 ```
 
 ⚠ Why not defer the empty one: so that an app secret which shows up before ESO
@@ -203,8 +204,8 @@ unattended/Linux control node.
 ```sh
 # ESO — ONE PER CLUSTER, granted that cluster's apps vault ONLY.
 # It must never reach homelab-infra, and never another cluster's vault.
-op service-account create eso-homelab \
-  --vault homelab-apps-homelab:read_items
+op service-account create eso-testnode \
+  --vault homelab-apps-testnode:read_items
 
 # only if you also need unattended runs of these plays:
 op service-account create homelab-control-node \
@@ -231,7 +232,7 @@ new token. Consequences worth reading twice:
 - ⚠ **Defaulting to mode 1 removes this trap from the control-node side
   altogether**, which is a real argument for it: with no control-node service
   account, the only immutable grant in play is ESO's, and that one is
-  unambiguous (`homelab-apps-homelab`, read-only).
+  unambiguous (`homelab-apps-testnode`, read-only).
 - **`read_items` only.** Nothing in the run-time path writes. The one thing that
   does write — the migration in §4 — runs as *you*, not as any service account.
 - **The token is displayed exactly once** and 1Password cannot show it again.
@@ -397,12 +398,12 @@ gitops/ as placeholders via `cluster-topology`.
 
 ### Section: Clusters — one pair per cluster in `inventory/nodes.yml`
 
-Named `<prefix>_<cluster>`. With only `homelab` today that is one required field.
+Named `<prefix>_<cluster>`. With only `testnode` today that is one required field.
 
 | Field label | Type | Required? |
 |---|---|---|
-| **`k3s_token_homelab`** 🔑 | concealed | **yes** for any cluster with k3s nodes |
-| `k3s_tls_sans_homelab` | text | optional — omit the field entirely if no extra SANs |
+| **`k3s_token_testnode`** 🔑 | concealed | **yes** for any cluster with k3s nodes |
+| `k3s_tls_sans_testnode` | text | optional — omit the field entirely if no extra SANs |
 
 Adding a cluster `edge` means adding `k3s_token_edge`. Nothing in the repo
 changes; `vars.yml` assembles the map from the `clusters` keys.

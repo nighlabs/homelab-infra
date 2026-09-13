@@ -38,7 +38,7 @@ Each cluster in `ansible/inventory/nodes.yml` carries an `index:`; its ASN and
 its LoadBalancer range both derive from that one number, the same way every
 host-shaped fact derives from `node_number`:
 
-| Value | Derivation | `homelab` (index 1) |
+| Value | Derivation | `testnode` (index 1) |
 |---|---|---|
 | Cluster ASN | `bgp_asn_base + index` | `64601` |
 | LoadBalancer range | `${lb_range_base}.<index>.0/24` | index `1` of that supernet |
@@ -255,17 +255,17 @@ router bgp 64512
  bgp log-neighbor-changes
  timers bgp 3 9
  !
- ! --- cluster: homelab (index 1, AS 64601, LB ${lb_range}) ---
- neighbor homelab peer-group
- neighbor homelab remote-as 64601
- neighbor ${node_ip} peer-group homelab
+ ! --- cluster: testnode (index 1, AS 64601, LB ${lb_range}) ---
+ neighbor testnode peer-group
+ neighbor testnode remote-as 64601
+ neighbor ${node_ip} peer-group testnode
  neighbor ${node_ip} description snoop-a2o
  !
  address-family ipv4 unicast
-  neighbor homelab activate
+  neighbor testnode activate
   ! RFC 8212 is satisfied by HAVING policy — see below.
-  neighbor homelab prefix-list HOMELAB-IN in
-  neighbor homelab prefix-list HOMELAB-OUT out
+  neighbor testnode prefix-list HOMELAB-IN in
+  neighbor testnode prefix-list HOMELAB-OUT out
   maximum-paths 8
  exit-address-family
 !

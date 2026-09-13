@@ -135,7 +135,7 @@ and recreate the token.
 **Fuss-free alternative:** skip the custom role (steps 2–3) and grant the
 built-in `PVEVMAdmin` role instead — it bundles the `VM.*` privileges plus
 `Datastore.AllocateSpace`/`Datastore.Audit`. Slightly broader than least-
-privilege, fine for a homelab:
+privilege, fine for a testnode:
 
 ```bash
 pveum acl modify / -user ansible@pve -role PVEVMAdmin
@@ -374,7 +374,7 @@ entry name and silently overwrite each other, so `bootstrap-cluster.yml` rewrite
 it on fetch, keyed off the **cluster name — which is the cluster key in
 `inventory/nodes.yml`**, not a separate setting:
 
-- entries renamed → cluster `homelab`, user `homelab-admin`, context `homelab`;
+- entries renamed → cluster `testnode`, user `testnode-admin`, context `testnode`;
 - `server:` repointed from `127.0.0.1` to the node's **DMZ IP** so the control
   node can reach the API;
 - written `0600` to **`ansible/.kube/<cluster>.config`** — one file per cluster
@@ -383,7 +383,7 @@ it on fetch, keyed off the **cluster name — which is the cluster key in
 
 Each cluster is then **merged** into your personal `~/.kube/config`
 (`kubeconfig_merge_user: true`) via `kubernetes.core.kubeconfig`, so plain
-`kubectl --context homelab` works with no `KUBECONFIG` juggling. It's a merge of
+`kubectl --context testnode` works with no `KUBECONFIG` juggling. It's a merge of
 that cluster's three named entries, never a whole-file overwrite — every other
 context is left untouched (including your other clusters'), and re-running is
 idempotent. Knobs, all in `group_vars/all/vars.yml`:
@@ -476,15 +476,15 @@ Flux); that's expected here, not a failure. Over SSH to the DMZ IP:
 After `bootstrap-cluster.yml` (or the full `site.yml`) runs, the node should flip
 from NotReady to **Ready**. From the control node, using the fetched kubeconfig:
 
-- `ansible/.kube/homelab.config` exists (mode 0600) — named for the cluster key in
+- `ansible/.kube/testnode.config` exists (mode 0600) — named for the cluster key in
   `inventory/nodes.yml` — its `server:` is the node's **DMZ IP**, not
-  `127.0.0.1`, and its cluster/user/context are named `homelab` / `homelab-admin`
-  / `homelab`, **not** k3s's `default`
-  (`grep -E 'server:|name:' ansible/.kube/homelab.config`)
-- `kubectl config get-contexts` → the `homelab` context present in
+  `127.0.0.1`, and its cluster/user/context are named `testnode` / `testnode-admin`
+  / `testnode`, **not** k3s's `default`
+  (`grep -E 'server:|name:' ansible/.kube/testnode.config`)
+- `kubectl config get-contexts` → the `testnode` context present in
   `~/.kube/config`, alongside any contexts you already had (the merge preserves
   them). Skip this one if you set `kubeconfig_merge_user: false`.
-- `kubectl --context homelab get nodes -o wide` → **Ready**, `INTERNAL-IP` = the
+- `kubectl --context testnode get nodes -o wide` → **Ready**, `INTERNAL-IP` = the
   eth0/DMZ IP
 - `kubectl get installation default -o jsonpath='{.spec.calicoNetwork.ipPools[0].cidr}'`
   → `10.42.0.0/16` (matches `k3s_cluster_cidr`)
