@@ -1,7 +1,7 @@
 # ADR-0034: 1Password replaces Bitwarden Secrets Manager; Ansible reads it with the `op` CLI; the control node keeps no secret zero
 
-- **Date:** 2026-09-12 (decided and implemented; cutover verification outstanding)
-- **Status:** Accepted — implemented, parallel-run verification pending
+- **Date:** 2026-09-12 (decided and implemented) · 2026-09-13 (cutover verified; Bitwarden removed)
+- **Status:** Accepted, verified — live, and the Bitwarden half is deleted
 - **Supersedes / related:** **supersedes [ADR-0027](0027-control-node-secrets-bws-runtime.md)** (control-node secrets from BWS at run time) and **answers [ADR-0032](0032-secrets-store-1password-migration.md)** (which posed this as an open question and did the investigation this record acts on); **partially supersedes [ADR-0009](0009-secrets-aescbc-and-eso-bitwarden.md)** — its *layer 2* (ESO + Bitwarden) only; **layer 1 (k3s aescbc at rest) is untouched and live**. Related: [ADR-0033](0033-secrets-fact-broker.md) (the broker seal that made this a two-file change), [ADR-0021](0021-topology-blinding-postbuild-substitution.md) (`cluster-topology` stays Ansible-seeded, on grounds corrected below), [ADR-0015](0015-backups-nas-s3-and-break-glass.md) (break-glass export mechanism changes), [ADR-0013](0013-ingress-certs-dns-external-access.md) (DNS-01, which is why the old ESO ordering chain was already overstated). Code: `ansible/playbooks/tasks/load-secrets.yml` + `load-secrets-onepassword.yml`, `ansible/playbooks/render-1password-import.yml`, `ansible/inventory/group_vars/all/vars.yml`, `ansible/SECRETS.md`.
 
 ## Context
@@ -275,10 +275,10 @@ subscription question, not an engineering one.
   command still has the old behaviour and is not being fixed, since it is
   scheduled for deletion.
 
-### Removal criteria for the Bitwarden half
+### Removal criteria for the Bitwarden half — ✅ DONE 2026-09-13
 
-Delete **together**, and only after `render-frr-config.yml` *and*
-`render-ceph-setup.yml` produce byte-identical output under both backends:
+Deleted **together**, after the gate above passed. Recorded as written, because
+the list is the useful artifact if this is ever done again:
 
 1. `ansible/playbooks/tasks/load-secrets-bitwarden.yml`
 2. `ansible/library/bws_secrets.py` and `ansible/library/bws_secret.py`
@@ -290,8 +290,15 @@ Delete **together**, and only after `render-frr-config.yml` *and*
 6. the `BWS_ACCESS_TOKEN` / `BWS_ORG_ID` Keychain items, and the BWS machine
    account itself
 
-⚠ Leaving both stores live indefinitely recreates precisely the "two
-contradicting sources of truth" that ADR-0027 was written to repair.
+⚠ Leaving both stores live indefinitely would recreate precisely the "two
+contradicting sources of truth" that ADR-0027 was written to repair — which is
+why the window was closed the same day the gate passed.
+
+**One consequence worth naming:** `tasks/load-secrets.yml` is no longer a
+dispatcher, it *is* the loader. ADR-0033 aimed for "the store is reachable from
+exactly two files — the module and the load task"; with the `op` CLI there is no
+custom module, so it is **one file**, and `ansible.cfg` needs no `library =`
+path at all. A real simplification the store change bought, beyond the swap.
 
 ## Evidence
 
@@ -314,7 +321,25 @@ Implemented 2026-09-12. Verified against the live BWS store (29 secrets) and a
   assert.
 - All seven playbooks pass `--syntax-check`.
 
-⚠ **Not yet verified, and the thing that actually closes this record:** no
-1Password vault or item exists yet, so the **byte-identical parallel run across
-both backends has not been performed.** Until it has, the Bitwarden half must
-not be deleted and this ADR stays "implemented, verification pending".
+**Cutover verified 2026-09-13, against both live stores**, before anything was
+removed:
+
+- **Both renders byte-identical across backends** — `render-frr-config.yml` and
+  `render-ceph-setup.yml`, run under each and diffed.
+- ⚠ **And a stronger check, because the renders are not sufficient on their
+  own:** those two templates only consume a subset of the store — nothing in
+  them touches `proxmox_api_*`, `ssh_authorized_keys` or the join token. So all
+  29 secrets were compared value-by-value across the two backends: **28 shared
+  names, zero differing values**, with the only delta being exactly the
+  `k3s_token_homelab` → `k3s_token_testnode` rename from the cluster rename,
+  its value confirmed carried across intact. Names and counts printed, never a
+  value or a hash of one.
+- **After removal, the renders still match** the 1Password output captured
+  during the gate — so the teardown itself changed no behaviour.
+
+Auth in use: the **desktop app integration**, 29 secrets in **one** `op item
+get` per play. No token exists on the control node.
+
+**Bitwarden was then deleted in full**, per the criteria above. ⚠ One item is
+not code and remains for the operator: removing the `BWS_ACCESS_TOKEN` /
+`BWS_ORG_ID` Keychain items and the Bitwarden machine account itself.

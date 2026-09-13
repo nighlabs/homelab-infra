@@ -63,7 +63,7 @@ Rules:
 | [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified |
 | [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Answered by 0034** — retained as the investigation |
 | [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact; the fact is `secrets`, not a vendor name | Accepted, verified |
-| [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted — implemented, parallel-run verification pending |
+| [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted, verified (2026-09-13) — Bitwarden deleted |
 | [0035](0035-site-scope-multiple-proxmox-clusters.md) | 2026-09-12 | A third scope — **site** (one Proxmox cluster + its Ceph) — between fleet-wide and per-k3s-cluster | **Open** (implementation) — but the naming rule, global `node_number` uniqueness, and DNS-zone scoping are **decided** |
 
 ### Open questions without a record yet

@@ -13,6 +13,54 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-13 — 1Password cutover verified; Bitwarden deleted
+
+**Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) (now Accepted,
+verified) · [ADR-0033](decisions/0033-secrets-fact-broker.md) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) (superseded, and
+now with no code left behind it).
+
+Vaults created and the `control-node` item populated by hand from the rendered
+import template. Gate run against **both live stores** before deleting anything.
+
+| Check | Result |
+|---|---|
+| `render-frr-config.yml` under each backend | byte-identical |
+| `render-ceph-setup.yml` under each backend | byte-identical |
+| all 29 secrets compared value-by-value | 28 shared names, **0 differing**; only delta = the expected cluster rename, value confirmed intact |
+| renders after the teardown vs during the gate | identical — removal changed no behaviour |
+
+⚠ **The byte-identical render is necessary but NOT sufficient, and that nearly
+mattered.** Those two templates only consume part of the store — nothing in
+either touches `proxmox_api_*`, `ssh_authorized_keys` or the k3s join token. A
+mistyped Proxmox token would have passed the documented gate cleanly and failed
+later, at provision time, against a store with no fallback left. So the gate was
+widened to compare every value across both backends, printing names and counts
+only — never a value, never a hash of one. It is the check worth keeping in mind
+for any future store move: *diff the whole store, not just what today's
+templates happen to render.*
+
+Auth is the desktop app integration: **29 secrets in one `op item get`, and no
+token stored anywhere on the control node.**
+
+**Bitwarden removed in full** on ADR-0034's own criteria, all in one commit:
+the backend task, both `library/bws_secret*.py` modules (and the `library/`
+directory), the `library =` line in `ansible.cfg`, `bitwarden-sdk` from
+`pyproject.toml` + `uv.lock`, the `bws_*` vars and `secrets_backend`, the
+one-shot import renderer, and SECRETS.md's migration/cutover sections.
+
+**A simplification worth noticing.** `tasks/load-secrets.yml` stopped being a
+dispatcher and became the loader. ADR-0033 aimed for "the store is reachable
+from exactly two files — the module and the load task"; with the `op` CLI there
+is no custom module, so it is now **one file**, and `ansible.cfg` needs no
+`library =` path at all. The store change bought that, not just a vendor swap.
+
+⚠ **Not code, still outstanding:** delete the `BWS_ACCESS_TOKEN` / `BWS_ORG_ID`
+Keychain items and the Bitwarden machine account. Until then a live credential
+exists for a store nothing reads.
+
+---
+
 ## 2026-09-13 — Renamed the k3s cluster `homelab` → `testnode`
 
 **Related:** [ADR-0026](decisions/0026-per-cluster-derivation-from-index.md)
