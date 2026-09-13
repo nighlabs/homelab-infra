@@ -89,6 +89,16 @@ timeout is the better answer to that threat than a keychain item that reads
 silently forever. ADR-0032 originally argued for making mode 2 mandatory;
 ADR-0034 overrules that **for the control node only**, and records why.
 
+⚠ **There is no way to narrow mode 1 to one vault — this was checked.** `op`'s
+only scoping flag is `--account`; there is no vault-scope flag, and `--vault` on
+a command is a *selector* (which vault to look in), not a permission boundary.
+The app integration authenticates as you, so access is account-wide by
+construction. **A service account is the only vault-scoped credential 1Password
+offers** (§1.4), and taking one means accepting a stored token again — the trade
+in the paragraph above, not a free upgrade. The only other axis that exists is a
+*separate 1Password account* holding just these vaults, which is a second
+account to manage for a boundary the operator already crosses.
+
 ⚠ **It does not apply to ESO.** A pod has no desktop app, so ESO must use a
 scoped service account regardless (§1.4). The consumer split therefore still
 does the work it was designed for, on the side that actually needed it — a
