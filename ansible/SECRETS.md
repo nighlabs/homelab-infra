@@ -441,8 +441,30 @@ ssh-ed25519 AAAA...  chris@laptop
 ssh-ed25519 AAAA...  chris@desktop
 ```
 
-1Password has no list field type either, so JSON here would reintroduce exactly
-the hand-authoring problem that grouping avoided, for no gain.
+1Password has no list field type — fields are `text` / `password` / `email` /
+`url` / `date` / `monthYear` / `phone` / `otp` / `file`, every one a single
+scalar — so JSON here would reintroduce exactly the hand-authoring problem that
+grouping avoided, for no gain.
+
+⚠ **The obvious alternative, and why not.** With no array type the only other
+shape is *N* discrete fields (`ceph_mon_1`, `ceph_mon_2`, …), scanned by prefix
+off `secret_names`. That is more 1Password-native and needs no parsing, so it is
+a fair question — but it loses on three counts:
+
+- **Consistency:** four values share the one-per-line convention
+  (`dns_servers`, `ssh_authorized_keys`, `k3s_tls_sans_*`, `ceph_mons`).
+  Converting one splits the convention; converting all four is churn.
+- **The runbook pastes into it.** `ceph-k8s-keys.sh` prints `ceph_mons` as a
+  one-per-line block for direct paste (`docs/proxmox-ceph-k8s-setup.md` §4.6).
+  Numbered fields would mean splitting that output by hand — the transcription
+  the rendered script exists to eliminate.
+- **The count becomes implicit.** Delete `ceph_mon_2` and you are left with
+  `_1` and `_3`: it still works, it reads as broken, and nothing states "this
+  is the whole list". One field per *concept* is the thing you actually edit.
+
+The parse is barely a format:
+`.splitlines() | map('trim') | reject('equalto', '')` absorbs trailing newlines
+and stray whitespace.
 
 ⚠ **This is the one place the old BWS reasoning is INVERTED rather than
 carried over.** Under Bitwarden, one-secret-per-value was forced: a BWS secret
