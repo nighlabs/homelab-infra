@@ -1,7 +1,7 @@
 # ADR-0033: `vars.yml` is the only broker for secret *values*; name-space questions get their own `secret_names` fact
 
-- **Date:** 2026-09-12 (raised)
-- **Status:** **Proposed** — argued for, not implemented
+- **Date:** 2026-09-12 (raised, implemented and verified the same day)
+- **Status:** Accepted, verified
 - **Supersedes / related:** [ADR-0027](0027-control-node-secrets-bws-runtime.md) (established the `bws` fact and the one-bulk-fetch shape; this refines how it is consumed, and does not reverse it), [ADR-0032](0032-secrets-store-1password-migration.md) (a possible store change — this is worth doing whether or not that happens, and makes it much cheaper), [ADR-0026](0026-per-cluster-derivation-from-index.md) (the per-cluster `k3s_token_*` / `k3s_tls_sans_*` secrets whose *names* are the thing enumerated). Code: `ansible/inventory/group_vars/all/vars.yml`, `ansible/playbooks/tasks/load-bws-secrets.yml`, `ansible/inventory/hosts.yml`, `ansible/roles/flatcar_vm/tasks/`, `ansible/playbooks/render-ceph-setup.yml`.
 
 ## Context
@@ -133,14 +133,32 @@ than a convention everyone has to remember.
 
 ## Evidence
 
-Nothing implemented. The four leak sites and their reference counts were
-established by grep over `*.yml` / `*.yaml` / `*.j2` on 2026-09-12, excluding
-`vars.yml` and the load task themselves; the ten live references are as
-tabulated above, the remaining matches being comments.
+The four leak sites and their reference counts were established by grep over
+`*.yml` / `*.yaml` / `*.j2` on 2026-09-12, excluding `vars.yml` and the load
+task themselves; the ten live references were as tabulated above, the remaining
+matches being comments.
 
-Verification when implemented: `render-frr-config.yml` and
-`render-ceph-setup.yml` produce byte-identical output before and after; the
-`k3s_tls_sans_*` assert is confirmed to **still fire** on a deliberately
-misnamed secret (this repo's standing rule — a negative test is verified by
-watching it fail, not by watching the positive pass); and
-`grep -rn 'bws' ansible/` returns nothing outside the store module itself.
+Implemented 2026-09-12 in two commits, the seal and then the rename, per the
+"its own commit" requirement above. Verified against the live store (29
+secrets):
+
+- **`render-frr-config.yml` and `render-ceph-setup.yml` produce byte-identical
+  output**, checked after the seal and again after the rename against a
+  baseline captured before either. Both re-runs also report `changed=0`, which
+  is the same claim from the file modules' side.
+- **The `k3s_tls_sans_*` assert still FIRES.** Poisoned via
+  `-e '{"secret_names":[…,"k3s_tls_sans_ghost"]}'` (extra-vars outrank the
+  `set_fact`), the guard failed naming `ghost`, and aborted inside preflight
+  with `changed=0` — before any Proxmox call. Re-confirmed after the rename.
+  Per this repo's standing rule, the negative test is what was watched, not
+  the positive pass.
+- **The new name-list gates agree with the old dict gates** on every live
+  secret: `secret_names` sorted, equal to `secrets.keys()`, and both ceph
+  presence gates returning the same answer as the `is defined` forms they
+  replaced.
+- All seven playbooks pass `--syntax-check`.
+
+⚠ `grep -rn 'bws' ansible/` does **not** yet come back clean, and that is
+expected at this point: the `bws_*` connection variables, the `bws_secrets`
+module and the `bws_fetch` register still name Bitwarden deliberately (see
+Decision 4). They go with the store itself, not with this record.

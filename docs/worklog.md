@@ -13,6 +13,61 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-12 — Sealed the secrets broker: `secret_names` published, `bws.*` gone from call sites, fact renamed to `secrets`
+
+**Related:** [ADR-0033](decisions/0033-secrets-fact-broker.md) (now Accepted, verified) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) ·
+[ADR-0026](decisions/0026-per-cluster-derivation-from-index.md) ·
+Code: `ansible/playbooks/tasks/load-secrets.yml`,
+`ansible/inventory/group_vars/all/vars.yml`, `ansible/inventory/hosts.yml`,
+`ansible/roles/flatcar_vm/tasks/preflight.yml`,
+`ansible/playbooks/render-ceph-setup.yml`.
+
+Implemented as argued, in two commits — the seal, then the rename — because a
+~40-site mechanical rename folded into a behavioural change is an unreviewable
+diff.
+
+**The seal.** `secret_names` is published from the `names` list the module was
+already returning and already printing. The two *structural* sites were rewritten
+against it and now read no secret value at all; the two plain leaks
+(`proxmox_ssh_addr`, `proxmox_ssh_user`) got brokered variables.
+
+⚠ **One thing the ADR did not anticipate.** `render-ceph-setup.yml`'s CephFS-name
+assert could not simply move to the brokered `ceph_csi.fs_name`: reading *any*
+key of `ceph_csi` templates the whole dict, and on a first run `ceph_csi.mons`
+calls `.splitlines()` on an absent secret and raises a Jinja error in place of
+the carefully-worded `fail_msg` — the very trap the original `bws.ceph_fs_name`
+dereference existed to dodge. Fixed with a standalone `ceph_fs_name` broker
+(one reference to the secret, `ceph_csi.fs_name` sourced from it). The assert
+also relies on `assert` short-circuiting on the first false condition, so the
+presence test must be listed *before* the length test; that ordering is now a
+comment at the site, because it is invisible otherwise.
+
+**Verification** (live store, 29 secrets):
+
+| Check | Result |
+|---|---|
+| `render-frr-config.yml` + `render-ceph-setup.yml` byte-identical to a pre-change baseline | pass, after the seal **and** again after the rename; `changed=0` both times |
+| `k3s_tls_sans_*` assert still fires | pass — poisoned with a `k3s_tls_sans_ghost` name via `-e`, failed naming `ghost`, aborted in preflight before any Proxmox call |
+| new name-list gates vs the old dict gates | identical on every secret; `secret_names` sorted and equal to `secrets.keys()` |
+| `--syntax-check` on all seven playbooks | pass |
+
+**Lesson, and it cost a failed run.** The rename swept `bws.`, `` `bws` ``,
+`bws[` and `) in bws` — but not the `set_fact` **key** `bws:` itself, which is
+the one place the name is defined rather than used. Every consumer moved to
+`secrets` while the fact was still published as `bws`, and the whole repo failed
+with `'secrets' is undefined`. A rename regex that covers every *reference* and
+misses the *definition* fails 100% of the time, which is the good case — caught
+by simply running the safest play. The byte-identical baseline is what made
+"caught immediately" possible.
+
+**Not done here, deliberately:** the `bws_*` connection variables, the
+`bws_secrets` module and the `bws_fetch` register still name Bitwarden. They
+describe the vendor connection, and go with the store rather than with this
+record — so `grep -rn 'bws' ansible/` is expected to be non-empty until it does.
+
+---
+
 ## 2026-09-12 — Explored replacing BWS with 1Password; found two claims already wrong
 
 **Related:** [ADR-0032](decisions/0032-secrets-store-1password-migration.md) (Open) ·

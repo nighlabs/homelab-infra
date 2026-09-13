@@ -59,7 +59,7 @@ Rules:
 | [0030](0030-flatcar-os-update-policy.md) | 2026-08-02 | Flatcar auto-update/reboot policy | **Open** |
 | [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified |
 | [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Open** — decide before the ESO milestone |
-| [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact | **Proposed** |
+| [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact; the fact is `secrets`, not a vendor name | Accepted, verified |
 
 ### Open questions without a record yet
 
