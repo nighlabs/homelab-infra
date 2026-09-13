@@ -480,7 +480,7 @@ model_list:
 ### 4.1 Networks, by role
 
 Real subnets, VLAN tags, bridge names and addresses are **not in Git** — they
-live in BWS and reach the repo only as `{{ bws.* }}` references and `${var}`
+live in BWS and reach the repo only as `{{ secrets.* }}` references and `${var}`
 placeholders. By role:
 
 | Network | Carries | Where |

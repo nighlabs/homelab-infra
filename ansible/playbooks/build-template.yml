@@ -14,10 +14,10 @@
       validate_certs: "{{ proxmox_validate_certs }}"
   pre_tasks:
     # Secrets come from Bitwarden Secrets Manager at run time (there is no
-    # vault.yml). pre_tasks so it runs before the role touches a {{ bws.* }}
+    # vault.yml). pre_tasks so it runs before the role touches a {{ secrets.* }}
     # value — a plain `tasks:` block would run AFTER roles.
     - name: Load secrets from Bitwarden Secrets Manager
-      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+      ansible.builtin.include_tasks: tasks/load-secrets.yml
 
   roles:
     - flatcar_template

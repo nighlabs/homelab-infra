@@ -10,7 +10,7 @@ inventory/group_vars/all/vault.yml*
 inventory/group_vars/**/vault.yml*
 .vault-pass
 
-# One-shot vault->BWS migration output (playbooks/port-vault-to-bws.yml).
+# One-shot vault->BWS migration output (playbooks/port-vault-to-secrets.yml).
 # One plaintext file per secret, 0600 in a 0700 dir. Delete once ported.
 .bws-port/
 

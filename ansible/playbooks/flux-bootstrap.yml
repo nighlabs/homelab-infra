@@ -27,7 +27,7 @@
 # NOTE: this play needs NO credentials — no BWS, no keychain prompt. Every value
 # it uses is either a committed constant (group_vars "Flux" section) or comes
 # from the cluster itself via the kubeconfig. That is why there is no
-# load-bws-secrets.yml include here; adding one would introduce a keychain
+# load-secrets.yml include here; adding one would introduce a keychain
 # prompt for nothing.
 #
 # Prereqs on the control node: the `helm` CLI on PATH (>=3.8 for OCI charts),

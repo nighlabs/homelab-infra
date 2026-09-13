@@ -31,9 +31,9 @@
     ceph_out_dir: "{{ playbook_dir }}/../.ceph"
   tasks:
     # Secrets come from BWS at run time (there is no vault.yml). Must precede
-    # anything that touches a {{ bws.* }} value — ceph_csi.fs_name is one.
+    # anything that touches a {{ secrets.* }} value — ceph_csi.fs_name is one.
     - name: Load secrets from Bitwarden Secrets Manager
-      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+      ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # --- What must already be in BWS to render at all ------------------------
     # Only ONE secret is a hard prerequisite, and it is knowable before any of

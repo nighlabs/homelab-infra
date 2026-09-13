@@ -1,8 +1,8 @@
 # Bitwarden Secrets Manager — what to create
 
 The complete list of secrets this repo reads at run time. There is **no
-`vault.yml`**; `playbooks/tasks/load-bws-secrets.yml` fetches all of these in a
-single API call into the `bws` fact, and `inventory/group_vars/all/vars.yml`
+`vault.yml`**; `playbooks/tasks/load-secrets.yml` fetches all of these in a
+single API call into the `secrets` fact, and `inventory/group_vars/all/vars.yml`
 indexes it.
 
 Why it works this way — and why the values aren't grouped into JSON blobs:
@@ -59,7 +59,7 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
    buys ergonomics only, since `-T ""` already gives the authorization-per-read
    property.
 
-   ⚠ **Cost: one prompt per PLAY, not per run.** `load-bws-secrets.yml` is
+   ⚠ **Cost: one prompt per PLAY, not per run.** `load-secrets.yml` is
    included once per play, so `render-frr-config.yml` or `provision-nodes.yml`
    prompt once, but `bootstrap-cluster.yml` prompts twice and a full `site.yml`
    **four times**. And in the dialog, click **Allow**, not *Always Allow* —
@@ -102,7 +102,7 @@ Why it works this way — and why the values aren't grouped into JSON blobs:
 ## 2. Secrets to create
 
 **Every value is a plain string** — paste into the value field, no encoding.
-Name them **exactly** as in the first column; the module keys the `bws` dict on
+Name them **exactly** as in the first column; the module keys the `secrets` dict on
 the secret name. ⚠ The long opaque ones (`proxmox_api_token_secret`,
 `k3s_token_<cluster>`) fail confusingly and late if truncated — paste, don't
 retype.
@@ -232,7 +232,7 @@ At `-v` the load step prints **names and a count, never values**:
 Loaded 22 secret(s) from BWS: ceph_bridge, ceph_subnet_base, ...
 ```
 
-That list is the thing to read when a `{{ bws.x }}` comes back undefined — it
+That list is the thing to read when a `{{ secrets.x }}` comes back undefined — it
 tells you whether the secret is missing from BWS or just misspelled here.
 
 **Common failures**
@@ -243,6 +243,6 @@ tells you whether the secret is missing from BWS or just misspelled here.
 | `Access token is not in a valid format` | Truncated paste, or a Password Manager token rather than a Secrets Manager machine-account token |
 | `BWS sync() failed … 404 Resource not found` | Wrong `bws_organization_id` — most often the **project** uuid pasted in its place. Auth succeeded, so it isn't the token. |
 | `BWS sync() failed … 403` | The machine account has no grant on the project (different from a 404) |
-| `'bws' is undefined` | A play that didn't include `tasks/load-bws-secrets.yml` |
+| `'secrets' is undefined` | A play that didn't include `tasks/load-secrets.yml` |
 | `'dict object' has no attribute 'x'` | Secret missing or misnamed — compare against the `-v` list above |
 | `Duplicate secret name(s)` | The same name exists twice in scope; the module refuses rather than picking a winner |

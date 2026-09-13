@@ -98,7 +98,7 @@ Calico, then bootstraps Flux — which takes ownership from there. **There is no
 
 The real subnets, VLAN tags, bridge names and addresses are **not committed in
 any form** — they live in Bitwarden Secrets Manager and reach the repo only as
-`{{ bws.* }}` references and `${var}` placeholders. By role:
+`{{ secrets.* }}` references and `${var}` placeholders. By role:
 
 - **DMZ / k3s cluster network** — a dedicated VLAN on the 1Gb bond;
   cluster-facing (SSH, k3s API, pod and service traffic, BGP peering).

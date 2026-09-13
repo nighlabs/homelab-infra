@@ -20,7 +20,7 @@ inventory/
   nodes.yml              # node map — SOURCE OF TRUTH for node identity/addressing
   group_vars/            # adjacent to the inventory so it loads for every playbook
     all/                 # a DIRECTORY -> every file loads for group `all`
-      vars.yml           # structure + {{ bws.* }} refs (nothing sensitive)
+      vars.yml           # structure + {{ secrets.* }} refs (nothing sensitive)
 BWS-SECRETS.md           # WHAT TO CREATE IN BITWARDEN — the secret manifest
 library/
   bws_secrets.py         # bulk BWS fetch (one API call, not one per secret)
@@ -93,7 +93,7 @@ the rest from `ansible/`.
    run time in a single API call; secret zero is the Keychain item. Why:
    `docs/decisions/0027-control-node-secrets-bws-runtime.md`.
 5. `inventory/group_vars/all/vars.yml` needs no editing for secrets — it's just
-   structure plus `{{ bws.* }}` references. Only generic, non-revealing
+   structure plus `{{ secrets.* }}` references. Only generic, non-revealing
    defaults (MAC OUI, Flatcar channel/version) remain in cleartext there.
 6. `inventory/hosts.yml` needs no editing — the PVE host's address and login
    user resolve from BWS too.

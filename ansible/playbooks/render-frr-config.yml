@@ -33,9 +33,9 @@
     frr_redact_password: false
   tasks:
     # Secrets come from Bitwarden Secrets Manager at run time (there is no
-    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
     - name: Load secrets from Bitwarden Secrets Manager
-      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+      ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # clusters: → a flat, cluster-annotated `nodes` map, plus the global
     # hostname/node_number uniqueness asserts.

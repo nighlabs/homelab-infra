@@ -97,12 +97,12 @@
     quiet: true
   vars:
     # Over `secret_names` — the plain sorted list of names, published by
-    # tasks/load-bws-secrets.yml — NOT over the secrets dict (ADR-0033).
+    # tasks/load-secrets.yml — NOT over the secrets dict (ADR-0033).
     # ⚠ The old form selected over the dict itself and worked, because iterating
     # a Jinja dict yields its KEYS. It was correct and it read like a bug. It
     # also pulled a task that needs no secret VALUE inside no_log's reach. If a
     # future guard needs the name-space again, use this fact; don't go back to
-    # `bws.keys()` at the call site.
+    # `secrets.keys()` at the call site.
     _unknown_san_clusters: >-
       {{ secret_names | select('match', '^k3s_tls_sans_') | map('regex_replace', '^k3s_tls_sans_', '')
          | difference(clusters | list) | list }}

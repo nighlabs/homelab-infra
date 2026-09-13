@@ -21,9 +21,9 @@
       validate_certs: "{{ proxmox_validate_certs }}"
   tasks:
     # Secrets come from Bitwarden Secrets Manager at run time (there is no
-    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
     - name: Load secrets from Bitwarden Secrets Manager
-      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+      ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # clusters: → a flat, cluster-annotated `nodes` map (+ the global uniqueness
     # asserts). A VM is provisioned identically regardless of which cluster it

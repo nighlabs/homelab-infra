@@ -3,44 +3,44 @@
 # holds only:
 #   - generic, non-revealing constants (MAC OUI, Flatcar channel/version), and
 #   - the *shape* of the config, with every environment-revealing value pulled
-#     in via a {{ bws.* }} reference.
+#     in via a {{ secrets.* }} reference.
 #
 # Everything sensitive — internal IPs, subnets, VLANs, gateways, hostnames,
 # storage names, the SSH public key, and the full API credential — lives in
-# **Bitwarden Secrets Manager** and is fetched at run time into the `bws` fact
-# by playbooks/tasks/load-bws-secrets.yml. There is no vault.yml. Nothing here
+# **Bitwarden Secrets Manager** and is fetched at run time into the `secrets` fact
+# by playbooks/tasks/load-secrets.yml. There is no vault.yml. Nothing here
 # exposes the real environment; you can read the structure without any
 # credential, but not the values. Secret names to create: ../BWS-SECRETS.md.
 #
 # ⚠ These references are LAZILY templated — they resolve when used, not when
-# group_vars loads. A play that forgets to include load-bws-secrets.yml fails
-# loudly with "'bws' is undefined" rather than rendering empty strings.
+# group_vars loads. A play that forgets to include load-secrets.yml fails
+# loudly with "'secrets' is undefined" rather than rendering empty strings.
 #
 # NOTE: the network *topology* is also described in the root CLAUDE.md — if the
 # goal is truly zero topology in git, that doc would need scrubbing too.
 
 # --- DNS -------------------------------------------------------------------
 # Static resolvers, injected into eth0's networkd unit (ansible/CLAUDE.md "Node map and derivation").
-dns_servers: "{{ bws.dns_servers.splitlines() | map('trim') | reject('equalto', '') | list }}"
+dns_servers: "{{ secrets.dns_servers.splitlines() | map('trim') | reject('equalto', '') | list }}"
 
 # --- Networks --------------------------------------------------------------
 # eth0: DMZ / k3s cluster-facing. Plain 1500 MTU, has the default route.
 # prefix/MTU are generic constants (kept in cleartext); the revealing bits
 # (subnet, VLAN tag, bridge, gateway) come from the vault.
 dmz_network:
-  subnet_base: "{{ bws.dmz_subnet_base }}"
+  subnet_base: "{{ secrets.dmz_subnet_base }}"
   prefix: 24
-  vlan: "{{ bws.dmz_vlan | int }}"
-  bridge: "{{ bws.dmz_bridge }}"
-  gateway: "{{ bws.dmz_gateway }}"
+  vlan: "{{ secrets.dmz_vlan | int }}"
+  bridge: "{{ secrets.dmz_bridge }}"
+  gateway: "{{ secrets.dmz_gateway }}"
 
 # eth1: Ceph public network. Tagged on vmbr* , jumbo frames end-to-end.
 # NO gateway — this NIC must never carry a default route (Ceph mons/OSDs only).
 ceph_public_network:
-  subnet_base: "{{ bws.ceph_subnet_base }}"
+  subnet_base: "{{ secrets.ceph_subnet_base }}"
   prefix: 24
-  vlan: "{{ bws.ceph_vlan | int }}"
-  bridge: "{{ bws.ceph_bridge }}"
+  vlan: "{{ secrets.ceph_vlan | int }}"
+  bridge: "{{ secrets.ceph_bridge }}"
   mtu: 8996
 
 # Proxmox's registered OUI — matches what PVE auto-generates. Public/generic
@@ -56,16 +56,16 @@ node_user: "admin"
 
 # Public key(s) authorized for the node's admin user (key-only; no passwords).
 # A public key isn't a secret, but it's identity-revealing, so it's vaulted too.
-ssh_authorized_keys: "{{ bws.ssh_authorized_keys.splitlines() | map('trim') | reject('equalto', '') | list }}"
+ssh_authorized_keys: "{{ secrets.ssh_authorized_keys.splitlines() | map('trim') | reject('equalto', '') | list }}"
 
 # --- Proxmox connection ----------------------------------------------------
 # API access for the proxmox_* modules (run from the control node). Uses a
 # scoped API token, NOT root@pam (docs/decisions/0005-flatcar-k3s-sysext-ignition-config-drive.md).
 # Host, node name, storage, and the full credential are all vaulted.
-proxmox_api_host: "{{ bws.proxmox_api_host }}"
-proxmox_api_user: "{{ bws.proxmox_api_user }}"
-proxmox_api_token_id: "{{ bws.proxmox_api_token_id }}"
-proxmox_api_token_secret: "{{ bws.proxmox_api_token_secret }}"
+proxmox_api_host: "{{ secrets.proxmox_api_host }}"
+proxmox_api_user: "{{ secrets.proxmox_api_user }}"
+proxmox_api_token_id: "{{ secrets.proxmox_api_token_id }}"
+proxmox_api_token_secret: "{{ secrets.proxmox_api_token_secret }}"
 
 # PVE ships a self-signed API cert (port 8006) and the control node has no CA to
 # verify it against, so the proxmox_* API modules fail with CERTIFICATE_VERIFY_
@@ -75,7 +75,7 @@ proxmox_api_token_secret: "{{ bws.proxmox_api_token_secret }}"
 proxmox_validate_certs: false
 
 # Proxmox cluster node NAME (as PVE knows it) to create the VM on — vaulted.
-proxmox_node: "{{ bws.proxmox_node }}"
+proxmox_node: "{{ secrets.proxmox_node }}"
 # Inventory host alias we SSH into for snippet upload + `qm` fallbacks. This is
 # a generic, non-revealing alias defined in inventory/hosts.yml (the real
 # address/user it points to are brokered below) — safe in cleartext.
@@ -88,8 +88,8 @@ proxmox_ssh_host: "pve"
 # brokered name. hosts.yml still needs the hostvars['localhost'] indirection —
 # see the comment there; that is about WHICH host's namespace resolves them,
 # which is a separate problem from where the store is read.
-proxmox_ssh_addr: "{{ bws.proxmox_ssh_addr }}"
-proxmox_ssh_user: "{{ bws.proxmox_ssh_user }}"
+proxmox_ssh_addr: "{{ secrets.proxmox_ssh_addr }}"
+proxmox_ssh_user: "{{ secrets.proxmox_ssh_user }}"
 
 # How to invoke Proxmox's root-only `qm` CLI over SSH. PVE's CLI tools ignore
 # the API token/ACL system and require root, so when SSHing as a non-root
@@ -107,9 +107,9 @@ proxmox_snippet_group: "pve-snippets"
 proxmox_snippet_mode: "2770"
 
 # Storage targets — names reveal the environment, so they're vaulted.
-proxmox_vm_storage: "{{ bws.proxmox_vm_storage }}"
-proxmox_snippet_storage: "{{ bws.proxmox_snippet_storage }}"
-proxmox_snippet_dir: "{{ bws.proxmox_snippet_dir }}"
+proxmox_vm_storage: "{{ secrets.proxmox_vm_storage }}"
+proxmox_snippet_storage: "{{ secrets.proxmox_snippet_storage }}"
+proxmox_snippet_dir: "{{ secrets.proxmox_snippet_dir }}"
 
 # --- Flatcar template ------------------------------------------------------
 # Generic upstream image coordinates — not environment-specific, kept cleartext.
@@ -181,8 +181,8 @@ k3s_service_cidr: "10.43.0.0/16"
 k3s_tokens: >-
   {%- set out = {} -%}
   {%- for name in clusters -%}
-  {%- if ('k3s_token_' ~ name) in bws -%}
-  {%- set _ = out.update({name: bws['k3s_token_' ~ name]}) -%}
+  {%- if ('k3s_token_' ~ name) in secrets -%}
+  {%- set _ = out.update({name: secrets['k3s_token_' ~ name]}) -%}
   {%- endif -%}
   {%- endfor -%}
   {{ out }}
@@ -198,8 +198,8 @@ k3s_tokens: >-
 k3s_tls_sans_by_cluster: >-
   {%- set out = {} -%}
   {%- for name in clusters -%}
-  {%- if ('k3s_tls_sans_' ~ name) in bws -%}
-  {%- set _ = out.update({name: bws['k3s_tls_sans_' ~ name].splitlines()
+  {%- if ('k3s_tls_sans_' ~ name) in secrets -%}
+  {%- set _ = out.update({name: secrets['k3s_tls_sans_' ~ name].splitlines()
                                  | map('trim') | reject('equalto', '') | list}) -%}
   {%- endif -%}
   {%- endfor -%}
@@ -456,14 +456,14 @@ bgp_asn_base: 64600
 # route on admin distance, and on-subnet clients ARP for an address that
 # nothing answers (Calico does no L2 for LB IPs — that's MetalLB's L2 mode,
 # which we don't run). Environment-revealing, so vaulted.
-lb_range_base: "{{ bws.lb_range_base }}"
+lb_range_base: "{{ secrets.lb_range_base }}"
 
 # FRR's internal daemon password (Services > FRR Global Settings) — NOT a BGP
 # peer password. Saving raw config replaces the generated frr.conf wholesale,
 # so this has to appear IN the rendered file, which is why that artifact is
 # git-ignored and mode 0600. A credential per the root CLAUDE.md tiers:
 # BWS-managed, never in a committed manifest.
-frr_master_password: "{{ bws.frr_master_password }}"
+frr_master_password: "{{ secrets.frr_master_password }}"
 
 # --- THE per-cluster BGP derivation ----------------------------------------
 # Every cluster-scoped BGP value, computed once from that cluster's `index`.
@@ -514,14 +514,14 @@ cluster_bgp: >-
 # zero gitops/ edits either way. Same deferred-until-a-second-cluster bucket
 # as the calico_version note above (and cloudflare_api_token below can fork
 # per cluster the same way if per-cluster revocation is wanted).
-base_domain: "{{ bws.base_domain }}"
+base_domain: "{{ secrets.base_domain }}"
 
 # Cloudflare API token for cert-manager's DNS-01 solver. A CREDENTIAL (root
 # CLAUDE.md tiers): BWS-managed, seeded by bootstrap-cluster.yml into the
 # cert-manager namespace, never in any manifest. Scope it in Cloudflare to
 # Zone > DNS > Edit on that one zone — it can create TXT records for ACME
 # challenges, which is all cert-manager needs.
-cloudflare_api_token: "{{ bws.cloudflare_api_token }}"
+cloudflare_api_token: "{{ secrets.cloudflare_api_token }}"
 
 # --- Storage: ceph-csi against the existing Proxmox Ceph (ADR-0006) ----------
 # ⚠ That Ceph cluster ALREADY SERVES LIVE PROXMOX VM STORAGE. Everything here
@@ -544,10 +544,10 @@ cloudflare_api_token: "{{ bws.cloudflare_api_token }}"
 # yet (the scripts it renders are what produce them). Touching `ceph_csi` at all
 # would template the whole dict, and `ceph_csi.mons` calls .splitlines() on an
 # undefined value and raises. That is why the old code reached past the broker to
-# `bws.ceph_fs_name` — this scalar is the brokered way to ask the same question
+# `secrets.ceph_fs_name` — this scalar is the brokered way to ask the same question
 # (ADR-0033). Keep it a plain reference: anything that dereferences another
 # vaulted value reintroduces exactly the coupling it exists to avoid.
-ceph_fs_name: "{{ bws.ceph_fs_name }}"
+ceph_fs_name: "{{ secrets.ceph_fs_name }}"
 
 ceph_csi:
   # --- Ours, cleartext: created by the runbook, generic by construction ------
@@ -570,10 +570,10 @@ ceph_csi:
   # Mon addresses, ONE PER LINE in BWS (same shape as dns_servers /
   # ssh_authorized_keys). These are on the Ceph PUBLIC network — the only Ceph
   # network a k3s node ever touches (root CLAUDE.md). Never the cluster network.
-  mons: "{{ bws.ceph_mons.splitlines() | map('trim') | reject('equalto', '') | list }}"
+  mons: "{{ secrets.ceph_mons.splitlines() | map('trim') | reject('equalto', '') | list }}"
   # Ceph cluster fsid. Doubles as ceph-csi's `clusterID`, which is why it
   # reaches gitops/ as a placeholder rather than a literal.
-  fsid: "{{ bws.ceph_fsid }}"
+  fsid: "{{ secrets.ceph_fsid }}"
   # PVE's existing CephFS name (vaulted as a storage name, like
   # proxmox_snippet_storage). We do not create this — we join it. Sourced from
   # the standalone `ceph_fs_name` above, not from the store directly, so there
@@ -589,16 +589,16 @@ ceph_csi:
 # — whether ESO later ADOPTS them (docs/decisions/README.md, "Open questions").
 # Unlike that token, these are NOT upstream of ESO, so if the adoption ADR ever
 # moves ceph-csi below ESO these seeds could genuinely retire.
-ceph_k8s_rbd_key: "{{ bws.ceph_k8s_rbd_key }}"
-ceph_k8s_cephfs_key: "{{ bws.ceph_k8s_cephfs_key }}"
+ceph_k8s_rbd_key: "{{ secrets.ceph_k8s_rbd_key }}"
+ceph_k8s_cephfs_key: "{{ secrets.ceph_k8s_cephfs_key }}"
 
 # --- Bitwarden Secrets Manager connection -----------------------------------
-# How playbooks/tasks/load-bws-secrets.yml reaches BWS. The values below are
+# How playbooks/tasks/load-secrets.yml reaches BWS. The values below are
 # NOT credentials — the only credential is the machine-account access token,
 # which lives in the macOS Keychain and never touches this repo.
 
 # Organization UUID. Environment-identifying but not secret, and it cannot come
-# from BWS (you need it to make the call). RESOLVED in load-bws-secrets.yml,
+# from BWS (you need it to make the call). RESOLVED in load-secrets.yml,
 # exactly like the access token: Keychain by default, overridable by BWS_ORG_ID
 # in the environment or -e bws_organization_id=... The Keychain item and command
 # are defined below next to the token's.
@@ -643,7 +643,7 @@ bws_keychain_command: >-
 # same way as the token. Create it with:
 #   security add-generic-password -a "$USER" -s BWS_ORG_ID -U -w   (-w last: prompts)
 # ⚠ Trailing `|| true`, which the token command deliberately lacks: the org id is
-# NOT secret, and a missing item should fall through to load-bws-secrets.yml's
+# NOT secret, and a missing item should fall through to load-secrets.yml's
 # assert (with its "add it to the keychain / export BWS_ORG_ID" guidance) rather
 # than surface `security`'s bare exit-44 as a raw lookup error. The pipe only
 # runs at all when neither -e nor BWS_ORG_ID is set (Jinja short-circuits the

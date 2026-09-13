@@ -25,9 +25,9 @@
     server_roles: ["all-in-one", "server", "control-plane"]
   tasks:
     # Secrets come from Bitwarden Secrets Manager at run time (there is no
-    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
     - name: Load secrets from Bitwarden Secrets Manager
-      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+      ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     # clusters: → a flat `nodes` map, each node annotated with its `cluster`.
     - name: Load the node map
@@ -278,9 +278,9 @@
       "${bgp_peer_asn}": "{{ bgp_peer_asn }}"
   tasks:
     # Secrets come from Bitwarden Secrets Manager at run time (there is no
-    # vault.yml). Must precede anything that touches a {{ bws.* }} value.
+    # vault.yml). Must precede anything that touches a {{ secrets.* }} value.
     - name: Load secrets from Bitwarden Secrets Manager
-      ansible.builtin.include_tasks: tasks/load-bws-secrets.yml
+      ansible.builtin.include_tasks: tasks/load-secrets.yml
 
     - name: Assert the committed Calico pod CIDR matches k3s_cluster_cidr
       vars:

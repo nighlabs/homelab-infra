@@ -36,7 +36,7 @@ a file in that subdirectory.
 
 **Network topology (Ceph, confirmed live config):** the real subnets, VLAN
 tags, bridge names, and mon addresses live in Bitwarden Secrets Manager and
-reach the repo only as `{{ bws.* }}` references (the variable *structure* is
+reach the repo only as `{{ secrets.* }}` references (the variable *structure* is
 in `ansible/inventory/group_vars/all/vars.yml`) — deliberately not committed
 in any form. Described by role only here:
 - Ceph **public network** — mons + all client I/O, incl. ceph-csi. A

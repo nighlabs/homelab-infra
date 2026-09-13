@@ -54,8 +54,8 @@ server path is built), and the Mac role. Node 2's join is a **dataplane event**
 | `flux-bootstrap.yml` | helm-install the flux-operator (`flux_operator_version`), apply ONE sync-less `FluxInstance` with the `StrictPostBuildSubstitutions` patch, assert the gate landed, seed `gitops/deployment/<cluster>/{source,sync}.yaml`, wait for `flux-system`/`crds`/`infrastructure`/`apps` Ready | the previous play's kubeconfig + Secret; **no credentials** |
 | `render-frr-config.yml` | pfSense/FRR raw config + firewall-alias members → `.frr/` (git-ignored), from the node map; asserts index/ASN/LB-range collisions **and its asserts are verified to fire** | BWS |
 
-Every play that reads a `{{ bws.* }}` value includes
-`tasks/load-bws-secrets.yml` first — one bulk API call into the `bws` fact
+Every play that reads a `{{ secrets.* }}` value includes
+`tasks/load-secrets.yml` first — one bulk API call into the `secrets` fact
 (ADR-0027). `tasks/load-node-map.yml` flattens `inventory/nodes.yml`'s
 `clusters` into a cluster-annotated `nodes` map and asserts **global**
 hostname/`node_number` uniqueness.
