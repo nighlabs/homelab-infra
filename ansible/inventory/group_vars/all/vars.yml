@@ -613,22 +613,8 @@ ceph_csi:
 ceph_k8s_rbd_key: "{{ secrets.ceph_k8s_rbd_key }}"
 ceph_k8s_cephfs_key: "{{ secrets.ceph_k8s_cephfs_key }}"
 
-# --- Which secret store -----------------------------------------------------
-# 1Password is the store (ADR-0034). `bitwarden` selects the retained legacy
-# path for the duration of the cutover window, and exists so that "roll back"
-# means one -e rather than writing the old code again:
-#
-#   uv run ansible-playbook playbooks/render-frr-config.yml -e secrets_backend=bitwarden
-#
-# ⚠ Both backends must render BYTE-IDENTICAL output. That diff is the proof the
-# 1Password field layout matches what BWS held — much stronger than eyeballing
-# two lists of names. Delete the Bitwarden half once it has passed; keeping two
-# live stores forever is precisely the "two contradicting sources of truth"
-# ADR-0027 was written to repair.
-secrets_backend: "onepassword"
-
 # --- 1Password connection ---------------------------------------------------
-# How playbooks/tasks/load-secrets-onepassword.yml reaches 1Password. Nothing
+# How playbooks/tasks/load-secrets.yml reaches 1Password. Nothing
 # below is a credential — the only credential is the service-account token,
 # which lives in the macOS Keychain and never touches this repo.
 
@@ -749,41 +735,3 @@ op_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
 op_keychain_command: >-
   security find-generic-password -w -s {{ op_keychain_service | quote }}
   -a {{ op_keychain_account | quote }} 2>/dev/null || true
-
-# --- Bitwarden Secrets Manager connection (RETAINED FOR THE CUTOVER ONLY) ----
-# Reached only when secrets_backend == 'bitwarden'. Delete this block, the
-# backend task, library/bws_secret*.py, the bitwarden-sdk pin and the BWS_*
-# Keychain items once the byte-identical parallel run has passed (ADR-0034).
-#
-# Organization UUID. Environment-identifying but not secret, and it cannot come
-# from BWS (you need it to make the call). RESOLVED in
-# load-secrets-bitwarden.yml, exactly like the access token: Keychain by
-# default, overridable by BWS_ORG_ID in the environment or
-# -e bws_organization_id=...
-#
-# Optional: restrict to one project. Leave unset to accept everything the token
-# can read.
-# bws_project_id: "<project uuid>"
-#
-# Keychain semantics are identical to the op token's above — same store, same
-# -w-last rule, same -T "" prompt behaviour. Create it with:
-#   security add-generic-password -a "$USER" -s BWS_ACCESS_TOKEN -U -w
-bws_keychain_service: "BWS_ACCESS_TOKEN"
-bws_keychain_account: "{{ lookup('ansible.builtin.env', 'USER') }}"
-bws_keychain_command: >-
-  security find-generic-password -w -s {{ bws_keychain_service | quote }}
-  -a {{ bws_keychain_account | quote }}
-
-# The organization id lives in its own Keychain item (same account), fetched the
-# same way as the token. Create it with:
-#   security add-generic-password -a "$USER" -s BWS_ORG_ID -U -w   (-w last: prompts)
-# ⚠ Trailing `|| true`, which the token command deliberately lacks: the org id is
-# NOT secret, and a missing item should fall through to load-secrets.yml's
-# assert (with its "add it to the keychain / export BWS_ORG_ID" guidance) rather
-# than surface `security`'s bare exit-44 as a raw lookup error. The pipe only
-# runs at all when neither -e nor BWS_ORG_ID is set (Jinja short-circuits the
-# default chain), so this never masks a real value.
-bws_org_keychain_service: "BWS_ORG_ID"
-bws_org_keychain_command: >-
-  security find-generic-password -w -s {{ bws_org_keychain_service | quote }}
-  -a {{ bws_keychain_account | quote }} 2>/dev/null || true

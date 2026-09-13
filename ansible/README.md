@@ -22,8 +22,6 @@ inventory/
     all/                 # a DIRECTORY -> every file loads for group `all`
       vars.yml           # structure + {{ secrets.* }} refs (nothing sensitive)
 SECRETS.md               # WHAT TO CREATE IN 1PASSWORD — the secret manifest
-library/                 # ⚠ only the RETAINED Bitwarden fetch; the 1Password
-  bws_secrets.py         #   path needs no custom module (it shells out to `op`)
 roles/
   flatcar_template/      # download proxmoxve image -> import -> template (idempotent)
   flatcar_vm/            # render Butane -> Ignition, clone, pin MACs, disk, cicustom, boot
@@ -59,8 +57,8 @@ this. If a future Helm major breaks the Calico prime, `helm_binary` in
 
 **Python packages** — pulled by `uv sync` from `pyproject.toml`/`uv.lock`:
 `ansible-core` (provides `ansible-playbook` / `-galaxy` / `-vault`), `proxmoxer`,
-`requests`, `kubernetes`, and `bitwarden-sdk` (⚠ retained for the cutover
-window only — see ADR-0034).
+`requests`, `kubernetes`. ⚠ No secrets SDK — the store is reached with the
+`op` CLI, an external binary (ADR-0034).
 
 **Ansible collections** — pulled by `ansible-galaxy … -r requirements.yml` into
 the in-repo `.ansible/`: `community.proxmox`, `kubernetes.core`.

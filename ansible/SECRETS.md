@@ -456,43 +456,7 @@ compromise — and it is also what keeps the API call count at one per item
 
 ---
 
-## 4. Migrating from Bitwarden
-
-Do not retype 29 values. `playbooks/render-1password-import.yml` reads the old
-store and renders a 1Password item template:
-
-```sh
-cd ansible
-uv run ansible-playbook playbooks/render-1password-import.yml
-```
-
-It prints how it classified every secret — name, section, and text-vs-concealed
-— **before** anything is written, and refuses if any secret matched no section
-rule. Review that list, then follow the commands it prints:
-
-```sh
-op signin                                     # as YOURSELF: this writes, and the
-                                              # service account is read-only
-op vault create homelab-infra
-op item create --template .1password/control-node.json --vault homelab-infra --dry-run
-op item create --template .1password/control-node.json --vault homelab-infra
-rm -P .1password/control-node.json            # ⚠ do not skip
-```
-
-⚠ **The rendered file is every credential in plaintext**, 0600 in a 0700
-git-ignored directory. It exists for the minutes between rendering and
-`op item create`. A template is used rather than `op item create name=value …`
-because 1Password's own CLI warns that assignment statements "get logged in your
-command history, and can be visible to other processes on your machine."
-
-⚠ **This play is one-shot.** Delete it once the cutover is done — the BWS
-migration had a `port-vault-to-bws.yml` of the same shape and deleted it the
-same day. It is the only thing in the repo that reads one store to populate
-another, and that is not a capability worth keeping.
-
----
-
-## 5. Verify
+## 4. Verify
 
 ```sh
 cd ansible
@@ -510,23 +474,6 @@ Loaded 29 secret(s) from 1Password vault 'homelab-infra' (1 item(s), 1 API call(
 
 That list is the thing to read when a `{{ secrets.x }}` comes back undefined —
 it tells you whether the field is missing from 1Password or just misspelled here.
-
-### The cutover proof
-
-Until the Bitwarden path is deleted, both backends are live and **must render
-byte-identical output**:
-
-```sh
-uv run ansible-playbook playbooks/render-frr-config.yml
-uv run ansible-playbook playbooks/render-frr-config.yml -e secrets_backend=bitwarden
-```
-
-Diff `.frr/` across the two runs. That diff is a far stronger check than reading
-two lists of names side by side: it exercises every value through the same
-templates, so a truncated paste or a swapped field shows up as a config
-difference rather than as a silent success. Do the same with
-`render-ceph-setup.yml`. **Only after both are clean** should the Bitwarden half
-be removed (`docs/decisions/0034-secrets-store-1password.md` has the list).
 
 ### Rate limits
 
@@ -547,7 +494,7 @@ is 1Password's own advice for staying under the limit.
 
 ---
 
-## 6. Common failures
+## 5. Common failures
 
 | Symptom | Cause |
 |---|---|
