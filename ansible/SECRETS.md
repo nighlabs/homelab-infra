@@ -82,7 +82,7 @@ op vault list        # should list your vaults, unlocking with Touch ID
 ⚠ **The trade, stated plainly.** Mode 1 authenticates as *you*, so a playbook —
 or anything that can invoke `op` while your session is unlocked — has read and
 write access to every vault you own, where a service-account token is read-only
-on two named vaults. What buys it back is that the operator at the keyboard
+on its named vaults. What buys it back is that the operator at the keyboard
 already has that access: the token was never a boundary against *them*, only
 against a stolen laptop with an unlocked keychain, and Touch ID plus a session
 timeout is the better answer to that threat than a keychain item that reads
@@ -90,9 +90,10 @@ silently forever. ADR-0032 originally argued for making mode 2 mandatory;
 ADR-0034 overrules that **for the control node only**, and records why.
 
 ⚠ **It does not apply to ESO.** A pod has no desktop app, so ESO must use a
-scoped service account regardless (§1.4). The two-vault split therefore still
+scoped service account regardless (§1.4). The consumer split therefore still
 does the work it was designed for, on the side that actually needed it — a
-compromised cluster still cannot reach the Proxmox token.
+compromised cluster still cannot reach the Proxmox token, nor another
+cluster's app secrets.
 
 ⚠ **A locked app is indistinguishable from a missing one** from the CLI's side:
 both surface as `No accounts configured for use with 1Password CLI`. Unlock it
@@ -100,37 +101,55 @@ before blaming the config.
 
 ### 1.3 Create the vaults
 
-Two vaults, split **by consumer, not by subject** — the split ADR-0027
-established and this keeps verbatim:
+Split **by consumer, not by subject** — ADR-0027's split, kept — and then, on
+the apps side, **one vault per cluster**:
 
 | Vault | Read by | Holds |
 |---|---|---|
-| `homelab-infra` | the **control node** (token in the laptop Keychain) | everything in §2 — Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password — **and ESO's own service-account token** |
-| `homelab-apps` | **ESO** (token in a Kubernetes Secret) | application secrets only. Create it at the ESO milestone |
+| `homelab-infra` | the **control node** (one vault, fleet-wide) | everything in §2 — Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password — **and every cluster's ESO service-account token** |
+| `<cluster>-apps` — e.g. `homelab-apps` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. Created at the ESO milestone, one per cluster in `inventory/nodes.yml` |
 
 ```sh
 op vault create homelab-infra
 ```
 
-⚠ **Both must be vaults you created.** A service account can never read a
-built-in Personal, Private or Employee vault, nor the default Shared vault.
+**Why the infra vault is fleet-wide but the apps vaults are per-cluster.** The
+control node provisions every cluster, so a per-cluster split there would only
+fragment one Proxmox credential across vaults that the same actor reads anyway —
+no boundary gained. Per-cluster values already live in this vault as
+**cluster-suffixed fields** (`k3s_token_<cluster>`), which is ADR-0026's
+convention and needs no second vault.
 
-The two consumers have very different exposure: the control-node token sits in
-a laptop Keychain, while ESO's token lives in a Kubernetes Secret readable by
+ESO is the opposite case: each cluster runs its own, holding its own token in
+its own Kubernetes Secret. ⚠ **This is the same argument that makes k3s join
+tokens per-cluster (ADR-0026): a compromised cluster must not take the fleet
+with it.** A `ClusterSecretStore` names exactly one vault and cannot reach a
+second, so cluster A's ESO structurally cannot read cluster B's app secrets.
+
+⚠ **This is a change in shape from ADR-0027, and the reason is worth knowing.**
+That record specified *one* apps project — but BWS capped the free tier at **3
+projects and 3 machine accounts**, which is also why its migration write account
+had to be deleted to leave ESO a slot. A single shared apps project was what the
+budget allowed, not what the blast-radius argument wanted. 1Password allows
+**100 service accounts and unlimited vaults**, so the constraint is gone and the
+per-cluster shape is simply affordable now.
+
+⚠ **Every one must be a vault you created.** A service account can never read
+a built-in Personal, Private or Employee vault, nor the default Shared vault.
+
+The consumers have very different exposure: the control node authenticates as
+you, at a keyboard, while ESO's token lives in a Kubernetes Secret readable by
 anything with cluster-admin or a pod exec in that namespace. One vault for both
 would mean a cluster compromise hands over the Proxmox API token, SSH keys and
 k3s join token — **cluster compromise escalating to hypervisor compromise** via
 credentials ESO never needed.
 
-Under 1Password that split gets *structurally* stronger than it was: a
-SecretStore names exactly one vault and cannot reach a second, so the property
-is enforced by the API shape rather than by discipline.
-
-⚠ **`eso_op_service_account_token` belongs in `homelab-infra`, not the apps
-vault.** It is read by the control node, which seeds it into the cluster. Filing
-it with the app secrets would let ESO read and rotate the credential gating its
-own access — the same principle as secret zero: *the thing that grants access
-cannot live behind the access it grants.*
+⚠ **`eso_op_service_account_token_<cluster>` belongs in `homelab-infra`, not in
+any apps vault.** It is read by the control node, which seeds it into that
+cluster. Filing it with the app secrets would let ESO read and rotate the
+credential gating its own access — the same principle as secret zero: *the
+thing that grants access cannot live behind the access it grants.* The
+cluster suffix follows ADR-0026, exactly like `k3s_token_<cluster>`.
 
 ### 1.4 Service accounts — only where a desktop app cannot reach
 
@@ -141,26 +160,33 @@ Create one for: **ESO** (mandatory — a pod has no desktop app), CI, or an
 unattended/Linux control node.
 
 ```sh
-# ESO — the apps vault ONLY. It must never reach homelab-infra.
-op service-account create homelab-eso \
+# ESO — ONE PER CLUSTER, granted that cluster's apps vault ONLY.
+# It must never reach homelab-infra, and never another cluster's vault.
+op service-account create eso-homelab \
   --vault homelab-apps:read_items
 
 # only if you also need unattended runs of these plays:
 op service-account create homelab-control-node \
   --vault homelab-infra:read_items \
-  --vault homelab-apps:read_items \
   --expires-in 180d
 ```
+
+⚠ **One ESO service account per cluster, not one shared.** A shared token in
+two clusters' Secrets means either cluster's compromise exposes both vaults,
+which throws away the per-cluster split for nothing — the accounts are free
+(100 of them) and the grant is the whole point.
 
 ⚠ **Service-account permissions and vault access are IMMUTABLE.** They cannot
 be edited after creation; a different grant means a *new* service account and a
 new token. Consequences worth reading twice:
 
-- **Grant every vault it will ever need, at creation.** For a control-node
-  account that means both, because the still-open ESO-adoption question
-  (`docs/decisions/README.md`) leans toward it reading both and that grant
-  cannot be added later. It widens no exposure — those secrets end up as
-  in-cluster `Secret`s either way.
+- **Grant every vault it will ever need, at creation.** ⚠ For a control-node
+  account, consider granting the apps vaults too: the still-open ESO-adoption
+  question (`docs/decisions/README.md`) leans toward the control node seeding
+  cluster-destined secrets it would have to *read* from an apps vault, and that
+  grant cannot be added later. It widens no exposure — those secrets end up as
+  in-cluster `Secret`s either way. An ESO account, by contrast, gets exactly
+  one vault and never more.
 - ⚠ **Defaulting to mode 1 removes this trap from the control-node side
   altogether**, which is a real argument for it: with no control-node service
   account, the only immutable grant in play is ESO's, and that one is
@@ -341,11 +367,17 @@ contributing nothing. A misnamed one is caught loudly by the preflight assert
 
 ### Later: the ESO service account
 
-At the ESO milestone, a **second item** `eso-service-account` in this same vault
-holds `eso_op_service_account_token` 🔑, and `op_items` in `vars.yml` grows to
-include it. Its own item, not a field on `control-node`, so that the credential
-gating cluster access stays visibly and separately rotatable rather than having
-its history coupled to everything else.
+At the ESO milestone, a **second item** `eso-service-accounts` in this same
+vault holds one concealed field **per cluster**,
+`eso_op_service_account_token_<cluster>` 🔑 — the same cluster-suffixed naming
+as `k3s_token_<cluster>` (ADR-0026), so `vars.yml` assembles the map from the
+`clusters` keys exactly as it already does for tokens and SANs. Add
+`eso-service-accounts` to `op_items` in `vars.yml` then; that costs one extra
+API call per play.
+
+Its own item, not fields on `control-node`, so the credentials gating cluster
+access stay visibly and separately rotatable rather than having their history
+coupled to everything else.
 
 ---
 

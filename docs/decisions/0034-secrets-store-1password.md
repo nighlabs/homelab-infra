@@ -86,7 +86,7 @@ in the repo. Secret zero does not relocate here; it *ceases to exist*.
 
 What is genuinely given up: the desktop app authenticates as the operator, with
 read *and* write on every vault they own, where a service-account token is
-read-only on two named vaults.
+read-only on the vaults it was granted.
 
 Why that is acceptable **here specifically**:
 
@@ -97,9 +97,10 @@ Why that is acceptable **here specifically**:
   configured, reads without any prompt at all.
 - **It removes the immutable-grant trap from this side entirely.** Service
   account vault grants cannot be edited after creation, and ADR-0032 flagged
-  that the still-open ESO-adoption question forces a "grant both vaults now"
-  guess. With no control-node service account, the only immutable grant left is
-  ESO's, and that one is unambiguous.
+  that the still-open ESO-adoption question forces a "grant every vault now"
+  guess on the control-node account. With no control-node service account, the
+  only immutable grants left are the per-cluster ESO ones, and those are
+  unambiguous: exactly one apps vault each.
 - **It deletes a whole class of documented footguns** — `-w` must be last,
   `-T ""`, Passwords.app vs `login.keychain-db`, Keychain Access removed in
   macOS 26, "the token is shown exactly once".
@@ -108,20 +109,35 @@ Why that is acceptable **here specifically**:
 keeps a scoped service account, as does CI or a Linux control node. The
 consumer split therefore still does the work it was designed for, on the side
 that actually needed it: **a compromised cluster still cannot reach the Proxmox
-token.** The load task supports both — a token is used when present, and the
-desktop app when not.
+token, nor another cluster's app secrets.** The load task supports both — a
+token is used when present, and the desktop app when not.
 
 ### Vault layout: ADR-0027's split by CONSUMER, preserved and strengthened
 
-`homelab-infra` (control node) and `homelab-apps` (ESO). ⚠ `eso_op_service_account_token`
+One fleet-wide `homelab-infra` for the control node, and — **changing ADR-0027's
+shape** — **one `<cluster>-apps` vault and one ESO service account per cluster**,
+rather than a single shared apps project. ⚠ `eso_op_service_account_token_<cluster>`
 stays in `homelab-infra` — *the thing that grants access cannot live behind the
-access it grants.*
+access it grants* — cluster-suffixed exactly like `k3s_token_<cluster>`
+(ADR-0026).
 
-Under 1Password this becomes **structural rather than a matter of discipline**: a
-SecretStore names exactly one vault and cannot reach a second, so "cluster
-compromise must not escalate to hypervisor compromise" is closed by the API
-shape. Budget stops being a constraint too: 100 service accounts and unlimited
-vaults, against BWS's 3 projects / 3 machine accounts.
+⚠ **ADR-0027's single apps project was a budget artefact, not a judgement.** BWS
+capped the free tier at **3 projects / 3 machine accounts** — the same squeeze
+that forced deleting its migration write account. 1Password allows **100 service
+accounts and unlimited vaults**, so the per-cluster split that the blast-radius
+argument always wanted is simply affordable now. It is the same reasoning that
+already makes k3s join tokens per-cluster: *a compromised cluster must not take
+the fleet with it.*
+
+The infra vault stays fleet-wide deliberately: the control node provisions every
+cluster, so splitting it would fragment one Proxmox credential across vaults the
+same actor reads anyway. Per-cluster values there are cluster-suffixed **fields**,
+which needs no second vault.
+
+Under 1Password this all becomes **structural rather than a matter of
+discipline**: a SecretStore names exactly one vault and cannot reach a second,
+so both "cluster compromise must not escalate to hypervisor compromise" and
+"cluster A must not read cluster B's app secrets" are closed by the API shape.
 
 ### Migration by rendered template, not by retyping
 

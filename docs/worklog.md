@@ -99,6 +99,27 @@ question — they must be decided together.
 `docs/worklog.md` is append-only and `docs/decisions/*` are records. ADR-0032
 warned about exactly this.
 
+**Corrected on review: the apps side is now ONE VAULT PER CLUSTER.** The first
+pass carried ADR-0027's single shared apps project straight across. That shape
+was a **budget artefact, not a judgement** — BWS capped the free tier at 3
+projects / 3 machine accounts, which is the same squeeze that forced deleting
+its migration write account. 1Password allows 100 service accounts and unlimited
+vaults, so the per-cluster split the blast-radius argument always wanted is
+simply affordable: `<cluster>-apps`, one ESO service account each, and
+`eso_op_service_account_token_<cluster>` in the infra vault, cluster-suffixed
+exactly like `k3s_token_<cluster>` (ADR-0026). ⚠ The infra vault stays
+**fleet-wide** on purpose — the control node provisions every cluster, so
+splitting it would fragment one Proxmox credential across vaults the same actor
+reads anyway. No code change: the loader reads one vault and that is still
+correct; ESO's SecretStore names its own.
+
+⚠ **A guard added with it.** `render-1password-import.yml` renders ONE item
+holding every secret, titled `op_items[0]` — right for the migration (BWS had
+29 flat secrets, no items), wrong the moment `op_items` grows for the ESO item,
+when the extra titles would be silently ignored and their fields swept into the
+first item. It now refuses, and says the real answer: by then this one-shot play
+should already be deleted. Verified both ways.
+
 **Open, and it is a subscription question rather than an engineering one:**
 1Password's daily cap is **per account, shared across every service account** —
 1,000/24h on Individual/Families. Ansible is nowhere near it (~4 calls per

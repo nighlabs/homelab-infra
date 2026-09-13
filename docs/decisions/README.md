@@ -77,9 +77,9 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   Ansible-seed-only (0009, 0034). **Not yet decided** — the seed-only wording
   in 0009 records the mechanism, not a permanence decision. Current lean:
   adopt, inside the consumer split — ESO still never reads `homelab-infra`
-  (cluster-destined secrets would live in the **`homelab-apps` vault**;
-  exposure doesn't widen because these secrets end up as in-cluster `Secret`s
-  either way), and **the Ansible seed remains regardless** — a from-scratch
+  (cluster-destined secrets would live in **that cluster's `<cluster>-apps`
+  vault**; exposure doesn't widen because these secrets end up as in-cluster
+  `Secret`s either way), and **the Ansible seed remains regardless** — a from-scratch
   rebuild needs the token before ESO exists, so adoption is an overlay, never a
   handover. Excluded whatever is decided: `cluster-topology` (permanent,
   0021/0034) and `eso_op_service_account_token` (0034 ⚠). Decide + ADR at the
@@ -95,11 +95,19 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   is now historical.
 
   ⚠ **The immutable-grant deadline no longer binds the control node.** It does
-  still bind **ESO's** service account, whose vault grant is fixed at creation:
-  if adoption means ESO reading cluster-destined secrets, those must live in
-  `homelab-apps`, which it already reads — so the lean above stays reachable.
-  (The control node authenticates as the operator via the desktop app and has
-  no service account to constrain — ADR-0034.)
+  still bind **each cluster's ESO** service account, whose vault grant is fixed
+  at creation: if adoption means ESO reading cluster-destined secrets, those
+  must live in that cluster's own `<cluster>-apps` vault, which it already
+  reads — so the lean above stays reachable. (The control node authenticates as
+  the operator via the desktop app and has no service account to constrain —
+  ADR-0034.)
+
+  ⚠ **ADR-0034 changed the apps side to one vault + one ESO service account
+  PER CLUSTER**, where ADR-0027 had a single shared apps project — that was a
+  BWS budget artefact (3 projects / 3 machine accounts), not a judgement. So
+  "cluster-destined secrets live in the apps vault" now means *that cluster's*,
+  and adoption must be decided per cluster or fleet-wide-by-convention, not for
+  one shared vault.
 
   ⚠ **ceph-csi's two cephx keys are a different case from cert-manager's token,
   and the difference is easy to misread.** cert-manager genuinely *is* upstream

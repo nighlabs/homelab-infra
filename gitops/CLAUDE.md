@@ -299,14 +299,23 @@ token *from* ESO. `docs/decisions/README.md`, "Open questions".
 `../ansible/SECRETS.md` deliberately stops at the vault boundary and covers
 only what the control node creates and reads:
 
-- A `ClusterSecretStore` naming the **`homelab-apps`** vault. It cannot reach
-  `homelab-infra` — a store names exactly one vault, which is what makes
-  ADR-0027's consumer split structural rather than a matter of discipline.
-- Auth from an Ansible-seeded Secret holding `eso_op_service_account_token`,
-  which lives in the **`homelab-infra`** vault (the control node seeds it; ESO
-  must never be able to rotate the credential gating its own access).
-- ⚠ The ESO service account's vault grant is **immutable** and was made when
-  the accounts were created. It cannot be widened later.
+- A `ClusterSecretStore` naming **this cluster's own** `<cluster>-apps` vault
+  (`homelab-apps` for `homelab`). It cannot reach `homelab-infra`, nor another
+  cluster's apps vault — a store names exactly one vault, which is what makes
+  the consumer split structural rather than a matter of discipline.
+- ⚠ **One vault and one service account PER CLUSTER**, same blast-radius
+  argument as per-cluster k3s join tokens (ADR-0026): a compromised cluster
+  must not take the fleet with it. ADR-0027 specified a single shared apps
+  project only because BWS capped the free tier at 3 projects / 3 machine
+  accounts; 1Password allows 100 service accounts and unlimited vaults, so that
+  constraint is gone (ADR-0034).
+- Auth from an Ansible-seeded Secret holding
+  `eso_op_service_account_token_<cluster>`, which lives in the
+  **`homelab-infra`** vault (the control node seeds it; ESO must never be able
+  to rotate the credential gating its own access).
+- ⚠ The ESO service account's vault grant is **immutable**, fixed at creation.
+  It cannot be widened later — so create one account per cluster from the
+  start; retrofitting a narrower grant means a new account and a new token.
 - ⚠ **Rate limits are the real design constraint, not throughput.** The daily
   cap is per *account*, shared across every service account, and is 1,000/24h
   on Individual/Families. Steady state is roughly

@@ -62,7 +62,7 @@ is the durable store for everything; the split is about *who reads it when*
 |---|---|---|
 | **Credentials** | Proxmox API token, k3s join token | **1Password, read at run time** via the `op` CLI — one `op item get` per item, values as labelled fields |
 | **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
-| **Runtime app secrets** | app passwords, API keys | ESO + the 1Password **SDK provider** (no in-cluster server), from a *separate* vault |
+| **Runtime app secrets** | app passwords, API keys | ESO + the 1Password **SDK provider** (no in-cluster server), from that cluster's own `<cluster>-apps` vault |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range, node IPs | Flux `postBuild.substituteFrom` the Ansible-seeded `cluster-topology` `Secret` — *placeholders* in Git |
 
 - **Secret zero does not exist on the control node.** `op` authenticates
@@ -70,11 +70,14 @@ is the durable store for everything; the split is about *who reads it when*
   in a keychain. A scoped, read-only **service account** is used only where no
   app can run: CI, a Linux control node, and **ESO in-cluster**. Vault grants
   on a service account are **immutable** — decide them at creation.
-- **Two vaults, split by CONSUMER not by subject.** The control node reads
-  `homelab-infra`; ESO reads `homelab-apps` and *cannot* reach the other — a
-  SecretStore names exactly one vault, so "cluster compromise must not reach
-  the Proxmox token" is enforced by the API shape, not by discipline.
-
+- **Vaults split by CONSUMER, and per-cluster on the apps side.** The control
+  node reads one fleet-wide `homelab-infra`; each cluster's ESO reads only its
+  own `<cluster>-apps` and *cannot* reach the infra vault or another cluster's
+  — a SecretStore names exactly one vault, so "cluster compromise must not
+  reach the Proxmox token, or the rest of the fleet" is enforced by the API
+  shape, not by discipline. Same blast-radius rule as per-cluster k3s tokens
+  (ADR-0026); it is affordable now only because 1Password lifts BWS's
+  3-project cap.
 - **Never commit a credential in any form, including ciphertext.** Encrypted
   secrets in Git are permanent, unrotatable without a commit, and unauditable.
 - **There is no `vault.yml`** and no vault passphrase. Nothing secret lives in
