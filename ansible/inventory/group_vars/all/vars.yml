@@ -250,20 +250,33 @@ node_boot_timeout: 300
 kubeconfig_dir: "{{ playbook_dir }}/../.kube"
 kubeconfig_local: "{{ kubeconfig_dir }}/{{ cluster_name }}.config"
 
-# Also merge each cluster into your personal kubeconfig, so plain `kubectl` works
-# with no KUBECONFIG juggling. This is a MERGE of that cluster's three named
-# entries (via kubernetes.core.kubeconfig), never a whole-file overwrite — every
-# other context in the file is left untouched, including the OTHER clusters' (so
-# `kubectl --context <cluster>` reaches any of them). Set false on CI/shared
-# control nodes, where writing to a user's home dir isn't wanted.
-kubeconfig_merge_user: true
-kubeconfig_user_path: "{{ lookup('ansible.builtin.env', 'HOME') }}/.kube/config"
-# Whether that merge also makes the cluster your *active* context. Fine while
-# there's one cluster. With several, they'd each claim it in turn and the last one
-# bootstrapped would win — so once a second cluster exists, set this false and
-# switch deliberately (`kubectl config use-context <cluster>`). Also set it false
-# if you don't want a provisioning run yanking current-context away mid-task.
-kubeconfig_set_current_context: true
+# Also install each cluster's kubeconfig for your own `kubectl`, as its OWN FILE
+# in a directory — NOT merged into one shared ~/.kube/config.
+#
+# ⚠ The merge it replaces only ever GREW. Every cluster ever built left a
+# cluster-admin cert in that one file, including clusters long since destroyed,
+# and removing one meant three `kubectl config delete-*` calls that are easy to
+# half-do — so stale credentials accumulated quietly. A file per cluster makes
+# removal `rm`, and makes "what do I still hold keys for?" an `ls`.
+#
+# Nothing is lost, because kubectl merges a colon-separated KUBECONFIG itself.
+# Put this in your shell profile once:
+#
+#   export KUBECONFIG=$(find ~/.kube/configs -name '*.config' | tr '\n' ':')
+#
+# `kubectl config get-contexts` then lists every cluster and `kubectl --context
+# <cluster>` selects between them, exactly as before.
+#
+# ⚠ With a KUBECONFIG list the FIRST file's `current-context` wins, which is why
+# there is no longer a "make this the active context" knob: it could not mean
+# anything reliably across several files. Switch deliberately with
+# `kubectl config use-context <cluster>`.
+#
+# Set false on CI/shared control nodes, where writing to a user's home dir isn't
+# wanted. Either way `kubeconfig_local` above stays the canonical copy the plays
+# themselves use; this is purely a convenience for your shell.
+kubeconfig_install_user: true
+kubeconfig_user_dir: "{{ lookup('ansible.builtin.env', 'HOME') }}/.kube/configs"
 
 # Optional override for which `helm` binary the kubernetes.core.helm task uses
 # (maps to the module's binary_path). Leave UNSET to find `helm` on PATH — the

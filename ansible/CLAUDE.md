@@ -139,8 +139,11 @@ rules, not history.
 - **The kubeconfig rewrite exists because k3s names cluster, user and context
   all `default`**, pointing at `127.0.0.1`. `bootstrap-cluster.yml` renames them
   to `<cluster>` / `<cluster>-admin` / `<cluster>` and repoints `server:` at the
-  DMZ IP, writes `.kube/<cluster>.config` (0600, git-ignored), and merges into
-  `~/.kube/config` when `kubeconfig_merge_user`. Knobs in `group_vars/all/vars.yml`.
+  DMZ IP, writes `.kube/<cluster>.config` (0600, git-ignored), and installs a
+  copy at `~/.kube/configs/<cluster>.config` when `kubeconfig_install_user` —
+  a file per cluster, never merged into one `~/.kube/config`, so removing a
+  cluster is `rm`. Consumers set `KUBECONFIG` to that directory's files (kubectl
+  merges a path list natively). Knobs in `group_vars/all/vars.yml`.
 
 ## Non-obvious facts: Proxmox
 
@@ -238,12 +241,15 @@ Each of these produced a *silent-wrong* result, not a loud failure.
 
 ## Open items
 
-- **Kubeconfig hygiene on the control node.** `bootstrap-cluster.yml` leaves a
-  long-lived cluster-admin cert at `.kube/<cluster>.config` and merged into
-  `~/.kube/config`. Deleting it in the happy path is wrong (standalone plays
-  need it; `kubeconfig_merge_user: false` would leave no kubeconfig anywhere).
-  Options if we act: an opt-in `kubeconfig_cleanup_local` flag, or a deliberate
-  `clean-kubeconfig.yml` — never a silent step in provisioning.
+- **Kubeconfig hygiene on the control node.** ⚠ Half-solved: the *filing* is
+  fixed (a file per cluster in `~/.kube/configs/`, so a dead cluster's
+  credentials are one `rm` rather than three `kubectl config delete-*` calls
+  that are easy to half-do). What remains is the **long-lived cluster-admin
+  cert** itself, at `.kube/<cluster>.config`. Deleting it in the happy path is
+  wrong (standalone plays need it; `kubeconfig_install_user: false` would leave
+  no user copy anywhere). Options if we act: an opt-in
+  `kubeconfig_cleanup_local` flag, or a deliberate `clean-kubeconfig.yml` —
+  never a silent step in provisioning.
 - **Flatcar OS update policy** is unset (ADR-0030, Open) — nodes auto-update
   and reboot on their own schedule. Record OS + kernel with any test result.
   Cheap mitigation not yet done: a `flatcar_template_force` flag so a template
