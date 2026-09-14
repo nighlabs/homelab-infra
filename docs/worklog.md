@@ -51,16 +51,30 @@ recording them rather than just "it worked":
   `gitops/deployment/<cluster>/` rename landed end-to-end: artifact digest
   verified before the run, and the running cluster reports that same digest.
 
-⚠ **The one thing NOT verified: LoadBalancer reachability.** The IP is
-*allocated* but not *routed* — allocation is Calico IPAM and needs no BGP, while
-reachability does, and pfSense still carries the `homelab`-named peer group and
-prefix lists from before the cluster rename. `curl` to the Gateway from the
-control node fails. Expected, not a regression: the fix is re-pasting the
-regenerated `frr.conf` (§5 of `pfsense-frr-bgp-setup.md`, clearing the old block
-first — the render defines the `testnode` objects but does not remove the old
-ones). ⚠ Worth stating because *allocated* looks like success at a glance, and
-because the other cause of a pending/unreachable LB in this repo — the Calico
-#12890 RBAC grant — presents similarly while the BGP side gives no hint.
+**LoadBalancer reachability: verified.** TCP 443 open from the control node,
+`HTTP 301` on :80 (the https redirect), and `HTTP 404` over HTTPS with correct
+SNI — which is the *right* answer: the Gateway is serving, and nothing matches
+yet because `apps/` is still empty. BGP session `Established`, with Calico
+exporting the aggregated LB supernet to the peer
+(`serviceLoadBalancerAggregation: Enabled`, so the `/24` rather than
+per-service `/32`s).
+
+⚠ **This was first recorded as NOT reachable. That was a bad test, not a bad
+cluster** — and the mistake is reusable enough to keep:
+
+- `curl https://<LB-IP>/` sends **no SNI**, and a hostname-listener Gateway
+  rejects it with `tlsv1 unrecognized name`. A pass/fail check on curl's exit
+  status **cannot distinguish that from having no route** — both simply fail.
+- `ping` to a service IP is **not answered under the eBPF dataplane**, so a
+  silent ping proves nothing here. Treating it as corroboration turned one
+  ambiguous signal into false confidence, and cost a needless pfSense re-paste.
+- The checks that actually discriminate: `nc -z <LB-IP> 443` for **routing**,
+  and `curl --resolve <host>:443:<LB-IP>` for **serving**. The first isolates
+  the network path; the second supplies the SNI the Gateway requires.
+
+Same standing rule this repo already applies to asserts — *a test whose failure
+mode is indistinguishable from success is not a test* — applied to a
+reachability probe rather than to an assert.
 
 **Four Touch ID prompts**, one per play, as designed: the load task is included
 once per play and there is no stored token anywhere on the control node.
