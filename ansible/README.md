@@ -379,21 +379,38 @@ it on fetch, keyed off the **cluster name — which is the cluster key in
   (a shared path would have each bootstrap clobber the last). These are the
   canonical files the plays themselves use.
 
-Each cluster is then **merged** into your personal `~/.kube/config`
-(`kubeconfig_merge_user: true`) via `kubernetes.core.kubeconfig`, so plain
-`kubectl --context testnode` works with no `KUBECONFIG` juggling. It's a merge of
-that cluster's three named entries, never a whole-file overwrite — every other
-context is left untouched (including your other clusters'), and re-running is
-idempotent. Knobs, all in `group_vars/all/vars.yml`:
+Each cluster is then **installed as its own file** at
+`~/.kube/configs/<cluster>.config` — *not* merged into one shared
+`~/.kube/config`. Add this to your shell profile once and plain
+`kubectl --context testnode` works with no further juggling:
+
+```sh
+export KUBECONFIG=$(find ~/.kube/configs -name '*.config' | tr '\n' ':')
+```
+
+kubectl merges a `KUBECONFIG` path list natively, so `kubectl config
+get-contexts` lists every cluster exactly as a merged file would.
+
+⚠ **Why a file per cluster.** A merged config only ever *grows*: every cluster
+ever built leaves a cluster-admin cert in it, including clusters long since
+destroyed, and removing one meant three `kubectl config delete-*` calls that are
+easy to half-do. One file per cluster makes removal `rm`, and makes "what do I
+still hold keys for?" an `ls`.
+
+⚠ With a `KUBECONFIG` list the **first file's `current-context` wins**, so there
+is no "make this the active context" knob any more — it could not mean anything
+reliably across several files. Switch with `kubectl config use-context <cluster>`.
+
+Knobs, both in `group_vars/all/vars.yml`:
 
 | Var | Default | Effect |
 |---|---|---|
-| `kubeconfig_merge_user` | `true` | Merge into `~/.kube/config`. Set `false` on CI/shared control nodes. |
-| `kubeconfig_user_path` | `$HOME/.kube/config` | Which file to merge into. |
-| `kubeconfig_set_current_context` | `true` | Whether the merge also makes the cluster kubectl's *active* context. Set `false` once a second cluster exists — otherwise they each claim it in turn and the last one bootstrapped wins. |
+| `kubeconfig_install_user` | `true` | Install into `~/.kube/configs/`. Set `false` on CI/shared control nodes. |
+| `kubeconfig_user_dir` | `$HOME/.kube/configs` | Directory the per-cluster files land in. |
 
 To rename the context, rename the cluster key in `inventory/nodes.yml`. Doing it
-*after* a bootstrap leaves the old entries behind in `~/.kube/config` and an
+*after* a bootstrap leaves the old file behind at
+`~/.kube/configs/<old>.config` (delete it) and an
 orphaned `ansible/.kube/<old>.config` — both are yours to delete.
 
 [uv]: https://docs.astral.sh/uv/
@@ -416,8 +433,8 @@ Add another key under `clusters:` in `inventory/nodes.yml` with its own `nodes:`
 and non-overlapping `node_number`s. Nothing else in the repo changes: the cluster
 key becomes its kubeconfig context and `ansible/.kube/<cluster>.config`, and
 `bootstrap-cluster.yml` elects that cluster its own bootstrap primary and primes
-its own Calico. Set `kubeconfig_set_current_context: false` at that point (see
-above). Untested against real hardware — only one cluster exists today.
+its own Calico, and its kubeconfig lands beside the others in
+`~/.kube/configs/`. Untested against real hardware — only one cluster exists today.
 
 ## Verify (definition of done)
 
@@ -479,9 +496,9 @@ from NotReady to **Ready**. From the control node, using the fetched kubeconfig:
   `127.0.0.1`, and its cluster/user/context are named `testnode` / `testnode-admin`
   / `testnode`, **not** k3s's `default`
   (`grep -E 'server:|name:' ansible/.kube/testnode.config`)
-- `kubectl config get-contexts` → the `testnode` context present in
-  `~/.kube/config`, alongside any contexts you already had (the merge preserves
-  them). Skip this one if you set `kubeconfig_merge_user: false`.
+- `kubectl config get-contexts` → the `testnode` context present, alongside any
+  others you already had (the `KUBECONFIG` list merges them at run time). Skip
+  this one if you set `kubeconfig_install_user: false`.
 - `kubectl --context testnode get nodes -o wide` → **Ready**, `INTERNAL-IP` = the
   eth0/DMZ IP
 - `kubectl get installation default -o jsonpath='{.spec.calicoNetwork.ipPools[0].cidr}'`

@@ -190,50 +190,43 @@
       delegate_to: localhost
       when: is_bootstrap_primary | bool
 
-    # Merge into the user's personal kubeconfig so plain `kubectl` works with no
-    # KUBECONFIG juggling. A MERGE of our three named entries, not a file
-    # overwrite: kubernetes.core.kubeconfig loads the existing file and leaves
-    # every other cluster/user/context in it untouched. Re-running is idempotent
-    # (same names, same values → no change). Opt out with kubeconfig_merge_user.
-    - name: Merge this cluster into the user's kubeconfig
+    # Install this cluster's kubeconfig as its OWN FILE in the user's config
+    # directory, rather than merging its entries into one shared ~/.kube/config.
+    #
+    # ⚠ Why a file per cluster and not a merge (ADR/worklog 2026-09-14): a merged
+    # config only ever GROWS. Every cluster ever built leaves a cluster-admin
+    # cert behind, including clusters that no longer exist — deleting one meant
+    # three `kubectl config delete-*` calls that are easy to half-do, so stale
+    # credentials accumulated silently. One file per cluster makes removal `rm`,
+    # and makes "what do I still hold keys for?" an `ls`.
+    #
+    # kubectl merges a colon-separated KUBECONFIG natively, so nothing is lost:
+    #   export KUBECONFIG=$(find ~/.kube/configs -name '*.config' | tr '\n' ':')
+    # `kubectl config get-contexts` then lists every cluster and `--context`
+    # selects between them, exactly as with a merged file.
+    #
+    # Opt out with kubeconfig_install_user (CI, shared control nodes — anywhere
+    # writing to a user's home dir isn't wanted). The canonical copy the plays
+    # themselves use is kubeconfig_local either way; this is a convenience copy.
+    - name: Install this cluster's kubeconfig for the user
       when:
         - is_bootstrap_primary | bool
-        - kubeconfig_merge_user | bool
+        - kubeconfig_install_user | bool
       delegate_to: localhost
       block:
         - name: Ensure the user's kubeconfig directory exists
           ansible.builtin.file:
-            path: "{{ kubeconfig_user_path | dirname }}"
+            path: "{{ kubeconfig_user_dir }}"
             state: directory
             mode: "0700"
 
-        - name: Merge the cluster/user/context entries into the user's kubeconfig
-          kubernetes.core.kubeconfig:
-            path: "{{ kubeconfig_user_path }}"
-            dest: "{{ kubeconfig_user_path }}"
-            clusters:
-              - name: "{{ cluster_name }}"
-                cluster:
-                  server: "https://{{ node_eth0_ip }}:6443"
-                  certificate-authority-data: "{{ kubeconfig_doc.clusters[0].cluster['certificate-authority-data'] }}"
-            users:
-              - name: "{{ cluster_name }}-admin"
-                user:
-                  client-certificate-data: "{{ kubeconfig_doc.users[0].user['client-certificate-data'] }}"
-                  client-key-data: "{{ kubeconfig_doc.users[0].user['client-key-data'] }}"
-            contexts:
-              - name: "{{ cluster_name }}"
-                context:
-                  cluster: "{{ cluster_name }}"
-                  user: "{{ cluster_name }}-admin"
-            # Only steals kubectl's active context when explicitly allowed.
-            current_context: "{{ cluster_name if kubeconfig_set_current_context | bool else omit }}"
-
-        # The module doesn't take a mode; enforce it here — the file now carries
-        # cluster-admin client certs.
-        - name: Enforce 0600 on the user's kubeconfig
-          ansible.builtin.file:
-            path: "{{ kubeconfig_user_path }}"
+        # A plain copy of the file written above — same content, same 0600. No
+        # merge, so nothing in the directory can be clobbered by another
+        # cluster's bootstrap, and re-running is idempotent by content.
+        - name: Install the per-cluster kubeconfig
+          ansible.builtin.copy:
+            src: "{{ kubeconfig_local }}"
+            dest: "{{ kubeconfig_user_dir }}/{{ cluster_name }}.config"
             mode: "0600"
 
 # --- Play C: prime Calico (Ansible installs once; Flux adopts later) ---------
@@ -680,9 +673,10 @@
         msg: >-
           Cluster `{{ cluster_name }}`: Calico primed;
           {{ node_info.resources | length }} node(s) Ready.
-          {% if kubeconfig_merge_user | bool %}
-          Merged into {{ kubeconfig_user_path }} as context `{{ cluster_name }}`
-          (kubectl --context {{ cluster_name }} get nodes).
+          {% if kubeconfig_install_user | bool %}
+          kubeconfig installed at {{ kubeconfig_user_dir }}/{{ cluster_name }}.config
+          as context `{{ cluster_name }}` (kubectl --context {{ cluster_name }} get nodes,
+          once KUBECONFIG lists that directory — see group_vars/all/vars.yml).
           {% else %}
           kubeconfig: {{ kubeconfig_local }} (KUBECONFIG={{ kubeconfig_local }} kubectl get nodes).
           {% endif %}
