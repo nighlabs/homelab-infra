@@ -13,6 +13,63 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-14 — From-scratch `site.yml` on 1Password: cluster `testnode` up clean
+
+**Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) ·
+[ADR-0033](decisions/0033-secrets-fact-broker.md) ·
+[ADR-0028](decisions/0028-gitops-delivery-signed-oci-syncless-fluxinstance.md) ·
+[ADR-0026](decisions/0026-per-cluster-derivation-from-index.md).
+
+First full provisioning run with 1Password as the only store, on the renamed
+cluster, from a deleted cluster and an empty Proxmox. This is the evidence the
+cutover record could not have on its own: the parallel-run gate proved the two
+stores held the same values, but only a real `site.yml` proves every secret is
+consumed correctly *by the things that use it*.
+
+| Check | Result |
+|---|---|
+| node | `snoop-a2o` Ready, k3s `v1.36.2+k3s1` |
+| Flux tiers (crds, infrastructure, infrastructure-config, apps, flux-system) | all Ready on `latest@sha256:73147bae` |
+| HelmReleases | cert-manager 1.21.1, NGF 2.6.7, tigera-operator v3.32.1 — all Ready |
+| pods | zero not-Running, cluster-wide |
+| StorageClasses | `ceph-rbd` (default) + `cephfs`, both drivers Running |
+| wildcard `Certificate` | `True` |
+| bootstrap-seeded Secrets | `cluster-topology`, `cloudflare-api-token`, both cephx keys |
+
+**What the green results prove about the store change**, which is the point of
+recording them rather than just "it worked":
+
+- **The wildcard cert issued**, so the Cloudflare API token reached cert-manager
+  from 1Password intact — a truncated or mis-copied token fails ACME, loudly.
+- **Both ceph-csi drivers are Running and the two cephx Secrets are seeded**, so
+  the concealed fields came across byte-exact; a wrong key fails at *attach on
+  the node*, not at PVC creation, so this is a real check.
+- **LB IPAM allocated an address**, so `cluster-topology` substitution worked —
+  which means the topology values survived the store change and the
+  `postBuild.substituteFrom` path is intact.
+- **Flux reconciled the artifact built from the renamed path**, confirming the
+  `gitops/deployment/<cluster>/` rename landed end-to-end: artifact digest
+  verified before the run, and the running cluster reports that same digest.
+
+⚠ **The one thing NOT verified: LoadBalancer reachability.** The IP is
+*allocated* but not *routed* — allocation is Calico IPAM and needs no BGP, while
+reachability does, and pfSense still carries the `homelab`-named peer group and
+prefix lists from before the cluster rename. `curl` to the Gateway from the
+control node fails. Expected, not a regression: the fix is re-pasting the
+regenerated `frr.conf` (§5 of `pfsense-frr-bgp-setup.md`, clearing the old block
+first — the render defines the `testnode` objects but does not remove the old
+ones). ⚠ Worth stating because *allocated* looks like success at a glance, and
+because the other cause of a pending/unreachable LB in this repo — the Calico
+#12890 RBAC grant — presents similarly while the BGP side gives no hint.
+
+**Four Touch ID prompts**, one per play, as designed: the load task is included
+once per play and there is no stored token anywhere on the control node.
+
+**Leftover to sweep:** `ansible/.kube/homelab.config` from the old cluster is
+stale and git-ignored; the live one is `testnode.config`.
+
+---
+
 ## 2026-09-13 — 1Password cutover verified; Bitwarden deleted
 
 **Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) (now Accepted,
