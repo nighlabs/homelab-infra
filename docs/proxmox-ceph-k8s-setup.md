@@ -12,12 +12,12 @@ The decisions this runbook implements, with the alternatives rejected:
   [ADR-0006](decisions/0006-ceph-csi-external-proxmox-ceph.md)
 - the second vNIC on the Ceph public VLAN, tagged, jumbo, no default route —
   [ADR-0017](decisions/0017-static-addressing-no-dhcp.md)
-- credentials live in Bitwarden Secrets Manager and are read at run time;
+- credentials live in 1Password and are read at run time;
   nothing secret is committed in any form —
-  [ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md)
+  [ADR-0034](decisions/0034-secrets-store-1password.md)
 
 **The scripts are generated** by `ansible/playbooks/render-ceph-setup.yml` from
-`inventory/group_vars/all/vars.yml` + BWS — don't hand-write or edit them. See
+`inventory/group_vars/all/vars.yml` + 1Password — don't hand-write or edit them. See
 §8.
 
 > **⚠ This runs as root on a live production Ceph cluster.** That cluster
@@ -28,8 +28,8 @@ The decisions this runbook implements, with the alternatives rejected:
 
 **Blinding rule:** this document is committed, so it contains **no real
 addresses, pool names, or filesystem names from the existing cluster.** Values
-appear as `${placeholder}` matching the BWS secret names
-(`ansible/BWS-SECRETS.md`). Names *we* create are shown literally — they're
+appear as `${placeholder}` matching the 1Password field names
+(`ansible/SECRETS.md`). Names *we* create are shown literally — they're
 ours, generic, and reveal nothing. Do not paste real values back into this file.
 
 ---
@@ -51,7 +51,7 @@ and keeping them readable is what makes this runbook followable.
 
 ### Theirs — vaulted, describes the cluster that already exists
 
-| BWS secret | What it is |
+| 1Password field | What it is |
 |---|---|
 | `ceph_fs_name` | PVE's existing CephFS name. **Prerequisite** — the render fails without it |
 | `ceph_mons` | Mon addresses, **one per line**, on the Ceph **public** network |
@@ -152,7 +152,7 @@ why; don't reach for `allow *`.
 
 ## 4. Procedure
 
-### 4.1 Prerequisite: `ceph_fs_name` in BWS
+### 4.1 Prerequisite: `ceph_fs_name` in 1Password
 
 On a Proxmox node:
 
@@ -160,8 +160,8 @@ On a Proxmox node:
 ceph fs ls
 ```
 
-Store the filesystem's name in BWS as `ceph_fs_name`, in the project the
-control node's machine account reads (`ansible/BWS-SECRETS.md`).
+Store the filesystem's name in 1Password as `ceph_fs_name`, in the project the
+control node's machine account reads (`ansible/SECRETS.md`).
 
 ### 4.2 Render
 
@@ -171,7 +171,7 @@ uv run ansible-playbook playbooks/render-ceph-setup.yml
 ```
 
 Writes three git-ignored files to `ansible/.ceph/` (§8). The play touches
-nothing — it reads inventory and BWS and writes three local files. It does not
+nothing — it reads inventory and 1Password and writes three local files. It does not
 connect to Proxmox, to Ceph, or to any node.
 
 ### 4.3 Read the script
@@ -218,12 +218,12 @@ sudo bash /tmp/ceph-k8s-keys.sh
 ```
 
 > ⚠ **This prints two cephx keys to your terminal.** That's the point — they're
-> generated *on* the Ceph cluster, and this is how they reach BWS, the only
+> generated *on* the Ceph cluster, and this is how they reach 1Password, the only
 > durable store for them. Afterwards: clear your scrollback, and close the
 > terminal if it logs to disk.
 
-It prints four values under their exact BWS secret names: `ceph_fsid`,
-`ceph_mons`, `ceph_k8s_rbd_key`, `ceph_k8s_cephfs_key`. Store each in BWS.
+It prints four values under their exact 1Password field names: `ceph_fsid`,
+`ceph_mons`, `ceph_k8s_rbd_key`, `ceph_k8s_cephfs_key`. Store each in 1Password.
 
 ### 4.7 Clean up the PVE node
 
@@ -255,7 +255,7 @@ Rotating a cephx key is a **two-place** change, and the order matters:
 ceph auth get-or-create-key client.k8s-rbd
 ```
 
-That invalidates the old key immediately. Update BWS, then re-seed and restart
+That invalidates the old key immediately. Update 1Password, then re-seed and restart
 the drivers, or in-flight mounts start failing authentication.
 
 > ⚠ **Never `ceph auth del` a user that's in use.** Every mounted volume on
@@ -319,7 +319,7 @@ Writes three git-ignored files to `ansible/.ceph/`:
 |---|---|
 | `ceph-k8s-setup.sh` | §4.4 — creates the pool, subvolumegroup and two users |
 | `ceph-k8s-verify.sh` | §4.5 — read-only; confirms caps match what `gitops/` assumes |
-| `ceph-k8s-keys.sh` | §4.6 — prints the keys + fsid + mons for BWS |
+| `ceph-k8s-keys.sh` | §4.6 — prints the keys + fsid + mons for 1Password |
 
 Same generate-then-deliver-by-hand pattern as
 [`pfsense-frr-bgp-setup.md`](pfsense-frr-bgp-setup.md), and for the same reason:
@@ -346,7 +346,7 @@ in `group_vars/all/vars.yml`.
 
 ### What the play asserts before rendering
 
-- `ceph_fs_name` is in BWS (the one hard prerequisite)
+- `ceph_fs_name` is in 1Password (the one hard prerequisite)
 - object names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, and the two client names
   differ — they're separate cephx entities, which is the whole point
 - the RBD pool name doesn't collide with `<fs>_data` / `<fs>_metadata` / `.mgr`
@@ -363,7 +363,7 @@ re-done **on** the cluster by the setup script, where the truth is.
 | Symptom | Cause |
 |---|---|
 | `Error initializing cluster client: ... error calling conf_read_file` | Not root. `/etc/pve/ceph.conf` lives in pmxcfs and is root-only — this is also why the repo's `provisioner` user can't run these |
-| Render fails: `ceph_fs_name` is not in BWS | §4.1 — the one prerequisite |
+| Render fails: `ceph_fs_name` is not in 1Password | §4.1 — the one prerequisite |
 | Render fails: mon addresses not on the Ceph public network | You read them off the cluster/replication network. Use `ceph mon dump` |
 | Setup refuses: pool is registered as a PVE storage | The name collides with a real PVE storage. Pick another `rbd_pool`; never share a pool with PVE |
 | Setup refuses: pool exists but is not tagged for rbd | The name collides with something else real. Investigate before renaming |

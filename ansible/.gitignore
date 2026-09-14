@@ -1,4 +1,4 @@
-# ⚠ RETIRED — secrets now come from Bitwarden Secrets Manager at run time and
+# ⚠ RETIRED — secrets now come from 1Password at run time and
 # there is no vault.yml (docs/decisions/0027-control-node-secrets-bws-runtime.md). These patterns
 # stay as a backstop so a leftover file from before the migration, or one
 # created out of habit, can never be committed.
@@ -10,9 +10,17 @@ inventory/group_vars/all/vault.yml*
 inventory/group_vars/**/vault.yml*
 .vault-pass
 
-# One-shot vault->BWS migration output (playbooks/port-vault-to-bws.yml).
-# One plaintext file per secret, 0600 in a 0700 dir. Delete once ported.
-.bws-port/
+# ⚠ RETIRED, kept as a backstop. The one-shot import play that wrote here was
+# deleted after the cutover (ADR-0034), so nothing creates this any more — but
+# the pattern stays, exactly like the vault.yml* ones above, because the thing
+# it guards is the worst artifact this repo can produce.
+# Rendered 1Password import template (was playbooks/render-1password-import.yml).
+# ⚠ The most sensitive artifact this repo can produce: EVERY credential, in
+# plaintext, in one JSON file — that is the point of it, since 1Password's own
+# CLI warns against passing secret values as command arguments. It exists for
+# the minutes between rendering and `op item create`, and the play's last
+# instruction is to shred it. NEVER commit. Regenerate if needed; delete after.
+.1password/
 
 # Transpiled artifacts / build scratch
 *.ign
@@ -23,8 +31,8 @@ inventory/group_vars/**/vault.yml*
 .kube/
 
 # Rendered pfSense/FRR config (playbooks/render-frr-config.yml). frr.conf
-# embeds the FRR master password (from BWS), so it's a credential-bearing
-# artifact — NEVER commit. Regenerate on demand from inventory/nodes.yml + BWS; the
+# embeds the FRR master password (from the secret store), so it's a credential-bearing
+# artifact — NEVER commit. Regenerate on demand from inventory/nodes.yml + the store; the
 # committed inputs are the template and the node map, not this output.
 .frr/
 

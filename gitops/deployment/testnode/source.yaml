@@ -7,7 +7,7 @@
 # primes and Flux then adopts + drift-corrects — the same "Ansible primes, Flux
 # adopts" handoff as Calico.
 #
-# ⚠ SELF-MANAGED: this file lives INSIDE ./deployment/homelab, the path the
+# ⚠ SELF-MANAGED: this file lives INSIDE ./deployment/testnode, the path the
 # flux-system Kustomization (sync.yaml) reconciles, so Flux owns it after
 # bootstrap. Treat an edit here like a CI secret — a bad or unsigned artifact
 # reference is self-inflicted lockout, recovered only by re-running

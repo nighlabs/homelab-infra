@@ -13,6 +13,412 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-09-13 — 1Password cutover verified; Bitwarden deleted
+
+**Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) (now Accepted,
+verified) · [ADR-0033](decisions/0033-secrets-fact-broker.md) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) (superseded, and
+now with no code left behind it).
+
+Vaults created and the `control-node` item populated by hand from the rendered
+import template. Gate run against **both live stores** before deleting anything.
+
+| Check | Result |
+|---|---|
+| `render-frr-config.yml` under each backend | byte-identical |
+| `render-ceph-setup.yml` under each backend | byte-identical |
+| all 29 secrets compared value-by-value | 28 shared names, **0 differing**; only delta = the expected cluster rename, value confirmed intact |
+| renders after the teardown vs during the gate | identical — removal changed no behaviour |
+
+⚠ **The byte-identical render is necessary but NOT sufficient, and that nearly
+mattered.** Those two templates only consume part of the store — nothing in
+either touches `proxmox_api_*`, `ssh_authorized_keys` or the k3s join token. A
+mistyped Proxmox token would have passed the documented gate cleanly and failed
+later, at provision time, against a store with no fallback left. So the gate was
+widened to compare every value across both backends, printing names and counts
+only — never a value, never a hash of one. It is the check worth keeping in mind
+for any future store move: *diff the whole store, not just what today's
+templates happen to render.*
+
+Auth is the desktop app integration: **29 secrets in one `op item get`, and no
+token stored anywhere on the control node.**
+
+**Bitwarden removed in full** on ADR-0034's own criteria, all in one commit:
+the backend task, both `library/bws_secret*.py` modules (and the `library/`
+directory), the `library =` line in `ansible.cfg`, `bitwarden-sdk` from
+`pyproject.toml` + `uv.lock`, the `bws_*` vars and `secrets_backend`, the
+one-shot import renderer, and SECRETS.md's migration/cutover sections.
+
+**A simplification worth noticing.** `tasks/load-secrets.yml` stopped being a
+dispatcher and became the loader. ADR-0033 aimed for "the store is reachable
+from exactly two files — the module and the load task"; with the `op` CLI there
+is no custom module, so it is now **one file**, and `ansible.cfg` needs no
+`library =` path at all. The store change bought that, not just a vendor swap.
+
+⚠ **Not code, still outstanding:** delete the `BWS_ACCESS_TOKEN` / `BWS_ORG_ID`
+Keychain items and the Bitwarden machine account. Until then a live credential
+exists for a store nothing reads.
+
+---
+
+## 2026-09-13 — Renamed the k3s cluster `homelab` → `testnode`
+
+**Related:** [ADR-0026](decisions/0026-per-cluster-derivation-from-index.md)
+(the cluster key and what derives from it) ·
+[ADR-0034](decisions/0034-secrets-store-1password.md) (the vault it renames) ·
+[ADR-0028](decisions/0028-gitops-delivery-signed-oci-syncless-fluxinstance.md)
+(the Flux entrypoint path).
+
+The cluster key is load-bearing: it names the kubeconfig cluster/user/context,
+`.kube/<cluster>.config`, the Flux entrypoint `gitops/deployment/<cluster>/`,
+the per-cluster secrets `k3s_token_<cluster>` / `k3s_tls_sans_<cluster>`, and
+now the apps vault `homelab-apps-<cluster>`. All moved together.
+
+⚠ **`homelab` means two different things in this repo, and a blind
+find-and-replace would have broken the second.** The ESTATE is `homelab-infra`
+— the repo (`ghcr.io/nighlabs/homelab-infra`), ADR-0027's project name, and the
+`homelab-` vault prefix — and it does **not** move. Only the *cluster* named
+`homelab` did. The sweep was anchored on `\bhomelab\b(?!-)` so `-infra` /
+`-apps` / the prefix were protected, and `docs/decisions/` + `docs/worklog.md`
+were excluded as records.
+
+⚠ **Two things that regex missed, both worth knowing:**
+
+- **`\b` does not match between `_` and a letter**, so `k3s_token_homelab` and
+  `k3s_tls_sans_homelab` were silently protected — exactly the fields that most
+  needed renaming. Caught by grepping `_homelab\b` afterwards rather than by
+  trusting the sweep.
+- **`homelab-admin`** is the kubeconfig USER, derived as `<cluster>-admin`, so
+  the `(?!-)` guard protecting the estate prefix also protected it. Fixed
+  separately.
+
+**A side benefit:** no cluster is named after the estate any more, so vault
+names stop repeating themselves — `homelab-apps-testnode`, not
+`homelab-apps-homelab`. Worth keeping that way; a cluster named for the estate
+is what made `homelab-infra` / `homelab-apps` read as a matched pair when they
+sit on different axes.
+
+**The old store cannot be renamed, so the import renderer does it.** Bitwarden
+still holds `k3s_token_homelab` and its write machine account was deleted after
+the last migration (ADR-0027), so `render-1password-import.yml` gained an
+explicit one-shot `op_field_renames` map — labels only, values byte-for-byte —
+which prints what it renames before anything is written. Without it the import
+would have created `k3s_token_homelab` in a repo whose only cluster is
+`testnode`, and provisioning would have stopped at preflight *after* the vault
+was already populated wrongly. Verified: `k3s_token_homelab -> k3s_token_testnode`,
+still classified `clusters` / CONCEALED.
+
+**Verification.** `render-frr-config.yml` diffs against the pre-rename baseline
+in **names only** — peer group, prefix-lists (`HOMELAB-IN` → `TESTNODE-IN`) and
+comments. ASN 64601, the LB range and every node address are byte-identical,
+confirming ADR-0026's property that cluster-scoped values derive from `index`
+and not from the name. `render-ceph-setup.yml` is completely unchanged, which is
+the expected result for a site-scoped artifact (ADR-0035). All playbooks
+syntax-check.
+
+⚠ **Two follow-ups this creates:**
+1. **pfSense must be re-pasted.** The peer-group and prefix-list names changed
+   on the router side; the node addresses and ASNs did not. Until then FRR still
+   has `homelab`-named objects.
+2. **The running cluster is not renamed in place.** `gitops/deployment/homelab/`
+   moved, so the live cluster's Flux root points at a path the artifact no
+   longer contains. This is a re-provision, which is the plan anyway.
+
+---
+
+## 2026-09-12 — Moved the secret store to 1Password, read with the `op` CLI; the control node now keeps no secret zero
+
+**Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) (new) ·
+[ADR-0032](decisions/0032-secrets-store-1password-migration.md) (answered) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) (superseded) ·
+[ADR-0009](decisions/0009-secrets-aescbc-and-eso-bitwarden.md) (layer 2 only) ·
+[ADR-0033](decisions/0033-secrets-fact-broker.md) · Code:
+`ansible/playbooks/tasks/load-secrets*.yml`,
+`ansible/playbooks/render-1password-import.yml`, `ansible/SECRETS.md`.
+
+ADR-0032 raised this as an Open question and stopped there. Decided in favour,
+and implemented the control-node half the same day — the broker seal above is
+what made it a two-file change instead of a ~40-site sweep.
+
+**Three reversals, all deliberate, all recorded rather than glossed:**
+
+| Reversed | Because |
+|---|---|
+| ADR-0027: "shelling out is brittle **when the SDK is already a dependency**" | It isn't. 1Password's Python SDK would be a *new* 0.x dep with breaking minors and a native libssl/glibc requirement; `op` is a static Go binary and `--format json` is a contract, not a scraped table. |
+| ADR-0027: grouping rejected because **"a BWS secret has no fields"** | 1Password items have typed, labelled fields. The premise is void, so grouping is now correct rather than a JSON hack — and it is what keeps the call count at one per item. |
+| ADR-0032: **"do not make `op` biometrics the default"** | Overruled *for the control node only*. Secret zero doesn't relocate — it ceases to exist. ESO still uses a scoped service account, because a pod has no desktop app. |
+
+**The auth change is the one worth remembering.** With the desktop-app
+integration there is no token on disk, in a keychain, or in the repo. The trade
+is real and is stated in the ADR: `op` then authenticates as the operator, with
+read/write on every vault they own. It is acceptable because the operator at the
+keyboard already had that access — the token was a boundary against a stolen
+laptop, not against them, and a silently-readable Keychain item was a *worse*
+answer to that threat than Touch ID plus a session timeout. It also deletes the
+immutable-grant trap from this side: with no control-node service account, the
+only fixed grant left is ESO's.
+
+**Migration by rendering, not retyping.** `render-1password-import.yml` reads
+the old store and renders a 1Password item template — same shape as
+`render-ceph-setup.yml`, same reason. ⚠ A *template file*, not `op item create
+name=value`, because 1Password's own CLI warns that assignment statements are
+visible in argv and shell history. It renders rather than writes because
+creating the item needs write access, which no run-time credential here has.
+
+**Verification so far** (live BWS store, 29 secrets, against a `.frr`/`.ceph`
+baseline taken before any change):
+
+| Check | Result |
+|---|---|
+| Import renderer output | valid item JSON; 29 fields → 6 sections, **nothing** in the catch-all (asserted, not observed); labels unique; both STRING and CONCEALED present |
+| Bitwarden backend through the new dispatcher | byte-identical renders, re-checked after every commit — the control for the whole migration |
+| 1Password path reaches `op` | reports desktop-app mode and the correct "enable the integration" instruction with no account configured; `op` 2.39.0 clears the >= 2.18.0 assert |
+| `--syntax-check`, all seven playbooks | pass |
+
+⚠ **The parallel run has NOT happened** — no vault or item exists yet. Until
+`render-frr-config.yml` and `render-ceph-setup.yml` are byte-identical under
+*both* backends, the Bitwarden half stays. ADR-0034 lists what gets deleted, and
+it is deleted together.
+
+**Two findings that outlive the migration:**
+
+- ⚠ **A latent ADR-0027 bug, exposed the first time it mattered.** The Keychain
+  `pipe` lookup turns `security`'s exit-44 into a hard AnsibleError *while
+  resolving the variable* — before the assert that explains how to create the
+  item. So on any machine without the item, the carefully-written "here is the
+  `security add-generic-password` command" message **could never render**; you
+  got `lookup_plugin.pipe(...) returned 44`. Same shape as the
+  `render-ceph-setup.yml` trap found hours earlier: a good error message behind
+  a failure that fires first. Fixed on the 1Password path; the masking cost (a
+  locked keychain now reads as "no token") is named in the fail_msg.
+- ⚠ **`op` treats the PRESENCE of `OP_SERVICE_ACCOUNT_TOKEN` as mode selection.**
+  Exporting it empty selects service-account mode and then fails to
+  authenticate, instead of falling back to the desktop app — and the resulting
+  error talks about a bad token on a machine that was never meant to have one.
+  The task therefore builds the environment conditionally rather than passing
+  `""`. Caught by reasoning about the fallback, not by hitting it.
+
+**Also corrected while sweeping:** "ESO sits below cert-manager" is now **false**
+— no in-cluster server, no certificate — so both copies of that rule were
+replaced, each noting where it came from so it isn't reinstated from memory.
+`cluster-topology` was split into its own bullet: it had been written as a rider
+on that chain, but survives for unrelated reasons (one-pass tier application;
+Calico primed before Flux), and leaving it attached to a now-false claim would
+have made it look retired. The `infrastructure-config` split question lost its
+only hard forcing edge as a result, and is now coupled to the ESO-adoption
+question — they must be decided together.
+
+⚠ **The sweep was scoped by explicit file list**, never `grep -rl | xargs`:
+`docs/worklog.md` is append-only and `docs/decisions/*` are records. ADR-0032
+warned about exactly this.
+
+**Corrected on review: the apps side is now ONE VAULT PER CLUSTER.** The first
+pass carried ADR-0027's single shared apps project straight across. That shape
+was a **budget artefact, not a judgement** — BWS capped the free tier at 3
+projects / 3 machine accounts, which is the same squeeze that forced deleting
+its migration write account. 1Password allows 100 service accounts and unlimited
+vaults, so the per-cluster split the blast-radius argument always wanted is
+simply affordable: `<cluster>-apps`, one ESO service account each, and
+`eso_op_service_account_token_<cluster>` in the infra vault, cluster-suffixed
+exactly like `k3s_token_<cluster>` (ADR-0026). ⚠ The infra vault stays
+**fleet-wide** on purpose — the control node provisions every cluster, so
+splitting it would fragment one Proxmox credential across vaults the same actor
+reads anyway. No code change: the loader reads one vault and that is still
+correct; ESO's SecretStore names its own.
+
+⚠ **A guard added with it.** `render-1password-import.yml` renders ONE item
+holding every secret, titled `op_items[0]` — right for the migration (BWS had
+29 flat secrets, no items), wrong the moment `op_items` grows for the ESO item,
+when the extra titles would be silently ignored and their fields swept into the
+first item. It now refuses, and says the real answer: by then this one-shot play
+should already be deleted. Verified both ways.
+
+⚠ **Vault naming settled before anything was created:** `homelab-` + scope +
+(cluster) — `homelab-infra`, `homelab-apps-<cluster>` — so they group in
+1Password and state their own scope. Two forms were rejected. `<cluster>-apps`
+gave `homelab-infra` + `homelab-apps`, which read as a matched pair while
+sitting on **different axes** (the first is named for the REPO and is
+fleet-wide; the second for the CLUSTER KEY) — at cluster #2 that becomes
+`homelab-infra`, `homelab-apps`, `edge-apps` and invites reading the infra vault
+as cluster `homelab`'s. And `k8s-`, because `homelab-infra` holds the Proxmox
+API token, SSH keys, Ceph credentials and the FRR password, and ADR-0001 keeps
+the Mac tier out of Kubernetes — so that prefix would be wrong twice over. Free
+to settle because no vault existed yet; the same class of mistake as a guard
+whose stated reason doesn't match its actual scope, which this session has now
+hit three times.
+
+**Raised while reviewing the vault layout: a THIRD scope the repo doesn't have**
+— [ADR-0035](decisions/0035-site-scope-multiple-proxmox-clusters.md), Open.
+Everything is fleet-wide or per-k3s-cluster today, but `proxmox_*`, `ceph_*` and
+`dmz_*` are neither: they belong to a **site** (one Proxmox cluster + its Ceph +
+its L2), and several k3s clusters can share one. Nothing is wrong today — there
+is one of each — but the assumption was stated as a *fact* in two places, which
+is the expensive kind. ⚠ Concretely: the global `node_number` uniqueness assert
+is justified in `load-node-map.yml` by "all clusters share the DMZ/Ceph subnets
+and the Proxmox vmid space", so at site #2 it goes from correct to
+**wrong-by-being-too-strict** — it would reject a valid node map, and the
+tempting fix (loosen the assert) is the wrong one. Both sites of that assumption
+are now labelled and point at the ADR.
+
+**Three of its rules were settled on review (2026-09-13), leaving only the
+implementation open:**
+
+- ⚠ **`node_number` / hostname uniqueness stays GLOBAL — but as a REQUIREMENT,
+  not as a consequence.** The distinction is the whole value here. The old
+  justification ("all clusters share the DMZ/Ceph subnets and the vmid space")
+  expires at site #2, which would make a correct guard look wrong and invite
+  someone to loosen it. The rule is kept on new footing: a node may move to
+  another Proxmox node, another site, or a completely separate network, and a
+  globally unique number means such a move is never an identity change. The
+  assert is untouched; only its reason changed, in both places that stated it.
+- ⚠ **`cloudflare_api_token` is ZONE-scoped, not fleet-scoped.** `vars.yml`
+  undersold it as forkable "if per-cluster revocation is wanted" — it is a
+  **correctness** constraint: the token is restricted to specific zone
+  resources, so a token for zone A cannot solve DNS-01 for zone B. It is one
+  scope with `base_domain` and they must fork together, or a cluster can name a
+  hostname it cannot get a certificate for. Subdomains of one zone keep a single
+  token serving everything.
+- **Vaults are for access, suffixes are for description.** Considered using
+  per-site vaults as the namespace (bare `proxmox_api_host` in each) and
+  rejected it for now: the control node provisions *every* site, so there is no
+  access boundary to draw, and a per-site vault would be a namespace wearing an
+  access-control costume. It would also fork ADR-0033's flat `secrets` contract
+  into two shapes. ⚠ Revisit if a scoped-per-site operator ever becomes real —
+  that would make sites a genuine boundary, exactly as clusters are for ESO.
+
+The reassuring half: the *store* needs no new machinery. Field labels are a flat
+global namespace suffixed by owning scope (`proxmox_api_host_<site>` alongside
+`k3s_token_<cluster>`), items are organisational only — ⚠ they cannot be the
+namespace, because labels must be globally unique across items — so the loader,
+the broker and `secret_names` are untouched. That falls straight out of
+ADR-0033's flat `secrets` shape.
+
+**Open, and it is a subscription question rather than an engineering one:**
+1Password's daily cap is **per account, shared across every service account** —
+1,000/24h on Individual/Families. Ansible is nowhere near it (~4 calls per
+`site.yml`). ESO would be: ~480/day at the default `1h` refresh with 20
+`ExternalSecret`s, and per external-secrets#4925 an invalid token can exhaust a
+*daily* quota at retry cadence in ~20 minutes. Set `refreshInterval`
+deliberately at that milestone, and re-evaluate the plan tier.
+
+---
+
+## 2026-09-12 — Sealed the secrets broker: `secret_names` published, `bws.*` gone from call sites, fact renamed to `secrets`
+
+**Related:** [ADR-0033](decisions/0033-secrets-fact-broker.md) (now Accepted, verified) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) ·
+[ADR-0026](decisions/0026-per-cluster-derivation-from-index.md) ·
+Code: `ansible/playbooks/tasks/load-secrets.yml`,
+`ansible/inventory/group_vars/all/vars.yml`, `ansible/inventory/hosts.yml`,
+`ansible/roles/flatcar_vm/tasks/preflight.yml`,
+`ansible/playbooks/render-ceph-setup.yml`.
+
+Implemented as argued, in two commits — the seal, then the rename — because a
+~40-site mechanical rename folded into a behavioural change is an unreviewable
+diff.
+
+**The seal.** `secret_names` is published from the `names` list the module was
+already returning and already printing. The two *structural* sites were rewritten
+against it and now read no secret value at all; the two plain leaks
+(`proxmox_ssh_addr`, `proxmox_ssh_user`) got brokered variables.
+
+⚠ **One thing the ADR did not anticipate.** `render-ceph-setup.yml`'s CephFS-name
+assert could not simply move to the brokered `ceph_csi.fs_name`: reading *any*
+key of `ceph_csi` templates the whole dict, and on a first run `ceph_csi.mons`
+calls `.splitlines()` on an absent secret and raises a Jinja error in place of
+the carefully-worded `fail_msg` — the very trap the original `bws.ceph_fs_name`
+dereference existed to dodge. Fixed with a standalone `ceph_fs_name` broker
+(one reference to the secret, `ceph_csi.fs_name` sourced from it). The assert
+also relies on `assert` short-circuiting on the first false condition, so the
+presence test must be listed *before* the length test; that ordering is now a
+comment at the site, because it is invisible otherwise.
+
+**Verification** (live store, 29 secrets):
+
+| Check | Result |
+|---|---|
+| `render-frr-config.yml` + `render-ceph-setup.yml` byte-identical to a pre-change baseline | pass, after the seal **and** again after the rename; `changed=0` both times |
+| `k3s_tls_sans_*` assert still fires | pass — poisoned with a `k3s_tls_sans_ghost` name via `-e`, failed naming `ghost`, aborted in preflight before any Proxmox call |
+| new name-list gates vs the old dict gates | identical on every secret; `secret_names` sorted and equal to `secrets.keys()` |
+| `--syntax-check` on all seven playbooks | pass |
+
+**Lesson, and it cost a failed run.** The rename swept `bws.`, `` `bws` ``,
+`bws[` and `) in bws` — but not the `set_fact` **key** `bws:` itself, which is
+the one place the name is defined rather than used. Every consumer moved to
+`secrets` while the fact was still published as `bws`, and the whole repo failed
+with `'secrets' is undefined`. A rename regex that covers every *reference* and
+misses the *definition* fails 100% of the time, which is the good case — caught
+by simply running the safest play. The byte-identical baseline is what made
+"caught immediately" possible.
+
+**Not done here, deliberately:** the `bws_*` connection variables, the
+`bws_secrets` module and the `bws_fetch` register still name Bitwarden. They
+describe the vendor connection, and go with the store rather than with this
+record — so `grep -rn 'bws' ansible/` is expected to be non-empty until it does.
+
+---
+
+## 2026-09-12 — Explored replacing BWS with 1Password; found two claims already wrong
+
+**Related:** [ADR-0032](decisions/0032-secrets-store-1password-migration.md) (Open) ·
+[ADR-0033](decisions/0033-secrets-fact-broker.md) (Proposed) ·
+[ADR-0027](decisions/0027-control-node-secrets-bws-runtime.md) ·
+[ADR-0009](decisions/0009-secrets-aescbc-and-eso-bitwarden.md) ·
+[ADR-0021](decisions/0021-topology-blinding-postbuild-substitution.md)
+
+No migration performed and none decided. Recorded as an Open ADR because the
+investigation turned up things that outlive the question, and because the
+answer gets more expensive after the ESO milestone rather than before.
+
+**Two corrections landed, both true regardless of any store change:**
+
+| Found | Fix |
+|---|---|
+| `tasks/load-bws-secrets.yml` claimed Keychain unlock "is Touch ID rather than a typed passphrase". `vars.yml` says the opposite, in detail, and is right — `security` has no biometry flag. | Comment rewritten, pointing at the authoritative note. |
+| The "ESO cannot be pulled earlier" chain is written as SDK Server → cert → **Gateway → LoadBalancer IP → BGP**. The last two links do not belong: this cluster issues by **DNS-01**, which solves with no inbound path. Gateway and LB IP are what *serving* the wildcard needs, not *issuing* it. | Reference text corrected in root `CLAUDE.md` and `architecture.md` §3.6. ADR-0009/0021 left standing — records are not edited to change the past; ADR-0032 carries the correction. |
+
+The second one also cost `cluster-topology`'s stated justification, so the
+reference text now gives the two reasons that actually hold: a tier applies in
+**one pass with no intra-tier ordering**, so a Secret produced by a controller
+inside `infrastructure` can never be a `postBuild` source for `infrastructure`;
+and Calico is Ansible-primed from the same values before Flux exists (ADR-0016).
+The conclusion — permanently Ansible-seeded — was never in doubt; only the
+argument for it was wrong.
+
+**On the swap itself.** `feat/eso` was zero commits ahead of `main` with a
+clean tree, so the cluster half is greenfield — not a migration, just a
+different choice at an unstarted milestone, and the cheaper one there (the
+1Password SDK provider runs **no in-cluster server**, so no Deployment,
+Service, `Certificate` or image digest). The control-node half is ~3–4 days,
+more than half of it prose.
+
+⚠ The finding that would decide it: 1Password's daily rate limit is **per
+account, shared across every service account** — 1,000/24h on
+Individual/Families. Ansible fits easily (~20 calls per `site.yml` with grouped
+items). ESO does not: ~480/day at the default refresh with 20 `ExternalSecret`s,
+and per external-secrets#4925 an invalid token consumes quota at retry cadence
+and can exhaust a **daily** limit in ~20 minutes — locking out ESO *and* the
+control node, including the playbook that would fix it. Below Teams this is a
+regression against BWS's undocumented-but-burst-shaped throttling.
+
+One genuine reversal is available if it proceeds: ADR-0027 rejected grouping
+secrets because *"a BWS secret has no fields"*. 1Password items have typed,
+labelled fields, so that premise is simply void — grouping by purpose becomes
+correct rather than a JSON hack, and it is also what keeps the call count down.
+
+**ADR-0033 split out deliberately.** Grepping for consumers showed the `bws`
+fact escaping its `vars.yml` broker in four files. Two are ordinary omissions;
+two are **structural** — `preflight.yml`'s `k3s_tls_sans_*` guard and
+`render-ceph-setup.yml`'s presence checks ask questions about the *set of
+secret names*, which a brokered value cannot express, so there is no correct
+way to write them today. The module already returns a safe-to-log `names` list
+that is printed but never published as a fact. Publishing it as `secret_names`
+fixes both, and drops those tasks out of the `no_log` blast radius of a
+structure whose values they never read. Correct either way, so it is not
+buried inside the contested decision.
+
+---
+
 ## 2026-09-07 — ceph-csi live against the Proxmox Ceph: both StorageClasses provisioning, RBD on krbd
 
 **Related:** [ADR-0006](decisions/0006-ceph-csi-external-proxmox-ceph.md) ·

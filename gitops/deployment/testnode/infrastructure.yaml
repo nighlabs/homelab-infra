@@ -20,7 +20,7 @@ spec:
   dependsOn:
     - name: crds
   # ⚠ Artifact-root-relative (the OCI artifact root IS gitops/), so no ./gitops
-  # prefix — the root Kustomization (sync.yaml) reconciles ./deployment/homelab
+  # prefix — the root Kustomization (sync.yaml) reconciles ./deployment/testnode
   # from the same artifact, and this tier lives at ./infrastructure within it.
   path: ./infrastructure
   prune: true

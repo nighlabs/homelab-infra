@@ -11,7 +11,7 @@ kind: Kustomization
 # primes both at bootstrap; Flux owns them thereafter.
 #
 # ⚠ THE DIRECTORY NAME IS THE CLUSTER KEY from ansible/inventory/nodes.yml
-# (`homelab`), not a node name. `flux_sync_path` derives the sync path as
+# (`testnode`), not a node name. `flux_sync_path` derives the sync path as
 # `gitops/deployment/{{ cluster_name }}`, so renaming this directory silently
 # points Flux at a path that doesn't exist — the GitRepository stays Ready
 # (the repo cloned fine) while the flux-system Kustomization fails on a missing

@@ -9,8 +9,23 @@
 # flatcar_vm role provisions a VM the same way regardless of which cluster it
 # joins. One flat map gives both, without every consumer walking two levels.
 #
-#   clusters: {homelab: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
-#     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: homelab}}
+# ⚠ THE REASON ABOVE IS A CONSEQUENCE; THE RULE IS A REQUIREMENT. Don't confuse
+# them, because the consequence expires and the rule does not. Shared subnets
+# and a shared vmid space are true only while there is ONE Proxmox cluster with
+# ONE Ceph; a second one has its own subnets and its own `qm` vmid space, so
+# *that* argument for global uniqueness evaporates.
+#
+# Global uniqueness is kept anyway, deliberately (ADR-0035): a node may be moved
+# to another Proxmox node, another site, or a completely separate network, and a
+# globally unique node_number means such a move is never an identity change —
+# no renumbering, no IP/vmid reshuffle, nothing to reconcile. Hostnames likewise.
+#
+# ⚠ So when a second Proxmox cluster arrives, do NOT loosen this assert to
+# per-site on the grounds that the collision domain shrank. The collision domain
+# did shrink; the requirement is simply stricter than it, on purpose.
+#
+#   clusters: {testnode: {nodes: {snoop-a2o: {node_number: 50, ...}}}}
+#     -> nodes: {snoop-a2o: {node_number: 50, ..., cluster: testnode}}
 
 - name: Flatten clusters → a cluster-annotated node map
   ansible.builtin.set_fact:

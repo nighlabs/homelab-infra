@@ -53,7 +53,7 @@ than rewriting the source. That collapses the four-row matrix in
 | eBPF + `Cluster` + ECMP | ✓ per-flow across nodes | ✓ all replicas cluster-wide | **✓ preserved** |
 
 The `Local`-vs-`Cluster` trade stops existing. **That — not throughput — is the
-reason to do this.** At homelab scale the CPU and latency savings from dropping
+reason to do this.** At testnode scale the CPU and latency savings from dropping
 kube-proxy are real but negligible; do not let them drive the decision.
 
 **⚠ DSR is explicitly NOT part of this.** Source IP preservation comes from

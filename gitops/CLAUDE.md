@@ -18,16 +18,16 @@ the way it is: `../docs/decisions/` (ADR-NNNN). What's been verified when:
   signed by this repo's workflow identity (ADR-0028). **Pushing to `main` does
   not reach the cluster on its own** — merge → CI signs → Flux pulls.
 - **The artifact root is `gitops/` itself.** Every path Flux is given is
-  artifact-relative: `./deployment/homelab`, `./crds`, `./infrastructure`,
+  artifact-relative: `./deployment/testnode`, `./crds`, `./infrastructure`,
   `./apps` — **no `./gitops` prefix**. Get this wrong and the source goes Ready
   while the Kustomization fails "path not found".
 - The `latest` tag is mutable by design and is moved only *after* the digest
   is signed. To freeze on a known-good artifact, set `ref.digest` in
-  `deployment/homelab/source.yaml`. `--reproducible` stabilises the layer
+  `deployment/testnode/source.yaml`. `--reproducible` stabilises the layer
   digest, not the manifest digest (the revision label embeds the commit SHA),
   which is why the workflow's trigger negates `gitops/**/*.md`.
 - The package is **public**, so there is no pull secret. If it ever goes
-  private: a BWS secret + `spec.secretRef` on the `OCIRepository`.
+  private: a 1Password-sourced Secret + `spec.secretRef` on the `OCIRepository`.
 
 ## Layout (four tiers)
 
@@ -50,7 +50,7 @@ infrastructure/           # controllers, in dependency order:
   nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart, shared Gateway, https redirect
   cert-manager/             #   controller only — its CRs live a tier down
   ceph-csi-operator/        #   VENDORED manifests, not a HelmRelease (ADR-0031)
-  kustomization.yaml        #   next: ESO + Bitwarden SDK -> ...
+  kustomization.yaml        #   next: ESO (1Password SDK provider) -> ...
 infrastructure-config/    # CRs CONSUMED BY those controllers (CRDs arrive with the chart,
   cert-manager/           #   so same-pass apply fails): ClusterIssuers + wildcard Certificate
   ceph-csi/               #   CephConnection, ClientProfile, 2 Drivers, 2 StorageClasses
@@ -68,7 +68,7 @@ apps/                     # workloads only (empty until the infra layer is up)
   committed root is self-inflicted lockout, recovered by re-running
   `flux-bootstrap.yml` (which is why that play stays idempotent).
 - **The directory name IS the cluster key** from `ansible/inventory/nodes.yml`
-  (`homelab`) — `flux_sync_path` derives from it. Rename both or neither.
+  (`testnode`) — `flux_sync_path` derives from it. Rename both or neither.
 - **`infrastructure/` vs `apps/`:** controllers (CNI, ingress, CSI, secrets) in
   `infrastructure/`; only workloads in `apps/`. `apps` `dependsOn`
   `infrastructure`, so nothing reconciles before the controllers are Ready.
@@ -166,7 +166,7 @@ spec:
 
 | Placeholder | Defined in |
 |---|---|
-| `${bgp_peer_ip}` | `dmz_network.gateway` (BWS) |
+| `${bgp_peer_ip}` | `dmz_network.gateway` (1Password) |
 | `${lb_range}` | `lb_range_base` + cluster `index` |
 | `${bgp_peer_asn}` | `bgp_peer_asn` (cleartext constant) |
 | `${cluster_asn}` | `bgp_asn_base` + cluster `index` |
@@ -194,7 +194,7 @@ spec:
   value that is already a complete JSON array (valid YAML flow sequence) and
   substitute it whole. `CephConnection.spec.monitors: ${ceph_mons_yaml}` does
   this, from `ceph_csi.mons | to_json` in `bootstrap-cluster.yml`, so the mon
-  count lives in BWS rather than being baked into the manifest as
+  count lives in 1Password rather than being baked into the manifest as
   `${ceph_mon_1..3}`. The `to_json` quoting is load-bearing — an unquoted
   `host:port` is not a valid scalar in flow context.
 - **Keep substituted resources out of kustomize `Components`** —
@@ -203,7 +203,7 @@ spec:
 - **SOPS/age is the fallback, not the default** — only where substitution
   can't go (whole blocks/lists, kustomize-*build*-time values). If ever
   needed: the age key arrives as Secret `sops-age` in `flux-system`, key file
-  `age.agekey`, Ansible-seeded from BWS; `apiVersion`/`kind`/`metadata` can
+  `age.agekey`, Ansible-seeded from 1Password; `apiVersion`/`kind`/`metadata` can
   never be encrypted.
 
 ## Calico BGP — CRs, not Helm values (ADR-0018, ADR-0023)
@@ -268,10 +268,59 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 ## Next
 
 Everything downstream of storage, in dependency order (the `NginxProxy`
-RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013): ESO +
-Bitwarden SDK Server (its access token is Ansible-seeded from the
-`homelab-infra` BWS project; app secrets come from a *separate* project —
-ADR-0027; **open, decide at this milestone:** whether ESO adopts the
-cluster-destined bootstrap-seeded Secrets such as the cert-manager Cloudflare
-token — `docs/decisions/README.md`, "Open questions") → Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel.
-Design: `../docs/architecture.md` §3.8, §4.5–4.9, §7.
+RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013): **ESO
+with the 1Password SDK provider** → Postgres + Redis → LiteLLM → Qdrant → RAG →
+Open WebUI → OTel. Design: `../docs/architecture.md` §3.8, §4.5–4.9, §7.
+
+### What the store change (ADR-0034) means for this tier
+
+⚠ **There is NO in-cluster secrets server.** The Bitwarden design needed a
+`Deployment` + `Service` + `Certificate` + a pinned image digest for the SDK
+Server; the 1Password SDK provider talks to the vendor API directly. Nothing to
+run, nothing to pin, no cert. This is the single biggest reason the swap was
+made before the milestone rather than after — porting ESO twice was the
+expensive path.
+
+⚠ **ESO's earliest position moves to "immediately after Calico"** — exactly
+where the reserved slots already put it, so no re-tiering. What still
+constrains it: CRDs Established, pod networking, egress to the vendor API
+(pod→node NAT, **not** BGP, which advertises LoadBalancer ranges *inbound*),
+and its own Ansible-seeded token Secret. ESO's admission webhook certs come
+from its own bundled `cert-controller`, never cert-manager.
+
+⚠ **Two open questions became coupled and must be decided together** — the
+`infrastructure-config` per-domain split and whether ESO *adopts* the
+bootstrap-seeded Secrets. The split's only hard forcing edge was "ESO's
+SecretStore needs cert-manager's `Certificate`", and that edge no longer
+exists; the one way to reintroduce one is to source cert-manager's Cloudflare
+token *from* ESO. `docs/decisions/README.md`, "Open questions".
+
+**Vendor-specific shape**, when it is written — this is the right home for it;
+`../ansible/SECRETS.md` deliberately stops at the vault boundary and covers
+only what the control node creates and reads:
+
+- A `ClusterSecretStore` naming **this cluster's own** `homelab-apps-<cluster>` vault
+  (`homelab-apps-testnode` for `testnode`). It cannot reach `homelab-infra`, nor another
+  cluster's apps vault — a store names exactly one vault, which is what makes
+  the consumer split structural rather than a matter of discipline.
+- ⚠ **One vault and one service account PER CLUSTER**, same blast-radius
+  argument as per-cluster k3s join tokens (ADR-0026): a compromised cluster
+  must not take the fleet with it. ADR-0027 specified a single shared apps
+  project only because BWS capped the free tier at 3 projects / 3 machine
+  accounts; 1Password allows 100 service accounts and unlimited vaults, so that
+  constraint is gone (ADR-0034).
+- Auth from an Ansible-seeded Secret holding
+  `eso_op_service_account_token_<cluster>`, which lives in the
+  **`homelab-infra`** vault (the control node seeds it; ESO must never be able
+  to rotate the credential gating its own access).
+- ⚠ The ESO service account's vault grant is **immutable**, fixed at creation.
+  It cannot be widened later — so create one account per cluster from the
+  start; retrofitting a narrower grant means a new account and a new token.
+- ⚠ **Rate limits are the real design constraint, not throughput.** The daily
+  cap is per *account*, shared across every service account, and is 1,000/24h
+  on Individual/Families. Steady state is roughly
+  `N_externalsecrets × (24h / refreshInterval)` — ~480/day at the default `1h`
+  with 20 `ExternalSecret`s. Set `refreshInterval` deliberately; do not leave
+  it at the default and hope. See ADR-0034's rate-limit section before
+  starting, including the error-amplification case where an invalid token
+  exhausts a *daily* quota in minutes and locks out the control node too.

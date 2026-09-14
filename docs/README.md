@@ -15,9 +15,9 @@ reference docs turned into a worklog.
 - **New here?** [`../README.md`](../README.md) for the one-screen overview and
   current status, then [`architecture.md`](architecture.md).
 - **Running it?** [`../ansible/README.md`](../ansible/README.md) — prerequisites,
-  one-time Proxmox/BWS setup, the plays, the definition-of-done checks, and
+  one-time Proxmox/1Password setup, the plays, the definition-of-done checks, and
   troubleshooting. The secrets manifest is
-  [`../ansible/BWS-SECRETS.md`](../ansible/BWS-SECRETS.md).
+  [`../ansible/SECRETS.md`](../ansible/SECRETS.md).
 - **Changing cluster contents?** [`../gitops/CLAUDE.md`](../gitops/CLAUDE.md) —
   the four-tier layout, the adoption pattern, the substitution rules and their
   traps.
