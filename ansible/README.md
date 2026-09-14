@@ -399,7 +399,30 @@ still hold keys for?" an `ls`.
 
 ⚠ With a `KUBECONFIG` list the **first file's `current-context` wins**, so there
 is no "make this the active context" knob any more — it could not mean anything
-reliably across several files. Switch with `kubectl config use-context <cluster>`.
+reliably across several files.
+
+**Switching contexts**, in increasing order of statefulness:
+
+```sh
+kubectl --context testnode get nodes                            # per-command, writes nothing
+KUBECONFIG=~/.kube/configs/testnode.config kubectl get nodes    # scope to one file
+kubectl config use-context testnode                             # persists - see the warning
+```
+
+⚠ **`kubectl config use-context` writes to the FIRST file in the `KUBECONFIG`
+list, not to the file that owns the context.** Verified: with
+`alpha.config:beta.config`, switching to `beta` writes `current-context: beta`
+into **`alpha.config`**. It behaves correctly — the first file's
+`current-context` is also what wins on read — but you get a per-cluster file
+naming a *different* cluster's context, which reads as corruption when you next
+open it.
+
+A switcher that mutates nothing, and makes the active cluster visible in the
+environment:
+
+```sh
+kctx() { export KUBECONFIG=~/.kube/configs/$1.config; }   # kctx testnode
+```
 
 Knobs, both in `group_vars/all/vars.yml`:
 
