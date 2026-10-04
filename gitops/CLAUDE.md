@@ -85,7 +85,7 @@ apps/                     # workloads only (empty until the infra layer is up)
   before relying on `wait: true`, check the resource actually reports status.
 - **`postBuild.substituteFrom` is on `infrastructure`, `infrastructure-config`
   and `apps`, deliberately not on `crds` or the root.** kustomize-controller only runs substitution when
-  `spec.postBuild` is set; leaving it off `crds` keeps 3 MB of generated CRD
+  `spec.postBuild` is set; leaving it off `crds` keeps ~5 MB of generated CRD
   text from being scanned and, under the strict gate, from hard-failing the
   tier everything depends on. `apps` has the block *before* it has any
   placeholder, so the first one added is covered by the gate.
@@ -144,11 +144,13 @@ hand-edited) on every `calico_version` bump, in the same commit as `vars.yml`
   the whole operator is installed from vendored manifests (ADR-0031). Before
   assuming a chart can install its own CRDs, check the rendered size —
   `helm template ... | ...` — against 262144 bytes per object.
-- **Open follow-on:** render the CRDs at OCI build time so the 3 MB stops
-  living in Git. Two constraints must survive: the version must come from the
-  same pin as `calico_version`, and `bootstrap-cluster.yml` primes from the
+- **Open follow-on:** render the CRDs at OCI build time so the ~5 MB (Calico
+  2.9 MB, Gateway API and ceph-csi 1 MB each) stops living in Git. For
+  Calico two constraints must survive: the version must come from the same
+  pin as `calico_version`, and `bootstrap-cluster.yml` primes from the
   vendored file — Git can't stop carrying it until Ansible has another source
-  at the same pin.
+  at the same pin. **Gateway API and ceph-csi have no Ansible prime**, so
+  they are the easy ones and could move first (ADR-0031).
 
 ## Topology blinding — `${var}` placeholders (ADR-0021)
 

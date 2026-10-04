@@ -79,7 +79,9 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   `cloudflare_api_token` are one scope and must fork together — a zone-scoped
   token cannot solve DNS-01 for another zone. Decide with the split-horizon
   resolver question above; they are the same conversation.
-- Rendering Calico's CRDs at OCI build time instead of vendoring (0020).
+- Rendering the vendored CRDs (Calico, Gateway API, ceph-csi) at OCI build
+  time instead of vendoring (0020, 0031). Only Calico's is blocked by the
+  Ansible prime.
 - Control-node kubeconfig hygiene — `ansible/CLAUDE.md`, "Open items".
 - Whether ESO, once live, **adopts** the cluster-destined bootstrap-seeded
   Secrets (first case: cert-manager's Cloudflare DNS-01 token), or they stay

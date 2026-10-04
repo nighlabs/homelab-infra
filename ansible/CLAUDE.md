@@ -60,9 +60,9 @@ Every play that reads a `{{ secrets.* }}` value includes
 `clusters` into a cluster-annotated `nodes` map and asserts **global**
 hostname/`node_number` uniqueness.
 
-**The dual-applied set is deliberately small** (ADR-0016): Calico's values, the
-vendored CRDs, the BGP CRs, the #12890 workaround, the endpoint ConfigMap, and
-the Flux root. Everything after Flux exists is Flux-only. `flux build` is the
+**The dual-applied set is deliberately small** (ADR-0016): Calico's values, its
+vendored CRDs (Calico's only — Gateway API and ceph-csi are Flux-only), the
+BGP CRs, the #12890 workaround, the endpoint ConfigMap, and the Flux root. Everything after Flux exists is Flux-only. `flux build` is the
 tool when priming a substituted manifest, never the default posture.
 
 ## Node map and derivation
