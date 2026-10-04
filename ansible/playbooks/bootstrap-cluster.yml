@@ -386,22 +386,6 @@
         wait: true
         timeout: 10m0s
 
-    # ⚠ WORKAROUND for projectcalico/calico#12890 — see ADR-0019 and the header
-    # in the manifest itself. Applied HERE, immediately after the operator and
-    # before anything can try to allocate a LoadBalancer IP, because the failure
-    # it prevents is invisible from the BGP side: LB IPs sit `pending` while
-    # routes advertise perfectly normally.
-    #
-    # Plain RBAC — no Calico CRDs or apiserver involved — so it has no ordering
-    # dependency beyond "a cluster exists". No ${...} placeholders either, hence
-    # a straight `src:` rather than the substitution treatment below.
-    - name: Prime the #12890 LoadBalancer-IPAM RBAC workaround
-      delegate_to: localhost
-      kubernetes.core.k8s:
-        src: "{{ calico_bgp_manifest_dir }}/kube-controllers-ipamconfigs-rbac.yaml"
-        state: present
-        kubeconfig: "{{ kubeconfig_local }}"
-
     # Node only reports Ready once the CNI (calico-node) is up on it — so this is
     # the real signal Calico took. Count Ready=True conditions across all nodes.
     - name: Wait for the node(s) to report Ready
@@ -477,42 +461,6 @@
         - bgpconfiguration.yaml
         - bgppeer.yaml
         - ippool-loadbalancer.yaml
-
-    # Assert, don't hope. A `no` here means the workaround didn't land and every
-    # LoadBalancer IP will sit `pending` — while BGP advertises routes normally,
-    # so the BGP side gives no hint at all. ADR-0019 calls this out as the one
-    # check worth making explicit rather than leaving to a manual probe.
-    #
-    # 🔁 If this ever passes with the workaround REMOVED, upstream fixed #12890
-    # and the manifest can go. That's its documented removal criterion.
-    # ADR-0019 documents this check as:
-    #   kubectl auth can-i get ipamconfigs \
-    #     --as=system:serviceaccount:calico-system:calico-kube-controllers
-    # A SubjectAccessReview is the same question asked through the API instead of
-    # the CLI — deliberately, because README's prerequisite table states kubectl
-    # is for the manual Verify steps and that NO play invokes it. Shelling out
-    # here would quietly promote "recommended" to "required".
-    #
-    # Group is crd.projectcalico.org: that's the one the #12890 error is raised
-    # on. The workaround ClusterRole grants both groups; this asserts the one
-    # that actually broke.
-    - name: Verify the #12890 RBAC grant took effect
-      delegate_to: localhost
-      kubernetes.core.k8s:
-        state: present
-        kubeconfig: "{{ kubeconfig_local }}"
-        definition:
-          apiVersion: authorization.k8s.io/v1
-          kind: SubjectAccessReview
-          spec:
-            user: system:serviceaccount:calico-system:calico-kube-controllers
-            resourceAttributes:
-              group: crd.projectcalico.org
-              resource: ipamconfigs
-              verb: get
-      register: ipamconfigs_sar
-      changed_when: false
-      failed_when: not (ipamconfigs_sar.result.status.allowed | default(false))
 
     # --- Seed the cluster-topology Secret (Flux postBuild source) ------------
     # Tier 2 of the root CLAUDE.md secrets model: "anything needed before ESO

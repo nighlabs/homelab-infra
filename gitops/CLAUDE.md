@@ -46,7 +46,7 @@ crds/                     # CRDs that must be Established BEFORE controllers
   ceph-csi/                 #   vendored (operatorconfig 536 KB + driver 505 KB, each ~2x the CSA limit; chart has NO toggle)
 infrastructure/           # controllers, in dependency order:
   calico/                   #   INSTALLS Calico (operator chart + shared values.yaml + endpoint ConfigMap)
-  calico-bgp/               #   CONFIGURES it: BGP CRs, LB IPAM pool, #12890 RBAC workaround
+  calico-bgp/               #   CONFIGURES it: BGP CRs, LB IPAM pool
   nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart, shared Gateway, https redirect
   cert-manager/             #   controller only — its CRs live a tier down
   ceph-csi-operator/        #   VENDORED manifests, not a HelmRelease (ADR-0031)
@@ -106,8 +106,7 @@ AddonManager would fight Flux, and deleting the manifest prunes Calico).
   `tigera-operator`) and chart `version:` must match what Ansible installed.
   `calico_version` in `ansible/inventory/group_vars/all/vars.yml` and
   `helmrelease.yaml`'s `version:` move in lockstep (both Renovate-tracked).
-- **The same holds for the CRDs, the BGP CRs, the #12890 workaround and the
-  endpoint ConfigMap** — Ansible applies the committed files, Flux adopts. When
+- **The same holds for the CRDs, the BGP CRs and the endpoint ConfigMap** — Ansible applies the committed files, Flux adopts. When
   Ansible applies a manifest carrying `${var}`, it uses
   `flux build kustomization --strict-substitute` with cluster access — never
   `kustomize build` (which emits the literal `${var}`, a valid string, and
@@ -237,12 +236,6 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
   Service (`Local`) — same reasoning as `le 32` on the pfSense prefix list.
   pfSense's inbound prefix list is the **independent** second control; if the
   pod CIDR ever shows in `vtysh -c 'show ip bgp'`, both failed.
-- **`kube-controllers-ipamconfigs-rbac.yaml`** is the #12890 workaround —
-  mandatory on 3.32, Ansible-primed (LB allocation gates Gateway → cert-manager
-  → ESO), with a `REMOVE when fixed` header. **Re-check on every Calico bump**:
-  remove it and see whether `kubectl auth can-i get ipamconfigs
-  --as=system:serviceaccount:calico-system:calico-kube-controllers` still says
-  `yes`.
 - **🔁 `assignIPs: AllServices` — revisit if a second LoadBalancer IPAM
   provider is ever added** (MetalLB, kube-vip, a cloud controller). Calico
   skips Services whose `loadBalancerClass` isn't `calico`, so a provider that

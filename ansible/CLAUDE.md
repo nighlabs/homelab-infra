@@ -14,8 +14,8 @@ How to run and verify anything: `README.md` in this directory.
 
 **Everything `site.yml` does is live and verified on a from-scratch run
 (2026-08-30)** on the single all-in-one node `snoop-a2o`: template → Flatcar VM
-shell → k3s server → Calico (v3.32.1, eBPF, BGP no-encap, LB IPAM + #12890
-workaround, pfSense session `Established`, LB IPs reachable) → Flux
+shell → k3s server → Calico (v3.32.1, eBPF, BGP no-encap, LB IPAM, pfSense
+session `Established`, LB IPs reachable) → Flux
 (operator + sync-less `FluxInstance`, cosign-verified OCI source, all tiers
 Ready, Calico adopted with no diff war). Evidence: worklog entries for
 2026-08-16, 2026-08-29 and 2026-08-30.
@@ -50,7 +50,7 @@ server path is built), and the Mac role. Node 2's join is a **dataplane event**
 |---|---|---|
 | `build-template.yml` | Flatcar proxmoxve image → import → template (vmid 9000). ⚠ Guarded on `qm status` failing, so it **runs green and silently skips** whenever the template exists; a successful run is not evidence of a fresh template (ADR-0030). | 1Password |
 | `provision-nodes.yml` | per node: render Butane → `butane --strict` → upload `.ign` (SSH) → clone + pin MACs + disk + `cicustom` (API) → boot → wait for SSH → detach `cicustom` then delete the `.ign` (ADR-0025) | 1Password |
-| `bootstrap-cluster.yml` | per cluster: wait for `/readyz`, fetch + rewrite the kubeconfig to `.kube/<cluster>.config`, seed `cluster-topology` + the cert-manager `cloudflare-api-token` Secret (bootstrap-secret tier), server-side-apply the vendored CRDs, `helm` the tigera-operator from `gitops/infrastructure/calico/values.yaml`, apply the BGP CRs + #12890 workaround + endpoint ConfigMap via `flux build kustomization --strict-substitute`, wait Ready | 1Password, `helm` |
+| `bootstrap-cluster.yml` | per cluster: wait for `/readyz`, fetch + rewrite the kubeconfig to `.kube/<cluster>.config`, seed `cluster-topology` + the cert-manager `cloudflare-api-token` Secret (bootstrap-secret tier), server-side-apply the vendored CRDs, `helm` the tigera-operator from `gitops/infrastructure/calico/values.yaml`, apply the BGP CRs + endpoint ConfigMap via `flux build kustomization --strict-substitute`, wait Ready | 1Password, `helm` |
 | `flux-bootstrap.yml` | helm-install the flux-operator (`flux_operator_version`), apply ONE sync-less `FluxInstance` with the `StrictPostBuildSubstitutions` patch, assert the gate landed, seed `gitops/deployment/<cluster>/{source,sync}.yaml`, wait for `flux-system`/`crds`/`infrastructure`/`apps` Ready | the previous play's kubeconfig + Secret; **no credentials** |
 | `render-frr-config.yml` | pfSense/FRR raw config + firewall-alias members → `.frr/` (git-ignored), from the node map; asserts index/ASN/LB-range collisions **and its asserts are verified to fire** | 1Password |
 
@@ -62,7 +62,8 @@ hostname/`node_number` uniqueness.
 
 **The dual-applied set is deliberately small** (ADR-0016): Calico's values, its
 vendored CRDs (Calico's only — Gateway API and ceph-csi are Flux-only), the
-BGP CRs, the #12890 workaround, the endpoint ConfigMap, and the Flux root. Everything after Flux exists is Flux-only. `flux build` is the
+BGP CRs, the endpoint ConfigMap, and the Flux root. Everything after Flux
+exists is Flux-only. `flux build` is the
 tool when priming a substituted manifest, never the default posture.
 
 ## Node map and derivation

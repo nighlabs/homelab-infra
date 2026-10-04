@@ -8,10 +8,10 @@
 # allocate, only advertise — that's why the version bump was a prerequisite, see
 # ADR-0019, docs/decisions/).
 #
-# ⚠ This pool depends on kube-controllers-ipamconfigs-rbac.yaml, the #12890
-# workaround. Without it, allocation fails while BGP advertises perfectly
-# normally — so the symptom is `pending` LB IPs with a completely healthy-looking
-# BGP session. Do not ship one without the other.
+# ⚠ Allocation needs calico-kube-controllers to read `ipamconfigs`. The
+# operator's own ClusterRole grants it from operator v1.42.1 (Calico v3.32.1);
+# v3.32.0 didn't (projectcalico/calico#12890). If that grant ever goes missing,
+# the symptom is `pending` LB IPs with a completely healthy-looking BGP session.
 #
 # Standalone IPPool CR, NOT part of the Installation's calicoNetwork.ipPools
 # (values.yaml): that field is for pod networking. This is the documented shape

@@ -48,7 +48,7 @@ Rules:
 | [0016](0016-calico-ansible-primes-flux-adopts.md) | 2026-07-08 | Calico is installed once by Ansible, then adopted by Flux | Accepted, verified |
 | [0017](0017-static-addressing-no-dhcp.md) | 2026-07-07 | All node addressing is static, rendered into Ignition from the node map; no DHCP | Accepted, verified |
 | [0018](0018-calico-bgp-replaces-metallb.md) | 2026-08-02 | Calico BGP owns LoadBalancer IP allocation, advertisement, and the pod dataplane; no MetalLB | Accepted, verified — supersedes 0012 |
-| [0019](0019-k3s-1.36-calico-3.32.1-version-pair.md) | 2026-08-02 | Pin k3s v1.36.x + Calico v3.32.1 as a pair; pre-apply the #12890 RBAC workaround | Accepted, verified |
+| [0019](0019-k3s-1.36-calico-3.32.1-version-pair.md) | 2026-08-02 | Pin k3s v1.36.x + Calico v3.32.1 as a pair; pre-apply the #12890 RBAC workaround | Accepted, verified — workaround **retired 2026-10-04** (never needed on v3.32.1) |
 | [0020](0020-crd-tier-vendored-server-side-apply.md) | 2026-08-02 | A `crds/` tier: Calico's CRDs vendored and server-side applied, `prune: false` | Accepted; build-time render **open** |
 | [0021](0021-topology-blinding-postbuild-substitution.md) | 2026-08-02 | Topology as `${var}` placeholders substituted from the `cluster-topology` Secret; SOPS only as fallback | Accepted, verified |
 | [0022](0022-pfsense-frr-raw-config-explicit-neighbors.md) | 2026-08-02 | pfSense FRR as generated raw config, explicit `neighbor` statements | Accepted, verified |
