@@ -440,7 +440,7 @@ about *who reads it, when*:
 
   ```
   gitops/deployment/<cluster>/  Flux entrypoints: source.yaml, sync.yaml, crds/infrastructure/apps
-  gitops/crds/                  CRDs that must be Established before controllers (Calico's, vendored)
+  gitops/crds/                  CRDs that must be Established before controllers (vendored: Calico, Gateway API, ceph-csi)
   gitops/infrastructure/        controllers: calico, calico-bgp, then cert-manager, ceph-csi, ESO, …
   gitops/apps/                  workloads (empty until the infra layer is up)
   ```
@@ -806,8 +806,12 @@ Tracked with status **Open** or **Proposed** in the
   ([ADR-0030](decisions/0030-flatcar-os-update-policy.md)).
 - Dropping Helm for Calico in favour of a manifest install
   ([ADR-0029](decisions/0029-drop-helm-for-calico.md)).
-- Rendering Calico's CRDs at OCI build time instead of vendoring 3 MB in Git
-  ([ADR-0020](decisions/0020-crd-tier-vendored-server-side-apply.md)).
+- Rendering the vendored CRDs (Calico, Gateway API, ceph-csi, ~5 MB) at OCI
+  build time instead of keeping them in Git
+  ([ADR-0020](decisions/0020-crd-tier-vendored-server-side-apply.md),
+  [ADR-0031](decisions/0031-ceph-csi-operator-vendored-manifests-not-helm.md)).
+  Only Calico's file is also read by Ansible, so Gateway API and ceph-csi
+  could move first.
 - Control-node kubeconfig hygiene (the cluster-admin cert that
   `bootstrap-cluster.yml` leaves at `ansible/.kube/`) — see `ansible/CLAUDE.md`.
 - ⚠ `wait: true` on `infrastructure-config` does NOT gate on ceph-csi's driver
