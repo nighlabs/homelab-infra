@@ -112,13 +112,13 @@ is the durable store for everything; the split is about *who reads it when*
   (`docs/decisions/0007-ansible-not-terraform.md`).
 - **No MetalLB.** Calico BGP owns *both* LoadBalancer IP allocation/
   advertisement and the pod dataplane (`0018-calico-bgp-replaces-metallb.md`).
-- **Calico `v3.32.1` + k3s `v1.36.x`** — a version-matched pair. **Calico 3.32
-  ships a broken LoadBalancer-IPAM RBAC grant
-  ([#12890](https://github.com/projectcalico/calico/issues/12890)), so the
-  workaround ClusterRole in `gitops/infrastructure/calico-bgp/` MUST be
-  applied.** Without it LoadBalancer IPs sit `pending` forever *while BGP
-  advertises the routes normally*, so the BGP side gives no hint. Removal
-  criteria: `0019-k3s-1.36-calico-3.32.1-version-pair.md`.
+- **Calico `v3.32.1` + k3s `v1.36.x`** — a version-matched pair
+  (`0019-k3s-1.36-calico-3.32.1-version-pair.md`). **Never Calico `v3.32.0`**:
+  its operator (v1.42.0) shipped a kube-controllers ClusterRole without
+  `ipamconfigs` ([#12890](https://github.com/projectcalico/calico/issues/12890)),
+  so LoadBalancer IPs sit `pending` forever *while BGP advertises the routes
+  normally*. Fixed from operator v1.42.1 (Calico v3.32.1 ships v1.42.3); the
+  repo's workaround ClusterRole was retired on 2026-10-04.
 - **Keep k3s on a supported Kubernetes minor.** Upstream maintains only the
   latest three. Bump via `k3s_version_default` + re-provision (never sequential
   in-place upgrades while the cluster is disposable). Don't run ahead of the

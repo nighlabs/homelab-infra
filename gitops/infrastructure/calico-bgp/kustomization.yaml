@@ -1,7 +1,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Calico's BGP + LoadBalancer configuration: cluster-scoped CRs plus the one RBAC
-# workaround LoadBalancer allocation currently needs.
+# Calico's BGP + LoadBalancer configuration: cluster-scoped CRs.
 #
 # ⚠ WHY THIS ISN'T IN ../calico/ (it looks like it belongs there, and it doesn't).
 # That kustomization sets `namespace: tigera-operator` to place the HelmRelease
@@ -27,8 +26,7 @@ kind: Kustomization
 #
 # ⚠ Ansible-primed, then Flux-adopted — same pattern as Calico itself. With
 # encapsulation off, BGP IS the pod dataplane, so none of this can wait for the
-# Flux bootstrap. The RBAC workaround has the same urgency for a different
-# reason: LoadBalancer allocation gates the Gateway -> cert-manager -> ESO chain.
+# Flux bootstrap.
 resources:
   # Order is presentation only (kustomize sorts on apply), but the filter is
   # listed first because bgppeer.yaml's `filters:` reference is meaningless
@@ -39,5 +37,3 @@ resources:
   # Allocation. Distinct mechanism from the advertisement configured in
   # bgpconfiguration.yaml — the same range must appear in both.
   - ippool-loadbalancer.yaml
-  # Temporary: projectcalico/calico#12890. Has removal criteria in its header.
-  - kube-controllers-ipamconfigs-rbac.yaml

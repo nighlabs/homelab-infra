@@ -308,7 +308,7 @@ in dependency order:
 |---|---|
 | `build-template.yml` | download the Flatcar proxmoxve image → import → convert to template (idempotent) |
 | `provision-nodes.yml` | per node: render Butane with Jinja2 from the node map → `butane --strict` → upload the `.ign` snippet (SSH) → clone the template, pin MACs, attach disk + `cicustom` (API) → boot → wait for SSH → destroy the snippet |
-| `bootstrap-cluster.yml` | per cluster: wait for k3s `/readyz`, fetch + rewrite the kubeconfig, seed the `cluster-topology` Secret, prime Calico's CRDs, the tigera-operator release, the BGP CRs and the #12890 workaround, wait for Ready |
+| `bootstrap-cluster.yml` | per cluster: wait for k3s `/readyz`, fetch + rewrite the kubeconfig, seed the `cluster-topology` Secret, prime Calico's CRDs, the tigera-operator release and the BGP CRs, wait for Ready |
 | `flux-bootstrap.yml` | helm-install the flux-operator, apply a sync-less `FluxInstance`, seed the `OCIRepository` + root `Kustomization`, wait for the tiers to go Ready |
 
 - **Auth:** a scoped `ansible@pve` API token (never `root@pam`) for the VM
@@ -451,7 +451,7 @@ about *who reads it, when*:
   definition* (one `values.yaml`, one vendored CRD file, the same BGP
   manifests), and Flux's first reconcile is an adoption with no diff. The
   dual-applied set is deliberately small: Calico's values, the CRDs, the BGP CRs,
-  the #12890 workaround, and the Flux root. Everything else is Flux-only.
+  and the Flux root. Everything else is Flux-only.
 
 ### 3.8 Workloads (the non-GPU tier)
 
@@ -562,10 +562,10 @@ NIC and the networkd unit (a silent fallback to 1500 defeats the point).
 - **Allocation:** an `IPPool` with `allowedUses: [LoadBalancer]` over the
   cluster's `/24`; Calico's kube-controllers assigns every LoadBalancer Service
   an address (`assignIPs: AllServices` — revisit if a second LB IPAM provider
-  is ever added). **Calico 3.32 ships a broken RBAC grant for this
-  ([#12890](https://github.com/projectcalico/calico/issues/12890)); a workaround
-  ClusterRole is mandatory** or IPs sit `pending` forever while BGP looks
-  healthy. It's Ansible-primed and Flux-managed, with removal criteria.
+  is ever added). This needs kube-controllers to read `ipamconfigs`, which
+  the operator's own ClusterRole grants from Calico v3.32.1; **v3.32.0 didn't**
+  ([#12890](https://github.com/projectcalico/calico/issues/12890)), and IPs
+  then sit `pending` forever while BGP looks healthy.
 - **Advertisement:** `BGPConfiguration.spec.serviceLoadBalancerIPs` + one global
   `BGPPeer` to pfSense (eBGP: cluster ASN `64601` ↔ pfSense `64512`). A
   `BGPFilter` exports **only the LB range** with an explicit catch-all `Reject`
@@ -728,8 +728,8 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
    patch updates proven.
 3. ✅ **pfSense/FRR peering** — generated raw config, prefix lists, firewall
    rules, parked ahead of the cluster.
-4. ✅ **Calico** primed by Ansible: v3.32.1, eBPF, BGP no-encap, LB IPAM +
-   #12890 workaround, BGP session `Established`, LoadBalancer IPs allocated and
+4. ✅ **Calico** primed by Ansible: v3.32.1, eBPF, BGP no-encap, LB IPAM,
+   BGP session `Established`, LoadBalancer IPs allocated and
    reachable from another segment.
 5. ✅ **Flux** bootstrapped: operator + sync-less FluxInstance, signed OCI
    source verified (`SourceVerified=True`), all tiers Ready, Calico adopted

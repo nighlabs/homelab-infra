@@ -558,11 +558,6 @@ kubectl get bgpconfiguration default -o jsonpath='{.spec.asNumber}'      # the c
 kubectl get bgppeer pfsense -o jsonpath='{.spec.peerIP}{" "}{.spec.asNumber}'
 kubectl get bgpfilter pfsense-lb-only -o yaml | grep -A4 exportV4
 kubectl get ippool loadbalancer-pool -o jsonpath='{.spec.allowedUses}'   # ["LoadBalancer"]
-
-# #12890 workaround landed — a `no` here means every LB IP will sit pending
-# while BGP looks perfectly healthy
-kubectl auth can-i get ipamconfigs \
-  --as=system:serviceaccount:calico-system:calico-kube-controllers        # yes
 ```
 
 On pfSense (`vtysh`, see the runbook §7):
@@ -579,7 +574,7 @@ On pfSense (`vtysh`, see the runbook §7):
 kubectl create deploy bgptest --image=nginx --port=80
 kubectl expose deploy bgptest --type=LoadBalancer --port=80
 
-# 1. ALLOCATION (Calico LB IPAM + the #12890 workaround)
+# 1. ALLOCATION (Calico LB IPAM)
 kubectl get svc bgptest -w        # EXTERNAL-IP leaves <pending> for one in the LB range
 
 # 2. REACHABILITY (BGP + the prefix lists + the firewall rules)
@@ -588,7 +583,10 @@ curl -sS http://<that IP>/        # from a DIFFERENT segment, not the node
 kubectl delete deploy/bgptest svc/bgptest
 ```
 
-`pending` forever = allocation (suspect #12890 or the pool). Allocated but
+`pending` forever = allocation: suspect the pool, or kube-controllers' RBAC
+(`kubectl auth can-i get ipamconfigs
+--as=system:serviceaccount:calico-system:calico-kube-controllers` must say
+`yes`; it said `no` on Calico v3.32.0, #12890). Allocated but
 unreachable = advertisement, filtering, or a missing firewall rule to the LB
 range — learning a route and being permitted to use it are different things
 (runbook §6).
