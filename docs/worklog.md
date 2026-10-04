@@ -13,6 +13,35 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-10-04 — Looked at oMLX and LLMKube for the Mac tier; recorded as two Open ADRs
+
+**Related:** [ADR-0036](decisions/0036-whether-omlx-replaces-vllm-mlx-and-llama-swap.md) (Open) ·
+[ADR-0037](decisions/0037-whether-llmkube-manages-mac-models.md) (Open) ·
+[ADR-0002](decisions/0002-vllm-mlx-behind-llama-swap.md) ·
+[ADR-0001](decisions/0001-native-inference-on-the-mac.md) ·
+[ADR-0013](decisions/0013-ingress-certs-dns-external-access.md) ·
+[ADR-0014](decisions/0014-observability-managed-backend.md)
+
+Nothing built and nothing decided. This was a look at new technology for a
+tier that comes after the cluster stack. Recorded as two records rather than
+one because oMLX stands on its own: if LLMKube is rejected, the oMLX question
+shouldn't be reverted with it.
+
+Checking the evaluation notes against existing records turned up four things
+the notes got wrong or left out, now carried in the ADRs:
+
+| Found | Where it landed |
+|---|---|
+| The notes had ESO delivering the metal-agent's credential. ESO only creates `Secret`s inside the cluster, and the agent runs on the Mac, outside it. The Mac's half comes from Ansible reading 1Password. | ADR-0037, "What adopting it would change" §3 |
+| LLMKube reverses two properties earlier records treat as fixed: the Mac as a passive backend with no cluster credential (0001), and firewall-scoped `:8080` (0013), which the 0.10.0 relay replaces. | ADR-0037, framed as partial supersessions to accept explicitly |
+| Pinning models against oMLX's LRU eviction was raised only as an LLMKube question. It's an oMLX question first: ADR-0002's "never swap the core" applies whatever engine is used. | ADR-0036's test, criterion 2 |
+| ADR-0014's Mac-tier metrics line names vllm-mlx's `/metrics`. That's stale as soon as oMLX is chosen, with or without LLMKube. | ADR-0036, Consequences |
+
+Upstream claims (oMLX's feature set, LLMKube's 0.10.x RBAC and relay model)
+are unverified. Both records list them to re-check before deciding.
+
+---
+
 ## 2026-09-14 — From-scratch `site.yml` on 1Password: cluster `testnode` up clean
 
 **Related:** [ADR-0034](decisions/0034-secrets-store-1password.md) ·
