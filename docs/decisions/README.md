@@ -65,6 +65,8 @@ Rules:
 | [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact; the fact is `secrets`, not a vendor name | Accepted, verified |
 | [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted, verified (2026-09-13) — Bitwarden deleted |
 | [0035](0035-site-scope-multiple-proxmox-clusters.md) | 2026-09-12 | A third scope — **site** (one Proxmox cluster + its Ceph) — between fleet-wide and per-k3s-cluster | **Open** (implementation) — but the naming rule, global `node_number` uniqueness, and DNS-zone scoping are **decided** |
+| [0036](0036-whether-omlx-replaces-vllm-mlx-and-llama-swap.md) | 2026-10-04 | Whether oMLX (one daemon: continuous batching, tiered KV cache, multi-model LRU) replaces vllm-mlx + llama-swap on the Mac | **Open**, exploration; decide when the Mac tier is built (would supersede 0002) |
+| [0037](0037-whether-llmkube-manages-mac-models.md) | 2026-10-04 | Whether LLMKube manages the Mac's models as Flux-delivered CRDs (operator in k3s, metal-agent on the Mac) | **Open**, exploration; after the cluster stack and 0036 (would partially supersede 0001 and 0013) |
 
 ### Open questions without a record yet
 
