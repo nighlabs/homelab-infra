@@ -290,7 +290,9 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
   synced by ExternalSecrets with **`creationPolicy: Merge`**, from the same
   1Password fields. Merge never creates, never deletes, takes no
   ownerReference, and writes only the listed keys (the cephx `userID` stays
-  Ansible's). So a rebuild works before ESO exists, and deleting an
+  Ansible's). ESO does mark a merged Secret: it adds the label
+  `reconcile.external-secrets.io/managed=true` and a `data-hash` annotation.
+  Ansible's re-seed leaves both alone, since it never set them. So a rebuild works before ESO exists, and deleting an
   ExternalSecret can't take cert-manager's token with it. ⚠ Don't switch them
   to `Owner`/`CreateOrMerge`: ESO would then create a Secret alone, without
   `userID`.
@@ -301,8 +303,9 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 - ⚠ **Rate limit is the design constraint**: 1,000 requests/24h per *account*
   on Individual/Families, shared by every service account. Store validation
   is free in steady state (the client is cached per store `resourceVersion`
-  and `Validate()` makes no call). The cost is one `Resolve` per data entry
-  per refresh. **Set `refreshInterval` deliberately on every ExternalSecret**;
+  and `Validate()` makes no call). Observed live: 6 `VaultsList` once at
+  controller start for the two stores, then none across requeues. The cost is
+  one `Resolve` per data entry per refresh. **Set `refreshInterval` deliberately on every ExternalSecret**;
   the platform ones use `24h` (3 calls/day). Budget roughly
   `Σ entries × 24h/interval` before adding a batch.
 - ⚠ **Retry behaviour: there is nothing in ESO to tune** (read from the

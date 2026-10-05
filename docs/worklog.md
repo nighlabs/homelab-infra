@@ -13,6 +13,68 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-10-05 — ESO live on `testnode`: stores Ready, Merge onto the seeded Secrets, flood gate observed
+
+**Related:** [ADR-0038](decisions/0038-three-vaults-platform-secrets-seed-and-sync.md) ·
+[ADR-0039](decisions/0039-helm-installs-crds-over-the-apply-limit.md) ·
+PR #28 (`cc4452d`) · artifact `latest@sha256:cce5248e…`
+
+The go-live half of the 2026-10-04 entry. Order: 1Password set up per
+`ansible/SECRETS.md` → Proxmox snapshot with RAM → `bootstrap-cluster.yml`
+on the live cluster → merge → CI sign → Flux.
+
+**`bootstrap-cluster.yml` re-run on a Flux-managed cluster: no disturbance.**
+This was the first such re-run. Compared against a baseline taken just
+before:
+
+| Check | Result |
+|---|---|
+| Play | `failed=0`, `changed=4`: Calico CRDs (SSA `force_conflicts`), `cluster-topology` (new `cluster_name`), `external-secrets` namespace + token |
+| tigera-operator release | still revision 2, no new revision; live values == committed `values.yaml` (checked before the run) |
+| Flux | all Kustomizations + HelmReleases Ready throughout |
+| Pods | identical set, identical restart counts |
+| ESO token grant | assert passed: sees exactly `homelab-platform-testnode` + `homelab-apps-testnode` |
+| Platform Secrets re-seeded from the **new** vault | Cloudflare + both cephx **unchanged**, so the 1Password move was byte-exact |
+| `base_domain` from the new item | matches the live wildcard Certificate's dnsNames (compared without printing it) |
+
+**ESO landing:**
+
+| Check | Result |
+|---|---|
+| HelmRelease | `external-secrets` 2.11.0 installed; controller, webhook and cert-controller Running, 0 restarts |
+| CRDs | **all 25 installed by Helm**, including `secretstores`/`clustersecretstores` (~374 KB each). ADR-0039 is now proven by a real install, not just a dry-run |
+| Stores | `onepassword-platform` + `onepassword-apps` Valid / Ready |
+| ExternalSecrets | all 3 `SecretSynced`, refresh `24h` |
+| Merge semantics | same Secrets as before (created 2026-09-14), **no ownerReference**, `userID` retained, no extra keys |
+| Everything else | all tiers Ready, wildcard cert Ready, no non-ESO pod restarted |
+
+**Findings:**
+
+1. **The flood gate works as read from the source.** The ExternalSecrets
+   applied in the same pass as their store, and were refused *"ClusterSecretStore
+   onepassword-platform is not ready"* three times in ~5 s (13.8 s, 14.8 s,
+   18.8 s: the controller-runtime backoff). Then they synced. None of those
+   refusals reached 1Password: `Resolve` is exactly 3, all `success`.
+2. **Store checks cost nothing in steady state; startup costs a few calls.**
+   The first sync cost 3 `Resolve` + **6** `VaultsList`. The source predicted
+   2 `VaultsList`, one per store. A sample 7 min later, past a full 5-min store
+   requeue, showed **no change**, and both stores' `resourceVersion`s held
+   steady. So the 6 is a one-time startup cost. The likely mechanism is client
+   rebuilds as the first status writes bump `resourceVersion` (the provider
+   caches clients by it), but that wasn't isolated.
+3. **ESO marks the Secrets it merges into:** label
+   `reconcile.external-secrets.io/managed=true` and annotation
+   `reconcile.external-secrets.io/data-hash`. That's harmless; Ansible's apply
+   leaves them, because it never sets them.
+
+**Still owed:** a rotation round-trip via `force-sync`; a deliberately broken
+remote ref to measure the real retry cadence (expected ~16.7 min at the cap;
+faster means status events bypass the backoff); a deliberately wrong token
+to see the grant assert fire; and the from-scratch `site.yml` that proves
+the rebuild-before-ESO claim end to end.
+
+---
+
 ## 2026-10-04 — ESO milestone, repo half: three vaults, seed + Merge, chart-installed CRDs
 
 **Related:** [ADR-0038](decisions/0038-three-vaults-platform-secrets-seed-and-sync.md) ·

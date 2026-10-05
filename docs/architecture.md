@@ -749,8 +749,9 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
    ✅ ceph-csi — ceph-csi-operator v1.0.4 against the existing Proxmox Ceph
    (Squid 19.2.3): `ceph-rbd` (RWO, cluster default) and `cephfs` (RWX), both
    provisioning, mounting and reclaiming; RBD mapped by krbd. Then
-   ⬜ External Secrets Operator (1Password SDK provider, three vaults —
-   ADR-0038) → Postgres + Redis →
+   ✅ External Secrets Operator — 1Password SDK provider over three vaults
+   (ADR-0038); both stores Ready, platform Secrets kept current by `Merge`.
+   Then ⬜ Postgres + Redis →
    LiteLLM → confirm a chat completion routes end-to-end to the Mac.
 7. ⬜ **Then:** Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 8. ⬜ **Split DNS + access:** internal resolver, Tailscale split DNS,

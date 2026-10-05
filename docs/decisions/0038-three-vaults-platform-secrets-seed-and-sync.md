@@ -1,7 +1,7 @@
 # ADR-0038: Three vaults by lifecycle and reader; ESO keeps the Ansible-seeded platform Secrets current from the same vault
 
 - **Date:** 2026-10-04
-- **Status:** Accepted — implemented in the repo; live verification pending the 1Password setup (`../worklog.md`)
+- **Status:** Accepted, verified live on `testnode` (2026-10-05, `../worklog.md`). The from-scratch rebuild proof is still owed
 - **Supersedes / related:** **partially supersedes [ADR-0034](0034-secrets-store-1password.md) — its vault layout only** (two vaults → three; the `op` CLI, grouped fields, desktop-app auth and the rate-limit analysis all stand). **Decides the "does ESO adopt the bootstrap-seeded Secrets?" open question** that ADR-0009 and ADR-0034 left for this milestone. Keeps [ADR-0026](0026-per-cluster-derivation-from-index.md)'s per-cluster blast-radius rule and [ADR-0033](0033-secrets-fact-broker.md)'s single-loader seal. Related: [ADR-0021](0021-topology-blinding-postbuild-substitution.md) (`cluster-topology` is unaffected — still Ansible-seeded permanently), [ADR-0035](0035-site-scope-multiple-proxmox-clusters.md) (the zone question decides how the Cloudflare token forks at cluster #2), [ADR-0040](0040-whether-infrastructure-config-splits-per-domain.md) (the tier-gating consequence). Code: `ansible/playbooks/tasks/load-secrets.yml`, `ansible/inventory/group_vars/all/vars.yml`, `ansible/playbooks/bootstrap-cluster.yml`, `gitops/infrastructure/external-secrets/`, `gitops/infrastructure-config/external-secrets/`, `ansible/SECRETS.md`.
 
 ## Context
@@ -198,6 +198,17 @@ Loader behaviour verified offline on 2026-10-04 against a stub `op` serving
 fixture items. Values arrive suffixed. A leftover `cloudflare_api_token` on
 `control-node` fails the single-home assert, which shows the negative case
 fires. A missing platform item fails with the platform-vault hint. The
-opt-out path reads only the fleet items. Live verification (store Ready, a
-Merge sync observed on each platform Secret, the grant assert run against the
-real token) is recorded in `../worklog.md` once the vaults exist.
+opt-out path reads only the fleet items.
+
+Live on `testnode`, 2026-10-05 (details in `../worklog.md`):
+
+- The grant assert passed against the real token, and `bootstrap-cluster.yml`
+  re-seeded the Cloudflare and cephx Secrets as **unchanged** from the new
+  platform vault. So the move was byte-exact.
+- Both stores Ready, and all three ExternalSecrets `SecretSynced` with
+  `Merge` onto the Ansible-made Secrets from 2026-09-14. No ownerReference,
+  `userID` kept, no extra keys. cert-manager and ceph-csi didn't restart.
+- The flood gate was observed: the ExternalSecrets, created in the same pass
+  as their store, were refused "store is not ready" three times in ~5 s, with
+  no call reaching 1Password. First sync cost 3 `Resolve` + 6 `VaultsList`,
+  with zero more across store requeues.

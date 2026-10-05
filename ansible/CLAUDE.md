@@ -25,8 +25,9 @@ Gateway Fabric (Gateway API CRD tier, shared Gateway, LB reachable,
 source-IP preserved), cert-manager (DNS-01 wildcard issued, HTTPS on the
 Gateway, `infrastructure-config` tier) and **ceph-csi** (both StorageClasses
 provisioning against the existing Proxmox Ceph; worklog 2026-09-07).
-**In progress: ESO** (1Password SDK provider, three vaults, ADR-0038) → then
-Postgres + Redis → LiteLLM → … The controller and stores are in `gitops/`.
+**ESO is live** (1Password SDK provider, three vaults, ADR-0038; worklog
+2026-10-05). **Next:** Postgres + Redis → LiteLLM → … The controller and
+stores are in `gitops/`.
 This directory's part is in `bootstrap-cluster.yml`. It seeds the platform
 secrets (Cloudflare token, cephx keys) from each cluster's
 `homelab-platform-<cluster>` vault, after which ESO keeps them current. It
@@ -211,6 +212,14 @@ rules, not history.
   `gitops/` manages it. Self-managing the operator is a real pattern and a real
   footgun (an in-flight upgrade can delete the controller performing it).
   Adopt it deliberately or not at all.
+- **`bootstrap-cluster.yml` is safe to re-run on a cluster Flux already
+  manages** (verified 2026-10-05). Every write reuses the committed file or
+  values Flux reconciles, so the Calico release stays at its revision and no
+  pod restarts. It reports `changed` only for the Calico CRDs (server-side
+  apply with `force_conflicts` re-claims fields) and for genuinely new seeds.
+  That is how a new bootstrap seed reaches a live cluster: run the play,
+  **then** merge the gitops change that consumes it. Take a Proxmox snapshot
+  with RAM first anyway.
 - **In-cluster Flux never reads a kubeconfig.** `spec.kubeConfig` exists only
   for reconciling a *remote* cluster; each controller authenticates with its
   own ServiceAccount. Don't re-raise "a scoped kubeconfig for Flux" as a
