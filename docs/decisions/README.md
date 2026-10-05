@@ -33,7 +33,7 @@ Rules:
 | [0006](0006-ceph-csi-external-proxmox-ceph.md) | Persistent storage: ceph-csi-operator against the existing Proxmox Ceph | Accepted, verified (2026-09-07) |
 | [0007](0007-ansible-not-terraform.md) | Provisioning: Ansible only — Terraform/OpenTofu dropped | Accepted |
 | [0008](0008-flux-via-flux-operator.md) | GitOps: FluxCD via the Flux Operator, bootstrapped by Ansible last | Accepted (source detail superseded by 0028) |
-| [0009](0009-secrets-aescbc-and-eso-bitwarden.md) | Secrets: k3s secrets-encryption at rest; ESO + Bitwarden Secrets Manager for app secrets | **Partially superseded by 0034 (layer 2 only)** — layer 1 unchanged and live; ESO half not yet implemented |
+| [0009](0009-secrets-aescbc-and-eso-bitwarden.md) | Secrets: k3s secrets-encryption at rest; ESO + Bitwarden Secrets Manager for app secrets | **Partially superseded by 0034 (layer 2 only)** — layer 1 unchanged and live; ESO half now 0034 + 0038 |
 | [0010](0010-calico-over-cilium.md) | CNI: Calico | Accepted |
 | [0011](0011-cluster-cidrs-never-cgnat.md) | Cluster CIDRs live in `10.0.0.0/8` — never CGNAT | Accepted |
 | [0012](0012-metallb-bgp.md) | Load balancer: MetalLB in BGP mode | **Superseded by 0018** |
@@ -49,7 +49,7 @@ Rules:
 | [0017](0017-static-addressing-no-dhcp.md) | 2026-07-07 | All node addressing is static, rendered into Ignition from the node map; no DHCP | Accepted, verified |
 | [0018](0018-calico-bgp-replaces-metallb.md) | 2026-08-02 | Calico BGP owns LoadBalancer IP allocation, advertisement, and the pod dataplane; no MetalLB | Accepted, verified — supersedes 0012 |
 | [0019](0019-k3s-1.36-calico-3.32.1-version-pair.md) | 2026-08-02 | Pin k3s v1.36.x + Calico v3.32.1 as a pair; pre-apply the #12890 RBAC workaround | Accepted, verified — workaround **retired 2026-10-04** (never needed on v3.32.1) |
-| [0020](0020-crd-tier-vendored-server-side-apply.md) | 2026-08-02 | A `crds/` tier: Calico's CRDs vendored and server-side applied, `prune: false` | Accepted; build-time render **open** |
+| [0020](0020-crd-tier-vendored-server-side-apply.md) | 2026-08-02 | A `crds/` tier: Calico's CRDs vendored and server-side applied, `prune: false` | Accepted; build-time render **open**; size rationale **corrected by 0039** |
 | [0021](0021-topology-blinding-postbuild-substitution.md) | 2026-08-02 | Topology as `${var}` placeholders substituted from the `cluster-topology` Secret; SOPS only as fallback | Accepted, verified |
 | [0022](0022-pfsense-frr-raw-config-explicit-neighbors.md) | 2026-08-02 | pfSense FRR as generated raw config, explicit `neighbor` statements | Accepted, verified |
 | [0023](0023-rfc8212-real-policy-le32.md) | 2026-08-02 | RFC 8212 satisfied by real prefix lists with `le 32`, never disabled | Accepted, verified |
@@ -60,13 +60,16 @@ Rules:
 | [0028](0028-gitops-delivery-signed-oci-syncless-fluxinstance.md) | 2026-08-29 | Flux consumes a cosign-signed OCI artifact; sync-less FluxInstance; self-managed root | Accepted, verified |
 | [0029](0029-drop-helm-for-calico.md) | 2026-08-02 | Install the tigera operator from manifests instead of the Helm chart | **Proposed** |
 | [0030](0030-flatcar-os-update-policy.md) | 2026-08-02 | Flatcar auto-update/reboot policy | **Open** |
-| [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified |
+| [0031](0031-ceph-csi-operator-vendored-manifests-not-helm.md) | 2026-09-06 | ceph-csi-operator from vendored manifests, not its Helm chart (two CRD templates ~2× the client-side apply limit, no toggle) | Accepted, verified — its size premise is **corrected by 0039**, so the chart route is open again |
 | [0032](0032-secrets-store-1password-migration.md) | 2026-09-12 | Whether to replace Bitwarden Secrets Manager with 1Password (ESO 1Password SDK provider, no in-cluster secrets server) | **Answered by 0034** — retained as the investigation |
 | [0033](0033-secrets-fact-broker.md) | 2026-09-12 | `vars.yml` brokers secret *values*; name-space questions get a `secret_names` fact; the fact is `secrets`, not a vendor name | Accepted, verified |
-| [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted, verified (2026-09-13) — Bitwarden deleted |
+| [0034](0034-secrets-store-1password.md) | 2026-09-12 | 1Password replaces BWS; Ansible reads it with the `op` CLI; grouped fields; the control node keeps **no secret zero** (desktop-app auth) | Accepted, verified (2026-09-13) — Bitwarden deleted; **vault layout partially superseded by 0038** |
 | [0035](0035-site-scope-multiple-proxmox-clusters.md) | 2026-09-12 | A third scope — **site** (one Proxmox cluster + its Ceph) — between fleet-wide and per-k3s-cluster | **Open** (implementation) — but the naming rule, global `node_number` uniqueness, and DNS-zone scoping are **decided** |
 | [0036](0036-whether-omlx-replaces-vllm-mlx-and-llama-swap.md) | 2026-10-04 | Whether oMLX (one daemon: continuous batching, tiered KV cache, multi-model LRU) replaces vllm-mlx + llama-swap on the Mac | **Open**, exploration; decide when the Mac tier is built (would supersede 0002) |
 | [0037](0037-whether-llmkube-manages-mac-models.md) | 2026-10-04 | Whether LLMKube manages the Mac's models as Flux-delivered CRDs (operator in k3s, metal-agent on the Mac) | **Open**, exploration; after the cluster stack and 0036 (would partially supersede 0001 and 0013) |
+| [0038](0038-three-vaults-platform-secrets-seed-and-sync.md) | 2026-10-04 | Three vaults by lifecycle and reader (`homelab-infra` / `homelab-platform-<cluster>` / `homelab-apps-<cluster>`); ESO keeps the Ansible-seeded platform Secrets current with `creationPolicy: Merge` | Accepted — live verification pending; partially supersedes 0034, decides the adoption question |
+| [0039](0039-helm-installs-crds-over-the-apply-limit.md) | 2026-10-04 | The 262144-byte limit is client-side apply's annotation; Helm installs larger CRDs, so ESO's come from its chart | Accepted, verified (server dry-run); corrects 0020/0031's rationale |
+| [0040](0040-whether-infrastructure-config-splits-per-domain.md) | 2026-10-04 | Whether `infrastructure-config` splits into per-domain Kustomizations | **Open** — decide after a real ESO refresh failure or at cluster #2 |
 
 ### Open questions without a record yet
 
@@ -83,96 +86,8 @@ Tracked in the relevant `CLAUDE.md` until they're decided:
   time instead of vendoring (0020, 0031). Only Calico's is blocked by the
   Ansible prime.
 - Control-node kubeconfig hygiene — `ansible/CLAUDE.md`, "Open items".
-- Whether ESO, once live, **adopts** the cluster-destined bootstrap-seeded
-  Secrets (first case: cert-manager's Cloudflare DNS-01 token), or they stay
-  Ansible-seed-only (0009, 0034). **Not yet decided** — the seed-only wording
-  in 0009 records the mechanism, not a permanence decision. Current lean:
-  adopt, inside the consumer split — ESO still never reads `homelab-infra`
-  (cluster-destined secrets would live in **that cluster's `homelab-apps-<cluster>`
-  vault**; exposure doesn't widen because these secrets end up as in-cluster
-  `Secret`s either way), and **the Ansible seed remains regardless** — a from-scratch
-  rebuild needs the token before ESO exists, so adoption is an overlay, never a
-  handover. Excluded whatever is decided: `cluster-topology` (permanent,
-  0021/0034) and `eso_op_service_account_token` (0034 ⚠). Decide + ADR at the
-  ESO milestone.
-
-  ⚠ **The store change already settled half of this.** The asymmetry below
-  (cert-manager upstream of ESO, ceph-csi not) held only because the Bitwarden
-  SDK Server needed a cert-manager cert. Under
-  [ADR-0034](0034-secrets-store-1password.md) there is **no in-cluster server
-  and no certificate at all**, so cert-manager is no longer upstream of ESO:
-  **the two cases below have collapsed into one**, governed only by
-  rebuild-path length. Read them with that in mind — the distinction they draw
-  is now historical.
-
-  ⚠ **The immutable-grant deadline no longer binds the control node.** It does
-  still bind **each cluster's ESO** service account, whose vault grant is fixed
-  at creation: if adoption means ESO reading cluster-destined secrets, those
-  must live in that cluster's own `homelab-apps-<cluster>` vault, which it already
-  reads — so the lean above stays reachable. (The control node authenticates as
-  the operator via the desktop app and has no service account to constrain —
-  ADR-0034.)
-
-  ⚠ **ADR-0034 changed the apps side to one vault + one ESO service account
-  PER CLUSTER**, where ADR-0027 had a single shared apps project — that was a
-  BWS budget artefact (3 projects / 3 machine accounts), not a judgement. So
-  "cluster-destined secrets live in the apps vault" now means *that cluster's*,
-  and adoption must be decided per cluster or fleet-wide-by-convention, not for
-  one shared vault.
-
-  ⚠ **ceph-csi's two cephx keys are a different case from cert-manager's token,
-  and the difference is easy to misread.** cert-manager genuinely *is* upstream
-  of ESO (0009: the SDK Server needs a cert). ceph-csi is **not** — ESO and the
-  SDK Server are stateless, so nothing about ESO needs a StorageClass, and
-  ceph-csi could have landed after it. So for these two keys, "retire the seed"
-  is actually on the table where for the Cloudflare token it is not.
-
-  The argument for keeping them seeded anyway is **rebuild-path length**, not
-  dependency: seeded, storage needs only Ansible + the secret store; sourced from ESO, first
-  provisioning would additionally need a live LE cert, the Gateway, the LB IP,
-  BGP and vendor-API reachability. Re-provisioning is the *normal* upgrade path
-  here (0019), so that path gets walked often, and 0004/0015 both put recovery
-  on top of Ceph. Running clusters are unaffected either way — 0009 notes
-  materialised Secrets persist, so ESO is needed at sync time, not pod start.
-  Current lean: **adopt, keep the seed**, same as the token but for a different
-  reason. Decide explicitly rather than inheriting the delivery order.
-
-- **Does `infrastructure-config` split into per-domain Kustomizations?** Decide
-  at the ESO milestone, because ESO is what forces it. That tier is a grab-bag
-  whose members share only "CRs whose CRDs came from a controller", and their
-  dependencies differ: cert-manager's issuers need the cert-manager controller;
-  ceph-csi's CRs need the ceph-csi operator and Ceph; **ESO's SecretStore needs
-  cert-manager's `Certificate`** (the Bitwarden SDK Server ran with a cert from
-  it — 0009; ⚠ no longer true under 0034). kustomize-controller applies a tier in **one pass with no
-  intra-tier ordering**, so that last edge is either satisfied by luck and
-  retries (the SecretStore flaps NotReady until the cert exists) or it needs an
-  explicit `dependsOn` — which means its own Kustomization either way.
-
-  ⚠ **That forcing edge is GONE, not merely store-dependent.** It existed
-  because the Bitwarden SDK Server needed a certificate; under
-  [ADR-0034](0034-secrets-store-1password.md) there is no server and no cert,
-  so the SecretStore needs only its controller one tier up. This question now
-  keeps only the soft costs listed below — an observability argument with no
-  correctness argument behind it. The one way to reintroduce a hard edge is to
-  source cert-manager's Cloudflare token *from* ESO, which couples this
-  question to the adoption one above: **decide them together.**
-
-  Costs of the status quo, for the record: one Ready condition spanning three
-  unrelated failure domains, so "infrastructure-config NotReady" doesn't say
-  whether it is PKI, storage or secrets; one `timeout: 10m` tuned for the
-  slowest member (ACME issuance), inherited by CRs that are instant; and a cert
-  renewal failure gating `apps` when storage is fine. **Not** a cost: pruning —
-  a failed health check deletes nothing, since prune follows resources leaving
-  the source. And gating `apps` on all three is *correct* (apps needs certs,
-  storage and secrets); what's wrong is the granularity, not the gate.
-
-  ⚠ Real tension to settle in that ADR: today's tiers are **kind**-based
-  (crds → controllers → config → apps). Per-domain Kustomizations are a
-  *second* organizing principle layered on top, so either adopt it
-  consistently or don't — drifting into a hybrid is the bad outcome. Related:
-  moving storage genuinely earlier would need the ceph-csi **operator** moved
-  too, not just its CRs (the CRs need their controller running), i.e. a
-  `storage` tier spanning today's `infrastructure` and `infrastructure-config`.
+- Whether ceph-csi-operator moves to its Helm chart now that ADR-0039 removed
+  ADR-0031's size blocker. Needs the same server dry-run as evidence first.
 
 ## Adding a record
 

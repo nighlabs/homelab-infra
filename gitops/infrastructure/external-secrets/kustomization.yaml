@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# No `namespace:` transformer (see ../nginx-gateway-fabric/kustomization.yaml);
+# every resource carries its namespace explicitly.
+#
+# ⚠ The ClusterSecretStores and ExternalSecrets are NOT here — they're
+# external-secrets.io CRs, and this directory reconciles in the same pass that
+# *installs* the CRDs they need. They live in
+# ../../infrastructure-config/external-secrets/, whose Flux Kustomization
+# dependsOn this whole tier being Ready.
+#
+# The token Secret the stores authenticate with (onepassword-service-account)
+# is Ansible-seeded by bootstrap-cluster.yml, from homelab-infra — the vault
+# ESO itself can never read (ADR-0038).
+resources:
+  - namespace.yaml
+  - ocirepository.yaml
+  - helmrelease.yaml

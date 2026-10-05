@@ -1,10 +1,11 @@
 # Flux entrypoint for controller CONFIGURATION — CRs whose CRDs/webhooks only
 # exist once the controllers in ./infrastructure are installed (first case:
-# cert-manager's ClusterIssuers + the wildcard Certificate; later: ceph-csi
-# StorageClasses, ESO SecretStores). A separate tier because kustomize-controller
-# applies a tier in one pass: a CR whose CRD arrives via a HelmRelease in the
-# same pass fails the reconcile, and dependsOn between tiers is the repo's
-# sanctioned ordering tool (gitops/CLAUDE.md, "Layout").
+# cert-manager's ClusterIssuers + the wildcard Certificate; then ceph-csi's
+# CRs + StorageClasses; then ESO's ClusterSecretStores + ExternalSecrets). A
+# separate tier because kustomize-controller applies a tier in one pass: a CR
+# whose CRD arrives via a HelmRelease in the same pass fails the reconcile, and
+# dependsOn between tiers is the repo's sanctioned ordering tool
+# (gitops/CLAUDE.md, "Layout").
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -21,7 +22,10 @@ spec:
   prune: true
   # wait: true makes this tier Ready == the Certificate is actually Ready
   # (kstatus follows cert-manager's Ready condition) — i.e. ACME issuance
-  # WORKED, DNS-01 and all. `apps` dependsOn this, so workloads only reconcile
+  # WORKED, DNS-01 and all — AND the ClusterSecretStores and platform
+  # ExternalSecrets are Ready, i.e. 1Password is reachable with a valid token.
+  # ⚠ That second half means a vendor outage blocks `apps` reconciling even
+  # though the seeded Secrets keep working — ADR-0040 (Open). `apps` dependsOn this, so workloads only reconcile
   # onto a cluster whose certs are real. Timeout is generous: a first DNS-01
   # issuance waits on Cloudflare propagation + LE validation, minutes not
   # seconds.

@@ -359,6 +359,7 @@ in dependency order:
 ### 3.6 Secrets
 
 [ADR-0034](decisions/0034-secrets-store-1password.md),
+[ADR-0038](decisions/0038-three-vaults-platform-secrets-seed-and-sync.md),
 [ADR-0033](decisions/0033-secrets-fact-broker.md),
 [ADR-0021](decisions/0021-topology-blinding-postbuild-substitution.md).
 
@@ -368,8 +369,9 @@ about *who reads it, when*:
 | Tier | Example | Mechanism |
 |---|---|---|
 | **Control-node credentials** | Proxmox API token, k3s join token, FRR password | **1Password, read at run time** via the `op` CLI — one `op item get` per item, values as labelled fields on it |
-| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
-| **Runtime app secrets** | app passwords, API keys | **External Secrets Operator + the 1Password SDK provider** — no in-cluster server — from a *separate* vault |
+| **Bootstrap secrets** | needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
+| **Platform secrets** | Cloudflare DNS-01 token, cephx keys | bootstrap secrets that keep rotating: Ansible **seeds** them, then ESO **keeps them current** with `creationPolicy: Merge`, both from the cluster's `homelab-platform-<cluster>` vault |
+| **Runtime app secrets** | app passwords, API keys | **External Secrets Operator + the 1Password SDK provider** — no in-cluster server — from the cluster's `homelab-apps-<cluster>` vault |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range, node IPs | `${var}` placeholders in Git, substituted by Flux from the Ansible-seeded `cluster-topology` Secret |
 
 - **There is no `vault.yml`.** Nothing secret lives in the repo directory in
@@ -405,11 +407,15 @@ about *who reads it, when*:
   tier can never be a substitution source for it — and Calico is Ansible-primed
   from the same values before Flux exists (ADR-0016). *Cluster-bound ≠
   ESO-managed.*
-- **Two vaults, split by consumer:** `homelab-infra` (read by the control node)
-  and `homelab-apps-testnode` (read by ESO, created at that milestone). A cluster
-  compromise must not reach the Proxmox token — and under 1Password that is
-  structural rather than a matter of discipline, since a SecretStore names
-  exactly one vault and cannot reach a second.
+- **Three vaults, split by who reads them:** `homelab-infra` (control node
+  only, fleet-wide), `homelab-platform-<cluster>` (control node **and** that
+  cluster's ESO) and `homelab-apps-<cluster>` (that cluster's ESO only). One
+  ESO service account per cluster, granted exactly its two vaults, asserted
+  before the token is seeded. A cluster compromise must not reach the Proxmox
+  token or another cluster's secrets, and under 1Password that is structural
+  rather than a matter of discipline: a store names exactly one vault, and the
+  grant decides which. In-cluster, the platform store accepts only the
+  `cert-manager` and `ceph-csi` namespaces.
 - **Undefined `${var}` substitutes to the empty string and reconciles green.**
   The kustomize-controller feature gate `StrictPostBuildSubstitutions=true` is
   mandatory and asserted by `flux-bootstrap.yml`.
@@ -441,7 +447,7 @@ about *who reads it, when*:
   ```
   gitops/deployment/<cluster>/  Flux entrypoints: source.yaml, sync.yaml, crds/infrastructure/apps
   gitops/crds/                  CRDs that must be Established before controllers (vendored: Calico, Gateway API, ceph-csi)
-  gitops/infrastructure/        controllers: calico, calico-bgp, then cert-manager, ceph-csi, ESO, …
+  gitops/infrastructure/        controllers: calico, calico-bgp, nginx-gateway-fabric, cert-manager, ceph-csi, external-secrets
   gitops/apps/                  workloads (empty until the infra layer is up)
   ```
   The artifact root is `gitops/` itself, so paths inside are artifact-relative
@@ -743,7 +749,8 @@ rebuildability. Evidence for every ✅ is in [`worklog.md`](worklog.md).
    ✅ ceph-csi — ceph-csi-operator v1.0.4 against the existing Proxmox Ceph
    (Squid 19.2.3): `ceph-rbd` (RWO, cluster default) and `cephfs` (RWX), both
    provisioning, mounting and reclaiming; RBD mapped by krbd. Then
-   ⬜ External Secrets Operator (1Password SDK provider) → Postgres + Redis →
+   ⬜ External Secrets Operator (1Password SDK provider, three vaults —
+   ADR-0038) → Postgres + Redis →
    LiteLLM → confirm a chat completion routes end-to-end to the Mac.
 7. ⬜ **Then:** Qdrant → RAG/orchestrator → Open WebUI → OTel Collector.
 8. ⬜ **Split DNS + access:** internal resolver, Tailscale split DNS,

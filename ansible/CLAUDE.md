@@ -25,11 +25,19 @@ Gateway Fabric (Gateway API CRD tier, shared Gateway, LB reachable,
 source-IP preserved), cert-manager (DNS-01 wildcard issued, HTTPS on the
 Gateway, `infrastructure-config` tier) and **ceph-csi** (both StorageClasses
 provisioning against the existing Proxmox Ceph; worklog 2026-09-07).
-**Next: ESO (1Password SDK provider — no in-cluster server)** → Postgres + Redis → LiteLLM → … That work
-is in `gitops/`; this directory's part is seeding the bootstrap-tier secrets as
-they arrive — the cert-manager DNS-01 token and ceph-csi's two cephx keys (both
-done, in `bootstrap-cluster.yml`) and the ESO access token when that milestone
-comes.
+**In progress: ESO** (1Password SDK provider, three vaults, ADR-0038) → then
+Postgres + Redis → LiteLLM → … The controller and stores are in `gitops/`.
+This directory's part is in `bootstrap-cluster.yml`. It seeds the platform
+secrets (Cloudflare token, cephx keys) from each cluster's
+`homelab-platform-<cluster>` vault, after which ESO keeps them current. It
+also seeds ESO's own service-account token, after asserting the token's grant.
+Live verification state: `../docs/worklog.md`.
+
+⚠ **The platform vaults are read only by plays that opt in**
+(`op_load_cluster_vaults: true`, currently only `bootstrap-cluster.yml`'s
+Calico/seed play). Labels are plain in 1Password and arrive suffixed
+`_<cluster>` (`cloudflare_api_token_testnode`). `vars.yml` resolves them per
+host from `cluster_name`, so they are usable only where `cluster_name` is.
 
 ⚠ The **Ceph side** is not provisioned by any play: `ceph` needs root on a PVE
 node (pmxcfs), the `provisioner` user's sudo is scoped to `qm`, and cephx user
@@ -50,13 +58,14 @@ server path is built), and the Mac role. Node 2's join is a **dataplane event**
 |---|---|---|
 | `build-template.yml` | Flatcar proxmoxve image → import → template (vmid 9000). ⚠ Guarded on `qm status` failing, so it **runs green and silently skips** whenever the template exists; a successful run is not evidence of a fresh template (ADR-0030). | 1Password |
 | `provision-nodes.yml` | per node: render Butane → `butane --strict` → upload `.ign` (SSH) → clone + pin MACs + disk + `cicustom` (API) → boot → wait for SSH → detach `cicustom` then delete the `.ign` (ADR-0025) | 1Password |
-| `bootstrap-cluster.yml` | per cluster: wait for `/readyz`, fetch + rewrite the kubeconfig to `.kube/<cluster>.config`, seed `cluster-topology` + the cert-manager `cloudflare-api-token` Secret (bootstrap-secret tier), server-side-apply the vendored CRDs, `helm` the tigera-operator from `gitops/infrastructure/calico/values.yaml`, apply the BGP CRs + endpoint ConfigMap via `flux build kustomization --strict-substitute`, wait Ready | 1Password, `helm` |
+| `bootstrap-cluster.yml` | per cluster: wait for `/readyz`, fetch + rewrite the kubeconfig to `.kube/<cluster>.config`, seed `cluster-topology`, the platform Secrets (Cloudflare token, cephx keys, from `homelab-platform-<cluster>`) and ESO's token (grant asserted first), server-side-apply the vendored CRDs, `helm` the tigera-operator from `gitops/infrastructure/calico/values.yaml`, apply the BGP CRs + endpoint ConfigMap via `flux build kustomization --strict-substitute`, wait Ready | 1Password, `helm` |
 | `flux-bootstrap.yml` | helm-install the flux-operator (`flux_operator_version`), apply ONE sync-less `FluxInstance` with the `StrictPostBuildSubstitutions` patch, assert the gate landed, seed `gitops/deployment/<cluster>/{source,sync}.yaml`, wait for `flux-system`/`crds`/`infrastructure`/`apps` Ready | the previous play's kubeconfig + Secret; **no credentials** |
 | `render-frr-config.yml` | pfSense/FRR raw config + firewall-alias members → `.frr/` (git-ignored), from the node map; asserts index/ASN/LB-range collisions **and its asserts are verified to fire** | 1Password |
 
 Every play that reads a `{{ secrets.* }}` value includes
-`tasks/load-secrets.yml` first — one bulk API call into the `secrets` fact
-(ADR-0027). `tasks/load-node-map.yml` flattens `inventory/nodes.yml`'s
+`tasks/load-secrets.yml` first: one `op item get` per item into the `secrets`
+fact (ADR-0034), plus each cluster's platform-vault items when the play opts
+in (ADR-0038). `tasks/load-node-map.yml` flattens `inventory/nodes.yml`'s
 `clusters` into a cluster-annotated `nodes` map and asserts **global**
 hostname/`node_number` uniqueness.
 
@@ -264,9 +273,9 @@ Each of these produced a *silent-wrong* result, not a loud failure.
   VM. (The ceph-csi PVC test is **done** — both classes provision, mount and
   reclaim; krbd maps `imageFeatures: layering` on Flatcar 6.12.102. Worklog
   2026-09-07.)
-- **Drop Helm for Calico** (ADR-0029, Proposed) — now with precedent: ceph-csi
-  installs from vendored manifests because its chart *cannot* be installed by
-  Flux at all (ADR-0031). Would delete the adoption
+- **Drop Helm for Calico** (ADR-0029, Proposed). ⚠ ADR-0031's "ceph-csi's
+  chart cannot be installed by Flux" is no longer precedent: ADR-0039 showed
+  the CRD-size limit does not bind Helm. Would delete the adoption
   problem, `helm` as a control-node prerequisite, and the `kubernetes.core`
   Helm-major pin. Not before the next milestone has a known-good cluster to
   diff against.

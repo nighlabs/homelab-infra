@@ -50,11 +50,11 @@ infrastructure/           # controllers, in dependency order:
   nginx-gateway-fabric/     #   Gateway API impl (ADR-0013): NGF chart, shared Gateway, https redirect
   cert-manager/             #   controller only — its CRs live a tier down
   ceph-csi-operator/        #   VENDORED manifests, not a HelmRelease (ADR-0031)
-  kustomization.yaml        #   next: ESO (1Password SDK provider) -> ...
+  external-secrets/         #   ESO chart (1Password SDK provider; chart installs its CRDs, ADR-0039)
 infrastructure-config/    # CRs CONSUMED BY those controllers (CRDs arrive with the chart,
   cert-manager/           #   so same-pass apply fails): ClusterIssuers + wildcard Certificate
   ceph-csi/               #   CephConnection, ClientProfile, 2 Drivers, 2 StorageClasses
-                          #   later: ESO SecretStores
+  external-secrets/       #   2 ClusterSecretStores + the platform ExternalSecrets (ADR-0038)
 apps/                     # workloads only (empty until the infra layer is up)
 ```
 
@@ -135,14 +135,20 @@ hand-edited) on every `calico_version` bump, in the same commit as `vars.yml`
   config. Removing a CRD is a manual act, never a reconcile.
 - **`wait: true`** so `infrastructure`'s `dependsOn` gates on *Established*.
 - **Don't route other controllers' CRDs here** just because they have some.
-  Calico qualifies because of the size limit; a chart whose CRDs fit is fine
-  as a HelmRelease.
+  ⚠ **Size alone does NOT qualify** (ADR-0039): the 262144-byte limit is the
+  `last-applied-configuration` annotation that client-side `kubectl apply`
+  writes, and Helm writes no such annotation. ESO's two ~374 KB CRDs install
+  from its chart. A CRD belongs here when no chart can own it for another
+  reason: no chart at all (Gateway API), or an Ansible prime sharing the file
+  (Calico).
 - **Three occupants now, from three unrelated charts** (Calico, Gateway API,
   ceph-csi), so this tier is load-bearing rather than a Calico quirk. ceph-csi
   is the strictest case: its chart has **no `crds.enabled` toggle at all**, so
-  the whole operator is installed from vendored manifests (ADR-0031). Before
-  assuming a chart can install its own CRDs, check the rendered size —
-  `helm template ... | ...` — against 262144 bytes per object.
+  the whole operator is installed from vendored manifests (ADR-0031). ⚠ That
+  record's size premise is corrected by ADR-0039, so whether ceph-csi moves to
+  its chart is open again. To test any CRD, don't measure it:
+  `kubectl create --dry-run=server` succeeds where
+  `kubectl apply --dry-run=server` fails "Too long".
 - **Open follow-on:** render the CRDs at OCI build time so the ~5 MB (Calico
   2.9 MB, Gateway API and ceph-csi 1 MB each) stops living in Git. For
   Calico two constraints must survive: the version must come from the same
@@ -155,8 +161,11 @@ hand-edited) on every `calico_version` bump, in the same commit as `vars.yml`
 
 The repo is public. Anything environment-revealing is committed as a
 placeholder and substituted by Flux from the Ansible-seeded `cluster-topology`
-Secret. `cluster-topology` stays Ansible-seeded **permanently** — ESO needs a
-LoadBalancer IP that the BGP config produces.
+Secret. `cluster-topology` stays Ansible-seeded **permanently**: a Secret
+produced by a controller *inside* the `infrastructure` tier can never be a
+substitution source *for* that tier (one pass, no intra-tier ordering), and
+Calico is primed from the same values before Flux exists. *Cluster-bound ≠
+ESO-managed.*
 
 ```yaml
 # infrastructure/calico-bgp/bgppeer.yaml — committed exactly like this
@@ -172,6 +181,7 @@ spec:
 | `${bgp_peer_asn}` | `bgp_peer_asn` (cleartext constant) |
 | `${cluster_asn}` | `bgp_asn_base` + cluster `index` |
 | `${k3s_api_ip}` | the primary node's DMZ IP |
+| `${cluster_name}` | the cluster key — names its 1Password vaults (ADR-0038) |
 
 - **Substitute EVERY shared value, not just secret-shaped ones.** The ASNs
   reveal nothing, but they're *derived* in Ansible and consumed on both sides
@@ -260,62 +270,92 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
 - A cluster-scoped CR goes in a directory *without* a `namespace:` transformer.
 - Nothing environment-revealing is ever a literal: `${var}` + `cluster-topology`.
 
+## ESO + 1Password (ADR-0034, ADR-0038)
+
+- **No in-cluster secrets server.** The 1Password SDK provider calls the vendor
+  API directly: no Deployment, Service, `Certificate` or image digest to
+  maintain. ESO's webhook certs come from its bundled `cert-controller`, never
+  cert-manager. Its earliest position is immediately after Calico: CRDs,
+  pod networking, egress to the vendor API (pod→node NAT, **not** BGP) and its
+  token Secret.
+- **Two ClusterSecretStores, one per vault** (a store names exactly one):
+  `onepassword-platform` → `homelab-platform-${cluster_name}`, restricted by
+  `conditions.namespaces` to `cert-manager` and `ceph-csi` (an app namespace
+  cannot pull the Cloudflare token), and `onepassword-apps` →
+  `homelab-apps-${cluster_name}`, unrestricted. Both authenticate with the
+  Ansible-seeded `external-secrets/onepassword-service-account` (key `token`).
+  ⚠ Add a namespace to the platform store only for a platform controller.
+- **Platform Secrets: Ansible seeds, ESO keeps current.** The Cloudflare token
+  and both cephx Secrets are **created** by `bootstrap-cluster.yml` and then
+  synced by ExternalSecrets with **`creationPolicy: Merge`**, from the same
+  1Password fields. Merge never creates, never deletes, takes no
+  ownerReference, and writes only the listed keys (the cephx `userID` stays
+  Ansible's). So a rebuild works before ESO exists, and deleting an
+  ExternalSecret can't take cert-manager's token with it. ⚠ Don't switch them
+  to `Owner`/`CreateOrMerge`: ESO would then create a Secret alone, without
+  `userID`.
+- **Rotation:** edit the field in 1Password, then
+  `kubectl -n <ns> annotate externalsecret <name> force-sync=$(date +%s) --overwrite`.
+  The platform store has no provider `cache:` on purpose, since a cache would
+  answer that force-sync from memory.
+- ⚠ **Rate limit is the design constraint**: 1,000 requests/24h per *account*
+  on Individual/Families, shared by every service account. Store validation
+  is free in steady state (the client is cached per store `resourceVersion`
+  and `Validate()` makes no call). The cost is one `Resolve` per data entry
+  per refresh. **Set `refreshInterval` deliberately on every ExternalSecret**;
+  the platform ones use `24h` (3 calls/day). Budget roughly
+  `Σ entries × 24h/interval` before adding a batch.
+- ⚠ **Retry behaviour: there is nothing in ESO to tune** (read from the
+  v2.11.0 source). It exposes no backoff flags, and `refreshInterval` and
+  `--store-requeue-interval` govern only the *success* path. A failed
+  reconcile returns an error to controller-runtime's default queue: 5 ms,
+  doubling, **capped at 1000 s (~16.7 min), retried forever**. That is
+  ~18 calls in the first ~20 min, then **~86/day per failing object**, until
+  it succeeds or is deleted. How that plays out by failure mode:
+
+  | Failure | What retries | Cost |
+  |---|---|---|
+  | Token bad / expired / revoked | **Only the 2 stores.** The flood gate (`--enable-flood-gate`, default on) stops ExternalSecrets calling the provider while their store is NotReady | ~170/day: survivable, no lockout |
+  | Token fine, one item/field missing or renamed | **That ExternalSecret.** Its store stays Ready, so the flood gate doesn't apply | ~86/day per broken ExternalSecret, which is the real amplifier: 10 broken refs ≈ 860/day |
+  | Account already rate-limited | Every ExternalSecret that tries to sync; the stores stay Ready, because their cached client makes no call | N × 86/day of rejected calls, extending the lockout if rejected calls count |
+
+  So the controls that matter are outside ESO. Keep the count of
+  ExternalSecrets low, and give each one a deliberate interval. **Verify
+  every new remote ref before merging**: a typo'd field costs ~86 calls/day
+  until fixed. Check the token before seeding it: `bootstrap-cluster.yml` runs
+  `op vault list` as the token and refuses unless it sees exactly the cluster's
+  two vaults. When rotating the token, run the play, never a raw
+  `kubectl create secret`.
+- 🛑 **Emergency brake**: `kubectl -n external-secrets scale deploy external-secrets --replicas=0`.
+  This stops every 1Password call immediately. Every synced Secret persists
+  (Merge never deletes; materialised Secrets outlive their source), so
+  workloads are unaffected; only freshness pauses. helm-controller doesn't
+  revert the replica count (no drift detection configured), but the next
+  chart *upgrade* will, so suspend the HelmRelease too if the brake must
+  hold: `flux -n external-secrets suspend hr external-secrets`. Release with
+  `resume` and scale back to 1.
+- **Watch the spend:** the controller exports
+  `externalsecret_provider_api_calls_count{provider="1Password/SDK"}` (by
+  `call`: `Resolve`, `VaultsList`, …, and `status`) on `:8080`. ⚠ It counts
+  ESO's calls, not the SDK's own sign-in when a client is built, so treat it
+  as a floor, not the bill; 1Password's usage report is the bill. Nothing scrapes it until the OTel
+  milestone. Until then, `kubectl -n external-secrets port-forward deploy/external-secrets 8080`
+  and curl `/metrics`. An alert on its daily rate is owed at that milestone.
+- ⚠ **`infrastructure-config`'s `wait: true` now gates `apps` on 1Password
+  being reachable** (the ExternalSecrets and stores report real Ready), even
+  though the seeded Secrets keep working. Accepted for now; see ADR-0040 (Open).
+- **CRDs come from the chart** (`installCRDs: true`) with
+  `helm.sh/resource-policy: keep`, so an uninstall never deletes them and
+  garbage-collects every ExternalSecret (ADR-0039).
+- Per-app isolation *inside* a cluster (namespace-scoped stores, or per-app
+  conditions on `onepassword-apps`) is deferred until `apps/` has more than
+  one tenant.
+
 ## Next
 
-Everything downstream of storage, in dependency order (the `NginxProxy`
-RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013): **ESO
-with the 1Password SDK provider** → Postgres + Redis → LiteLLM → Qdrant → RAG →
-Open WebUI → OTel. Design: `../docs/architecture.md` §3.8, §4.5–4.9, §7.
-
-### What the store change (ADR-0034) means for this tier
-
-⚠ **There is NO in-cluster secrets server.** The Bitwarden design needed a
-`Deployment` + `Service` + `Certificate` + a pinned image digest for the SDK
-Server; the 1Password SDK provider talks to the vendor API directly. Nothing to
-run, nothing to pin, no cert. This is the single biggest reason the swap was
-made before the milestone rather than after — porting ESO twice was the
-expensive path.
-
-⚠ **ESO's earliest position moves to "immediately after Calico"** — exactly
-where the reserved slots already put it, so no re-tiering. What still
-constrains it: CRDs Established, pod networking, egress to the vendor API
-(pod→node NAT, **not** BGP, which advertises LoadBalancer ranges *inbound*),
-and its own Ansible-seeded token Secret. ESO's admission webhook certs come
-from its own bundled `cert-controller`, never cert-manager.
-
-⚠ **Two open questions became coupled and must be decided together** — the
-`infrastructure-config` per-domain split and whether ESO *adopts* the
-bootstrap-seeded Secrets. The split's only hard forcing edge was "ESO's
-SecretStore needs cert-manager's `Certificate`", and that edge no longer
-exists; the one way to reintroduce one is to source cert-manager's Cloudflare
-token *from* ESO. `docs/decisions/README.md`, "Open questions".
-
-**Vendor-specific shape**, when it is written — this is the right home for it;
-`../ansible/SECRETS.md` deliberately stops at the vault boundary and covers
-only what the control node creates and reads:
-
-- A `ClusterSecretStore` naming **this cluster's own** `homelab-apps-<cluster>` vault
-  (`homelab-apps-testnode` for `testnode`). It cannot reach `homelab-infra`, nor another
-  cluster's apps vault — a store names exactly one vault, which is what makes
-  the consumer split structural rather than a matter of discipline.
-- ⚠ **One vault and one service account PER CLUSTER**, same blast-radius
-  argument as per-cluster k3s join tokens (ADR-0026): a compromised cluster
-  must not take the fleet with it. ADR-0027 specified a single shared apps
-  project only because BWS capped the free tier at 3 projects / 3 machine
-  accounts; 1Password allows 100 service accounts and unlimited vaults, so that
-  constraint is gone (ADR-0034).
-- Auth from an Ansible-seeded Secret holding
-  `eso_op_service_account_token_<cluster>`, which lives in the
-  **`homelab-infra`** vault (the control node seeds it; ESO must never be able
-  to rotate the credential gating its own access).
-- ⚠ The ESO service account's vault grant is **immutable**, fixed at creation.
-  It cannot be widened later — so create one account per cluster from the
-  start; retrofitting a narrower grant means a new account and a new token.
-- ⚠ **Rate limits are the real design constraint, not throughput.** The daily
-  cap is per *account*, shared across every service account, and is 1,000/24h
-  on Individual/Families. Steady state is roughly
-  `N_externalsecrets × (24h / refreshInterval)` — ~480/day at the default `1h`
-  with 20 `ExternalSecret`s. Set `refreshInterval` deliberately; do not leave
-  it at the default and hope. See ADR-0034's rate-limit section before
-  starting, including the error-amplification case where an invalid token
-  exhausts a *daily* quota in minutes and locks out the control node too.
+Everything downstream of secrets, in dependency order (the `NginxProxy`
+RewriteClientIP config still comes with Cloudflare Tunnel — ADR-0013):
+Postgres + Redis → LiteLLM → Qdrant → RAG → Open WebUI → OTel. Design:
+`../docs/architecture.md` §3.8, §4.5–4.9, §7. App secrets go to
+`homelab-apps-<cluster>` via `onepassword-apps`, each ExternalSecret with a
+deliberate `refreshInterval`.

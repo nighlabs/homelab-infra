@@ -1,7 +1,7 @@
 # ADR-0034: 1Password replaces Bitwarden Secrets Manager; Ansible reads it with the `op` CLI; the control node keeps no secret zero
 
 - **Date:** 2026-09-12 (decided and implemented) · 2026-09-13 (cutover verified; Bitwarden removed)
-- **Status:** Accepted, verified — live, and the Bitwarden half is deleted
+- **Status:** Accepted, verified — live, and the Bitwarden half is deleted. **Vault layout partially superseded by [ADR-0038](0038-three-vaults-platform-secrets-seed-and-sync.md)** (two vaults → three; everything else here stands).
 - **Supersedes / related:** **supersedes [ADR-0027](0027-control-node-secrets-bws-runtime.md)** (control-node secrets from BWS at run time) and **answers [ADR-0032](0032-secrets-store-1password-migration.md)** (which posed this as an open question and did the investigation this record acts on); **partially supersedes [ADR-0009](0009-secrets-aescbc-and-eso-bitwarden.md)** — its *layer 2* (ESO + Bitwarden) only; **layer 1 (k3s aescbc at rest) is untouched and live**. Related: [ADR-0033](0033-secrets-fact-broker.md) (the broker seal that made this a two-file change), [ADR-0021](0021-topology-blinding-postbuild-substitution.md) (`cluster-topology` stays Ansible-seeded, on grounds corrected below), [ADR-0015](0015-backups-nas-s3-and-break-glass.md) (break-glass export mechanism changes), [ADR-0013](0013-ingress-certs-dns-external-access.md) (DNS-01, which is why the old ESO ordering chain was already overstated). Code: `ansible/playbooks/tasks/load-secrets.yml` + `load-secrets-onepassword.yml`, `ansible/playbooks/render-1password-import.yml`, `ansible/inventory/group_vars/all/vars.yml`, `ansible/SECRETS.md`.
 
 ## Context

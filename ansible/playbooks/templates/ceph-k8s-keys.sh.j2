@@ -45,10 +45,17 @@ printf '  ceph_k8s_cephfs_key     %s\n' "$(ceph auth get-key "client.${CEPHFS_CL
 
 cat <<'EOF'
 
-  Store each of the four above in 1Password as fields on the `control-node`
-  item, in the `homelab-infra` vault, labelled exactly as printed above
-  (ansible/SECRETS.md §2 — they belong in the Storage section, and the two
-  keys must be `concealed`). Then, on the control node:
+  Store them in 1Password, labelled exactly as printed above
+  (ansible/SECRETS.md §2):
+
+    ceph_fsid, ceph_mons     -> `control-node` item, `homelab-infra` vault
+                                (Storage section)
+    the two keys (concealed) -> `ceph-csi` item, in EACH cluster's
+                                `homelab-platform-<cluster>` vault — read by
+                                Ansible to seed them AND by that cluster's ESO
+                                to keep them current (ADR-0038)
+
+  Then, on the control node:
 
       cd ansible
       uv run ansible-playbook playbooks/bootstrap-cluster.yml
