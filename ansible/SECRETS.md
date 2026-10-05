@@ -16,14 +16,14 @@ Why 1Password, why the `op` CLI rather than the SDK, and what was rejected:
 **This file covers the CONTROL-NODE half only** — what a human creates in the
 store, and what Ansible reads out of it. It stops at the vault boundary.
 
-**ESO's half is deliberately not here.** When that milestone lands, its
-`ClusterSecretStore` names a provider, a vault and an auth Secret, and all three
-are 1Password-specific; that configuration lives with the manifests it belongs
-to, in `gitops/`, documented in `gitops/CLAUDE.md`. Only two things about ESO
-appear below, and both are genuinely control-node concerns: **which vault** ESO
-is granted (§1.3–1.4 — because a service account's grant is immutable, so it is
-made once and cannot be widened), and **the item holding the token the control
-node seeds** (§2).
+**ESO's half is deliberately not here.** Its `ClusterSecretStore`s name a
+provider, a vault and an auth Secret, and all three are 1Password-specific; that
+configuration lives with the manifests it belongs to, in `gitops/`, documented
+in `gitops/CLAUDE.md`. Only three things about ESO appear below, and all are
+genuinely control-node concerns: **which vaults** ESO is granted (§1.3–1.4,
+because a service account's grant is immutable, so it is made once and cannot
+be widened), **the platform vault items** the control node also reads to seed
+(§2b), and **the item holding the token the control node seeds** (§2).
 Anything more would put a Flux-managed resource's schema in an Ansible doc,
 where it would rot the first time the provider's CRD changed.
 
@@ -118,20 +118,26 @@ before blaming the config.
 
 ### 1.3 Create the vaults
 
-Split **by consumer, not by subject** — ADR-0027's split, kept — and then, on
-the apps side, **one vault per cluster**:
+Split **by who reads them** — ADR-0027's consumer split, kept — with **one
+vault per cluster** on every side ESO can see (ADR-0038):
 
 | Vault | Read by | Holds |
 |---|---|---|
-| `homelab-infra` | the **control node** (one vault, fleet-wide) | everything in §2 — Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password — **and every cluster's ESO service-account token** |
-| `homelab-apps-<cluster>` — e.g. `homelab-apps-testnode` | **that cluster's ESO** (token in a Kubernetes Secret) | application secrets for that cluster only. One per cluster in `inventory/nodes.yml` |
+| `homelab-infra` | the **control node** only (one vault, fleet-wide) | everything in §2: Proxmox credentials, topology, SSH keys, k3s join tokens, the FRR password, **and every cluster's ESO service-account token**. Never needed in-cluster |
+| `homelab-platform-<cluster>`, e.g. `homelab-platform-testnode` | the control node **and that cluster's ESO** | §2b: bootstrap secrets that keep rotating (the Cloudflare DNS-01 token, the two cephx keys). Ansible seeds them and ESO keeps them current, **from these same fields** |
+| `homelab-apps-<cluster>`, e.g. `homelab-apps-testnode` | **that cluster's ESO** only | application secrets for that cluster only |
+
+⚠ **A platform secret lives in exactly one place.** If it were left on
+`control-node` as well, Ansible and ESO would read different copies and a
+rotation would only half happen. The load task refuses that state.
 
 **Vault names are `homelab-` + scope + (cluster).** Every vault shares the
 prefix, so they group together in 1Password and are obvious at a glance; what
 follows the prefix states the scope:
 
-    homelab-infra            fleet-wide
-    homelab-apps-<cluster>   exactly one cluster
+    homelab-infra                fleet-wide
+    homelab-platform-<cluster>   exactly one cluster: the platform controllers' secrets
+    homelab-apps-<cluster>       exactly one cluster: app secrets
 
 ⚠ **`homelab-` is the ESTATE, not a cluster.** It comes from the repo
 (`ghcr.io/nighlabs/homelab-infra`, and ADR-0027's Bitwarden project name before
@@ -153,26 +159,20 @@ which read as a matched pair while sitting on different axes — and at cluster 
 (`homelab-infra`, `homelab-apps`, `edge-apps`) it invites reading the infra
 vault as cluster `testnode`'s, which it is not.
 
-**Create both up front**, even though the apps vault stays empty until the ESO
-milestone:
+**Create all three**, per cluster for the last two:
 
 ```sh
 op vault create homelab-infra
+op vault create homelab-platform-testnode
 op vault create homelab-apps-testnode
 ```
 
-⚠ Why not defer the empty one: so that an app secret which shows up before ESO
-exists has a **correct home on day one** rather than drifting into
-`control-node`, where it would then need migrating. Vaults are unlimited here,
-so an empty one costs nothing — under BWS this was the opposite call, because
-an empty project burned one of only three (ADR-0027).
+⚠ Create the apps vault even while it is empty. The ESO service account's
+grant names it and cannot be widened later (§1.4), and an app secret that shows
+up early then has a **correct home on day one** instead of drifting into
+`control-node`.
 
-⚠ The **ESO service account** is still created later, at that milestone — not
-now. Its vault grant is immutable, so it should be created once the adoption
-question (`../docs/decisions/README.md`) is answered, and a token sitting
-unused is a credential to look after for no benefit.
-
-**Why the infra vault is fleet-wide but the apps vaults are per-cluster.** The
+**Why the infra vault is fleet-wide but the platform and apps vaults are per-cluster.** The
 control node provisions every cluster, so a per-cluster split there would only
 fragment one Proxmox credential across vaults that the same actor reads anyway —
 no boundary gained. Per-cluster values already live in this vault as
@@ -183,7 +183,8 @@ ESO is the opposite case: each cluster runs its own, holding its own token in
 its own Kubernetes Secret. ⚠ **This is the same argument that makes k3s join
 tokens per-cluster (ADR-0026): a compromised cluster must not take the fleet
 with it.** A `ClusterSecretStore` names exactly one vault and cannot reach a
-second, so cluster A's ESO structurally cannot read cluster B's app secrets.
+second, so cluster A's ESO structurally cannot read cluster B's platform or app
+secrets.
 
 ⚠ **This is a change in shape from ADR-0027, and the reason is worth knowing.**
 That record specified *one* apps project — but BWS capped the free tier at **3
@@ -219,9 +220,11 @@ Create one for: **ESO** (mandatory — a pod has no desktop app), CI, or an
 unattended/Linux control node.
 
 ```sh
-# ESO — ONE PER CLUSTER, granted that cluster's apps vault ONLY.
+# ESO — ONE PER CLUSTER, granted EXACTLY that cluster's platform + apps vaults.
 # It must never reach homelab-infra, and never another cluster's vault.
+# bootstrap-cluster.yml asserts this grant before it seeds the token.
 op service-account create eso-testnode \
+  --vault homelab-platform-testnode:read_items \
   --vault homelab-apps-testnode:read_items
 
 # only if you also need unattended runs of these plays:
@@ -239,17 +242,15 @@ which throws away the per-cluster split for nothing — the accounts are free
 be edited after creation; a different grant means a *new* service account and a
 new token. Consequences worth reading twice:
 
-- **Grant every vault it will ever need, at creation.** ⚠ For a control-node
-  account, consider granting the apps vaults too: the still-open ESO-adoption
-  question (`docs/decisions/README.md`) leans toward the control node seeding
-  cluster-destined secrets it would have to *read* from an apps vault, and that
-  grant cannot be added later. It widens no exposure — those secrets end up as
-  in-cluster `Secret`s either way. An ESO account, by contrast, gets exactly
-  one vault and never more.
+- **Grant every vault it will ever need, at creation.** ⚠ A control-node
+  account needs `homelab-infra` **and every `homelab-platform-<cluster>`**,
+  because `bootstrap-cluster.yml` seeds the platform secrets from there
+  (ADR-0038). It never needs an apps vault. An ESO account gets exactly its
+  cluster's platform + apps vaults and never more.
 - ⚠ **Defaulting to mode 1 removes this trap from the control-node side
   altogether**, which is a real argument for it: with no control-node service
   account, the only immutable grant in play is ESO's, and that one is
-  unambiguous (`homelab-apps-testnode`, read-only).
+  unambiguous (`homelab-platform-testnode` + `homelab-apps-testnode`, read-only).
 - **`read_items` only.** Nothing in the run-time path writes. The one thing that
   does write — the migration in §4 — runs as *you*, not as any service account.
 - **The token is displayed exactly once** and 1Password cannot show it again.
@@ -316,8 +317,10 @@ set, rather than authenticate as something you did not choose.
 
 ## 2. The item and its fields
 
-**One item**, `control-node`, category **Secure Note**, in the `homelab-infra`
-vault. Values are custom **fields**, grouped into purpose **sections**.
+**Two items** in the `homelab-infra` vault: `control-node` (below) and
+`eso-service-accounts` (end of this section), both category **Secure Note**.
+Values are custom **fields**, grouped into purpose **sections**. The platform
+vault's items are in §2b.
 
 ⚠ **Field labels ARE the secret names.** `group_vars/all/vars.yml` indexes
 `secrets` by them, so they must match the first column exactly, and must be
@@ -369,24 +372,11 @@ topology — still not for Git, but a different tier (root `CLAUDE.md`).
 | `ssh_authorized_keys` | text | **one key per line** (see §3) |
 | **`frr_master_password`** 🔑 | concealed | pfSense FRR daemon password |
 
-### Section: Edge (cert-manager DNS-01 + the shared Gateway)
+### Section: Edge: gone from this item
 
-| Field label | Type | Format / example |
-|---|---|---|
-| `base_domain` | text | the apex zone, bare — `example.net`, no wildcard, no trailing dot |
-| **`cloudflare_api_token`** 🔑 | concealed | Cloudflare API token with **Zone > DNS > Edit** *and* **Zone > Zone > Read** (cert-manager looks the zone id up by name), zone resources scoped to that one zone. ⚠ An **account-owned** token works but returns `Invalid API Token` from `/user/tokens/verify` — verify with `GET /zones` instead |
-
-⚠ **These two are ZONE-scoped, not fleet-scoped** — they only look fleet-wide
-because there is one zone today. The token is restricted to specific zone
-resources, so a token for zone A cannot solve DNS-01 for zone B; if
-`base_domain` ever forks, the token **must** fork with it. One scope, not two
-(ADR-0035). Subdomains of a single zone (`<cluster>.example.net`) keep one
-token serving everything.
-
-`base_domain` reaches gitops/ as the `${base_domain}` placeholder via
-`cluster-topology`; the token is seeded by `bootstrap-cluster.yml` into the
-`cert-manager` namespace (bootstrap-secret tier — see the play's comments and
-the ESO-adoption open question in `../docs/decisions/README.md`).
+`base_domain` and `cloudflare_api_token` both live in the cluster's platform
+vault, together on its `cert-manager` item (§2b). Delete the section from
+`control-node` once they are moved.
 
 ### Section: Storage (ceph-csi against the existing Proxmox Ceph)
 
@@ -395,12 +385,13 @@ the ESO-adoption open question in `../docs/decisions/README.md`).
 | `ceph_fs_name` | text | PVE's **existing** CephFS name, from `ceph fs ls` — we join it, we don't create it |
 | `ceph_mons` | text | Mon addresses, **one per line** (see §3) — `10.0.2.21:6789` |
 | `ceph_fsid` | text | 36-char cluster uuid from `ceph fsid`; doubles as ceph-csi's `clusterID` |
-| **`ceph_k8s_rbd_key`** 🔑 | concealed | cephx key for `client.k8s-rbd` (`ceph auth get-key`) |
-| **`ceph_k8s_cephfs_key`** 🔑 | concealed | cephx key for `client.k8s-cephfs` |
 
-**Only `ceph_fs_name` is needed up front** — the other four are *produced* by
-`docs/proxmox-ceph-k8s-setup.md` §4.6, which prints them under exactly these
-names. `render-ceph-setup.yml` checks for them softly and says which are
+The two cephx **keys** are not on this item. They live in the cluster's
+platform vault (§2b).
+
+**Only `ceph_fs_name` is needed up front.** The other two, and the keys, are
+*produced* by `docs/proxmox-ceph-k8s-setup.md` §4.6, which prints them under
+exactly these names. `render-ceph-setup.yml` checks for them softly and says which are
 missing, so a first run is possible before they exist.
 
 > ⚠ `ceph_mons` must be **public-network** addresses. The Ceph cluster
@@ -408,10 +399,8 @@ missing, so a first run is possible before they exist.
 > address from it looks plausible and routes nowhere from a k3s node. Read them
 > off `ceph mon dump`; the render asserts they're inside `ceph_subnet_base`.
 
-The two keys are seeded by `bootstrap-cluster.yml` into the `ceph-csi` namespace
-(bootstrap-secret tier — ceph-csi lands before ESO, so on a from-scratch rebuild
-ESO cannot supply them); `ceph_mons`, `ceph_fsid` and the pool/group names reach
-gitops/ as placeholders via `cluster-topology`.
+`ceph_mons`, `ceph_fsid` and the pool/group names reach gitops/ as
+placeholders via `cluster-topology`.
 
 ### Section: Clusters — one pair per cluster in `inventory/nodes.yml`
 
@@ -431,19 +420,69 @@ detected *by absence* — an empty string would satisfy a presence check while
 contributing nothing. A misnamed one is caught loudly by the preflight assert
 (ADR-0033); an empty one would not be.
 
-### Later: the ESO service account
+### Item `eso-service-accounts` (same vault, its own item)
 
-At the ESO milestone, a **second item** `eso-service-accounts` in this same
-vault holds one concealed field **per cluster**,
-`eso_op_service_account_token_<cluster>` 🔑 — the same cluster-suffixed naming
-as `k3s_token_<cluster>` (ADR-0026), so `vars.yml` assembles the map from the
-`clusters` keys exactly as it already does for tokens and SANs. Add
-`eso-service-accounts` to `op_items` in `vars.yml` then; that costs one extra
-API call per play.
+One concealed field **per cluster**, `eso_op_service_account_token_<cluster>` 🔑.
+That is the same cluster-suffixed naming as `k3s_token_<cluster>` (ADR-0026).
+It is listed in `op_items` in `vars.yml`, so every play reads it (one call).
+`bootstrap-cluster.yml` seeds it into `external-secrets/onepassword-service-account`
+after asserting that the token sees exactly that cluster's platform and apps
+vaults (§1.4).
 
 Its own item, not fields on `control-node`, so the credentials gating cluster
 access stay visibly and separately rotatable rather than having their history
-coupled to everything else.
+coupled to everything else. ⚠ It lives here and **not** in either vault it
+grants: the thing that grants access cannot live behind the access it grants.
+
+## 2b. The platform vault: `homelab-platform-<cluster>`
+
+Two items per cluster, category **Secure Note**, with the same layout in every
+cluster's vault. ⚠ **Labels are PLAIN here**, with no `_<cluster>` suffix.
+ESO's remote refs read them as `<item>/<label>`, and the load task adds the
+suffix itself when it reads them (`cloudflare_api_token` →
+`cloudflare_api_token_testnode`). Put the fields **outside any section** (see
+the note below the table).
+
+| Item | Field label | Type | Format / example |
+|---|---|---|---|
+| `cert-manager` | `base_domain` | text | the cluster's apex zone, bare: `example.net`, no wildcard, no trailing dot. Reaches gitops/ as `${base_domain}` via `cluster-topology`, not via ESO |
+| `cert-manager` | **`cloudflare_api_token`** 🔑 | concealed | Cloudflare API token with **Zone > DNS > Edit** *and* **Zone > Zone > Read** (cert-manager looks the zone id up by name), zone resources scoped to that one zone. ⚠ An **account-owned** token works but returns `Invalid API Token` from `/user/tokens/verify`; verify with `GET /zones` instead |
+| `ceph-csi` | **`ceph_k8s_rbd_key`** 🔑 | concealed | cephx key for `client.k8s-rbd` (`ceph auth get-key`) |
+| `ceph-csi` | **`ceph_k8s_cephfs_key`** 🔑 | concealed | cephx key for `client.k8s-cephfs` |
+
+⚠ **A value lives in the vault that matches its SCOPE, whatever delivers it
+to the cluster** (ADR-0038). That is why `base_domain` is here although ESO
+never reads it (it reaches the cluster through `cluster-topology`):
+
+- **`base_domain` + `cloudflare_api_token` are one scope, the DNS zone.** A
+  zone-scoped token cannot solve DNS-01 for another zone, so if one forks the
+  other **must** fork with it (ADR-0035). One item makes that structural.
+  Per-cluster also fits name ownership: two clusters can't both own
+  `*.<base_domain>`. Subdomains of one zone (`<cluster>.example.net`) let one
+  parent-zone token serve every cluster; separate zones need one token each.
+- **`ceph_fs_name`, `ceph_mons`, `ceph_fsid` stay on `control-node`.** They
+  describe the Proxmox Ceph, which every k8s cluster on that site shares, so a
+  per-cluster vault would hold one copy per cluster. `render-ceph-setup.yml`
+  also needs `ceph_fs_name` on a first run, before any platform item exists.
+  The cephx *keys* are here because they belong to the cephx users, which
+  should become per-cluster.
+
+**No sections here** is a precaution, not a requirement. 1Password's reference
+syntax makes the section optional when a label is unique in its item, but
+ESO's SDK lookup of a sectioned field is unverified, and one- or two-field
+items gain nothing from sections.
+
+Read by `bootstrap-cluster.yml`, which **creates** the `cert-manager/cloudflare-api-token`
+and `ceph-csi/ceph-csi-{rbd,cephfs}` Secrets, and by that cluster's ESO, which
+**keeps them current** (`creationPolicy: Merge`, refresh 24h). To rotate, edit
+the field here, then force a sync (`gitops/CLAUDE.md`, "ESO + 1Password").
+There is no need to re-run Ansible, though doing so is harmless because both
+read the same field.
+
+⚠ **At cluster #2:** `base_domain` + the token take the DNS-zone shape
+(ADR-0035), as a vault edit in that cluster's `cert-manager` item. And
+the cephx users are fleet-wide names today. A second cluster on the same Ceph
+should get its own cephx users rather than a copy of these keys (ADR-0038).
 
 ---
 
@@ -508,7 +547,7 @@ writes two local files, touching neither Proxmox nor any node.
 At `-v` the load step prints **names and a count, never values**:
 
 ```
-Loaded 29 secret(s) from 1Password vault 'homelab-infra' (1 item(s), 1 API call(s)): base_domain, ceph_bridge, ...
+Loaded N secret(s) from 1Password vault(s) homelab-infra (2 item(s), 2 API call(s)): base_domain, ceph_bridge, ...
 ```
 
 That list is the thing to read when a `{{ secrets.x }}` comes back undefined —

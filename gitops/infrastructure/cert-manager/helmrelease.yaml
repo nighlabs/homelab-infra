@@ -56,4 +56,6 @@ spec:
     # ClusterIssuers reference the cloudflare-api-token Secret in THIS
     # namespace (a ClusterIssuer resolves secretRefs in the cluster-resource
     # namespace, which defaults to the release namespace). The Secret is
-    # Ansible-seeded — bootstrap-secret tier, upstream of ESO by definition.
+    # Ansible-seeded (so a rebuild issues certs before ESO exists) and then kept
+    # current by ESO with creationPolicy: Merge, both from the cluster's
+    # homelab-platform-<cluster> vault (ADR-0038).

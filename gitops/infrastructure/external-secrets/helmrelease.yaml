@@ -1,0 +1,44 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  interval: 1h
+  # Explicit + stable per repo convention. Flux-only, no Ansible priming.
+  # (Ansible DOES seed this controller's input — the onepassword-service-account
+  # token Secret — but never touches the release.)
+  releaseName: external-secrets
+  chartRef:
+    kind: OCIRepository
+    name: external-secrets
+  install:
+    remediation:
+      retries: 3
+  upgrade:
+    remediation:
+      retries: 3
+  values:
+    # ⚠ The chart installs its own CRDs, even though secretstores and
+    # clustersecretstores are ~374 KB each — over the 262144-byte limit that
+    # put Calico's, Gateway API's and ceph-csi's CRDs in ../../crds. That limit
+    # is on the `last-applied-configuration` ANNOTATION that client-side
+    # `kubectl apply` writes; Helm creates and patches without it, so the limit
+    # never applies to a HelmRelease. Verified with a server dry-run against
+    # testnode (ADR-0039). These CRDs are TEMPLATES (gated on installCRDs), not
+    # a crds/ dir, so every chart bump upgrades them with no regeneration step
+    # — `install.crds`/`upgrade.crds` don't apply to them.
+    installCRDs: true
+    crds:
+      annotations:
+        # ⚠ Load-bearing. Uninstalling the release would otherwise DELETE the
+        # CRDs, which garbage-collects every ExternalSecret — and every Secret
+        # ESO created with creationPolicy: Owner along with them. Same "removing
+        # a CRD is a manual act" stance as the crds tier's prune: false. (The
+        # platform Secrets survive regardless: they use Merge, so ESO never
+        # owns them.)
+        helm.sh/resource-policy: keep
+    # ESO's admission-webhook certificate comes from the chart's own bundled
+    # cert-controller (certController.create defaults to true) — NEVER from
+    # cert-manager. The 1Password SDK provider runs no in-cluster server, so
+    # nothing here needs cert-manager at all (ADR-0034).

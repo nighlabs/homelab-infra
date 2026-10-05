@@ -13,6 +13,99 @@ and private-range ASNs are fine.
 
 ---
 
+## 2026-10-04 — ESO milestone, repo half: three vaults, seed + Merge, chart-installed CRDs
+
+**Related:** [ADR-0038](decisions/0038-three-vaults-platform-secrets-seed-and-sync.md) ·
+[ADR-0039](decisions/0039-helm-installs-crds-over-the-apply-limit.md) ·
+[ADR-0040](decisions/0040-whether-infrastructure-config-splits-per-domain.md) (Open) ·
+[ADR-0034](decisions/0034-secrets-store-1password.md)
+
+**Status: in the repo, NOT yet live.** It waits on the 1Password setup
+(`ansible/SECRETS.md` §1.3–1.4, §2b), then `bootstrap-cluster.yml`, then the
+merge. That order is forced: the gitops change substitutes a new
+`cluster-topology` key (`${cluster_name}`), and under strict substitution
+`infrastructure-config` fails if the key isn't seeded first.
+
+**What was built.** ESO 2.11.0 (OCI chart, `installCRDs: true` +
+`helm.sh/resource-policy: keep`) in `infrastructure`. Two ClusterSecretStores
+(`onepassword-platform`, namespace-restricted to `cert-manager`/`ceph-csi`;
+`onepassword-apps`) and three `creationPolicy: Merge` ExternalSecrets over the
+Ansible-seeded platform Secrets, in `infrastructure-config`. The loader learned
+to read per-cluster platform vaults (opt-in, labels suffixed `_<cluster>`).
+`bootstrap-cluster.yml` seeds ESO's token after checking its grant with
+`op vault list`.
+
+**Three findings changed the plan.**
+
+1. **The CRD-size rule was wrong about Helm.** ESO's `secretstores` /
+   `clustersecretstores` CRDs are ~374 KB, which the existing rule would have
+   vendored. Tested instead, with server dry-runs against `testnode` (nothing
+   persisted):
+
+   | Command | Result |
+   |---|---|
+   | `kubectl create --dry-run=server` (no annotation — Helm's path) | `created (server dry run)` |
+   | `kubectl apply --dry-run=server` (client-side apply) | `metadata.annotations: Too long: may not be more than 262144 bytes` |
+
+   The limit is client-side apply's `last-applied-configuration`
+   annotation, and Helm writes none. Looking back, the 2026-08-02 Calico
+   failure was *"ensure CRDs are installed first"*, an install-contract
+   change; the size explanation was attached afterwards. ADR-0039 corrects
+   the rationale in 0020/0031. ceph-csi's chart route is open again, which
+   is a separate decision.
+2. **"Adopt, keep the seed" would have duplicated credentials.** ESO cannot
+   read `homelab-infra`, so adopting the Cloudflare token meant a second copy
+   in the apps vault, and Ansible would undo half-done rotations. Resolved by
+   a third, per-cluster `homelab-platform-<cluster>` vault that both writers
+   read (ADR-0038).
+3. **Store validation is free; a bad token is not.** From the provider source
+   (`providers/v1/onepasswordsdk`, v2.11.0): `Validate()` returns Ready with
+   no call, and `NewClient` is cached per store `resourceVersion`. Its one
+   vault lookup happens at startup. Steady-state cost is one `Resolve` per data
+   entry per refresh: 3/day for the platform secrets at `24h`. A bad token
+   retries at reconcile cadence (#4925), hence the grant/validity check
+   before seeding.
+
+4. **ESO's retry behaviour has no ESO-side knob.** v2.11.0 has no backoff
+   flags and doesn't override controller-runtime's queue. A failing reconcile
+   backs off from 5 ms, doubling, to a 1000 s cap, forever: ~86 calls/day
+   per failing object. The default-on flood gate is what makes a bad token
+   survivable: ExternalSecrets skip the provider while their store is
+   NotReady, so only the 2 stores retry (~170/day). A broken remote ref with
+   a *good* token is the real amplifier, since its store stays Ready.
+   Platform refresh moved 6h → 24h (3 calls/day). The failure table and the
+   emergency brake (scale the controller to 0) are in `gitops/CLAUDE.md`.
+
+5. **Placement is by scope, not by delivery** (raised during the 1Password
+   setup). `base_domain` moved into the platform `cert-manager` item beside
+   the token, because they are one zone scope and must fork together
+   (ADR-0035), even though it reaches the cluster via `cluster-topology`, not
+   ESO. Ceph topology stays in `homelab-infra`: it is site-scoped, and the
+   first `render-ceph-setup.yml` run needs it.
+
+**Loader verified offline** against a stub `op` serving fixture items.
+Values arrive suffixed (`cloudflare_api_token_testnode` etc.). A leftover
+`cloudflare_api_token` on `control-node` **fails** the new single-home assert,
+so the negative case fires. A missing platform item fails with the
+platform-vault hint. With the opt-out, only the two fleet items are read.
+`bootstrap-cluster.yml` and `render-ceph-setup.yml` pass `--syntax-check`.
+`kubectl kustomize` builds both tiers, and `flux envsubst --strict` resolves
+`homelab-{platform,apps}-testnode`.
+
+**Owed, live:** `ClusterSecretStore`s Ready; each platform ExternalSecret
+`SecretSynced` with **Merge** on a pre-existing, unlabelled Ansible Secret
+(confirm ESO reads it without managing its lifecycle); a rotation round-trip
+via `force-sync`; the grant assert run against the real token, plus a
+deliberately wrong token to see it fire; cert-manager and ceph-csi unaffected
+throughout; how a transient 1Password error moves the Ready condition
+(ADR-0040's first question); and **the backoff in practice**. Break one
+remote ref deliberately and read `externalsecret_provider_api_calls_count`
+over an hour. It should settle to one attempt per ~16.7 min. A faster
+cadence would mean status-update events are re-queuing it past the backoff,
+which is the likely #4925 mechanism.
+
+---
+
 ## 2026-10-04 — Retired the #12890 RBAC workaround: it was never needed on v3.32.1
 
 **Related:** [ADR-0019](decisions/0019-k3s-1.36-calico-3.32.1-version-pair.md) ·

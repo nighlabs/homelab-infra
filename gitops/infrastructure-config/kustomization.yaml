@@ -7,7 +7,6 @@ kind: Kustomization
 # which has wait: true — by the time anything here applies, every HelmRelease
 # below it is Ready and its CRDs are Established.
 #
-# Belongs here later, same reasoning: ESO SecretStores/ClusterSecretStores.
 # Calico's BGP CRs predate this tier and stay in infrastructure/calico-bgp
 # (they're Ansible-primed before Flux ever runs — a different ordering
 # mechanism; see that directory's header).
@@ -21,3 +20,10 @@ resources:
   # controller, which is what this tier is for, and this tier's wait: true then
   # makes "Ready" mean the drivers are actually running.
   - ceph-csi
+  # Secrets (ADR-0038): the two ClusterSecretStores (platform, apps) and the
+  # ExternalSecrets that keep the Ansible-seeded platform Secrets current. Same
+  # reason as cert-manager: external-secrets.io CRDs arrive with the chart in
+  # ../infrastructure, so they cannot apply in that pass. ⚠ Their Ready
+  # conditions are real, so this tier's wait: true now also gates `apps` on
+  # 1Password being reachable — see ADR-0040 (Open) before relying on that.
+  - external-secrets

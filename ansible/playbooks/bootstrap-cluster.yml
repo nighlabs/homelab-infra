@@ -260,6 +260,9 @@
     # ../calico/'s kustomization applies a `namespace:` transformer that would
     # wrongly stamp these cluster-scoped CRs — see that dir's kustomization.yaml.
     calico_bgp_manifest_dir: "{{ playbook_dir }}/../../gitops/infrastructure/calico-bgp"
+    # This play seeds the platform secrets (Cloudflare token, cephx keys), which
+    # live in each cluster's homelab-platform-<cluster> vault (ADR-0038).
+    op_load_cluster_vaults: true
     # The per-cluster values the committed manifests carry as ${...} placeholders.
     # Ansible substitutes them here from the vault; Flux substitutes the SAME
     # placeholders later from the cluster-topology Secret seeded below. One
@@ -463,11 +466,13 @@
         - ippool-loadbalancer.yaml
 
     # --- Seed the cluster-topology Secret (Flux postBuild source) ------------
-    # Tier 2 of the root CLAUDE.md secrets model: "anything needed before ESO
-    # exists is Ansible-seeded". ESO CANNOT supply this — ESO
-    # Server needs a cert-manager cert, which needs a Gateway, which needs a
-    # LoadBalancer IP, which is what this Secret's values configure. That cycle
-    # is documented and deliberate; don't try to close it by moving ESO up.
+    # Ansible-seeded PERMANENTLY, and not for a dependency reason: Flux
+    # evaluates postBuild.substituteFrom at build time for the infrastructure
+    # tier, and a tier applies in one pass, so a Secret produced by a controller
+    # INSIDE that tier (ESO) can never be a substitution source FOR it — and
+    # Calico is primed from these same values before Flux exists (ADR-0016,
+    # ADR-0021, ADR-0034). Cluster-bound != ESO-managed. (The old "ESO needs a
+    # cert, which needs an LB IP" cycle was Bitwarden-era and is gone.)
     #
     # Nothing reads this until Flux exists — it's seeded now so the Flux
     # bootstrap has one less ordering dependency, and it's idempotent.
@@ -507,6 +512,12 @@
             cluster_asn: "{{ cluster_bgp[cluster_name].asn | string }}"
             lb_range: "{{ cluster_bgp[cluster_name].lb_range }}"
             base_domain: "{{ base_domain }}"
+            # The cluster key from inventory/nodes.yml. Not topology — it is
+            # already public as gitops/deployment/<cluster>/ — but it names the
+            # per-cluster 1Password vaults the ClusterSecretStores read
+            # (homelab-platform-<cluster>, homelab-apps-<cluster>), and a shared
+            # manifest can only get a per-cluster value through this Secret.
+            cluster_name: "{{ cluster_name }}"
             # --- ceph-csi (ADR-0006) -------------------------------------
             # Substituted into gitops/infrastructure-config/ceph-csi/. Pool and
             # subvolumegroup are cleartext in group_vars and COULD be literals
@@ -529,12 +540,13 @@
             ceph_mons_yaml: "{{ ceph_csi.mons | to_json }}"
 
     # --- Seed the cert-manager DNS-01 token (bootstrap-secret tier) ----------
-    # Same tier as cluster-topology, same reason: cert-manager sits UPSTREAM of
-    # ESO in the delivery order, so on a
-    # from-scratch rebuild ESO can never supply this. Whether ESO later ADOPTS
-    # the Secret once it's live is an OPEN question (docs/decisions/README.md,
-    # "Open questions") — but this seed remains either way: adoption would be
-    # an overlay for rotation, never a handover, or the next rebuild deadlocks.
+    # Seeded here so a from-scratch rebuild issues certificates without waiting
+    # for ESO; ESO then KEEPS IT CURRENT from the same 1Password field
+    # (homelab-platform-<cluster>/cert-manager/cloudflare_api_token) with
+    # creationPolicy: Merge — gitops/infrastructure-config/external-secrets/.
+    # Both writers read one vault, so they agree by construction, and rotation
+    # is one edit in 1Password (ADR-0038). Seed and sync are permanent
+    # partners: Merge never creates the Secret, so the seed must stay.
     #
     # The namespace is created here (Flux applies the committed namespace.yaml
     # over it later — SSA adoption, same as flux-system above). The Secret name
@@ -567,13 +579,12 @@
             api-token: "{{ cloudflare_api_token }}"
 
     # --- Seed the two cephx keys (bootstrap-secret tier) ---------------------
-    # Same tier and same reasoning as the Cloudflare token above, with one
-    # difference worth recording: cert-manager is genuinely UPSTREAM of ESO (the
-    # is not yet running), so its seed is permanent. ceph-csi is
-    # not upstream of ESO — it merely lands earlier in the §6 delivery order. So
-    # if the ESO-adoption ADR ever reorders those two, these seeds could retire
-    # outright rather than becoming an overlay. Until then they must exist, or a
-    # from-scratch rebuild has no storage before ESO is up.
+    # Same arrangement as the Cloudflare token above (ADR-0038): seeded here so
+    # storage works on a from-scratch rebuild before ESO exists, then kept
+    # current by ESO (Merge, `userKey` only) from
+    # homelab-platform-<cluster>/ceph-csi. Rebuild-path length is why the seed
+    # stays even though nothing about ESO depends on storage — re-provisioning
+    # is the normal upgrade path here (ADR-0019).
     #
     # The namespace, Secret names and KEY NAMES are the contract that
     # gitops/infrastructure-config/ceph-csi/ references. ⚠ `userID` carries NO
@@ -614,6 +625,92 @@
           key: "{{ ceph_k8s_cephfs_key }}"
       loop_control:
         label: "{{ item.name }}"
+
+    # --- Seed ESO's 1Password service-account token --------------------------
+    # The credential ESO authenticates with: ONE service account per cluster,
+    # granted read_items on exactly homelab-platform-<cluster> and
+    # homelab-apps-<cluster> (ADR-0038). It is read from homelab-infra, which
+    # ESO can never see — the thing that grants access cannot live behind the
+    # access it grants.
+    #
+    # ⚠ VERIFIED BEFORE IT IS SEEDED, for two reasons:
+    #   1. The grant is IMMUTABLE. A token that can see homelab-infra, another
+    #      cluster's vault, or not both of its own is a wrong service account,
+    #      and the fix is a new one — so refuse it here rather than discover it
+    #      as a ClusterSecretStore that half-works.
+    #   2. Error amplification (external-secrets#4925): ESO retries a BAD token
+    #      at reconcile cadence and can exhaust the account-wide DAILY quota in
+    #      minutes, locking out every service account for 24h. One call here
+    #      turns that into a loud failure at seed time instead.
+    # This is the only store call outside tasks/load-secrets.yml: it checks a
+    # credential rather than reading a secret, and it MUST run as that
+    # credential, which the loader never does.
+    - name: List the vaults the ESO service-account token can see
+      delegate_to: localhost
+      ansible.builtin.command:
+        argv: [op, vault, list, --format, json]
+      environment:
+        OP_SERVICE_ACCOUNT_TOKEN: "{{ eso_op_service_account_token }}"
+      register: eso_vault_list
+      changed_when: false
+      failed_when: false
+      no_log: true # the environment carries the token
+
+    # stdout is vault names/ids and stderr is op's error text — neither carries
+    # a secret, so the assert may quote them.
+    - name: Assert the ESO token sees exactly this cluster's two vaults
+      delegate_to: localhost
+      vars:
+        _expected: "{{ [op_cluster_vault_prefix ~ cluster_name, eso_apps_vault_prefix ~ cluster_name] | sort }}"
+        _seen: >-
+          {{ (eso_vault_list.stdout | from_json | map(attribute='name') | sort | list)
+             if eso_vault_list.rc == 0 else [] }}
+      ansible.builtin.assert:
+        that:
+          - eso_vault_list.rc == 0
+          - _seen == _expected
+        fail_msg: >-
+          {% if eso_vault_list.rc != 0 %}
+          The ESO token for `{{ cluster_name }}` was rejected by 1Password:
+          {{ eso_vault_list.stderr | trim }}. Expired, revoked, or mis-pasted —
+          do NOT seed it (a bad token burns the daily quota from inside the
+          cluster). ansible/SECRETS.md §1.4.
+          {% else %}
+          The ESO token for `{{ cluster_name }}` sees {{ _seen }}, expected
+          exactly {{ _expected }}. Service-account grants are IMMUTABLE, so this
+          needs a NEW service account with the right grant
+          (ansible/SECRETS.md §1.4) — never seed a token that can reach
+          {{ op_vault }} or another cluster's vaults.
+          {% endif %}
+        quiet: true
+
+    - name: Ensure the external-secrets namespace exists (for the ESO token)
+      delegate_to: localhost
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: external-secrets
+
+    # Name + key are the contract the committed ClusterSecretStores reference
+    # (gitops/infrastructure-config/external-secrets/clustersecretstores.yaml).
+    - name: Seed the ESO 1Password service-account token Secret
+      delegate_to: localhost
+      no_log: true # a credential — never in output, even at -vvv
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig_local }}"
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: onepassword-service-account
+            namespace: external-secrets
+          stringData:
+            token: "{{ eso_op_service_account_token }}"
 
     - name: Report the bootstrapped node(s)
       delegate_to: localhost

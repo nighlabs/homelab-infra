@@ -1,7 +1,7 @@
 # ADR-0020: A `crds/` tier — Calico's CRDs are vendored and server-side applied by a plain Kustomization, `prune: false`, `wait: true`
 
 - **Date:** 2026-08-02 (decided, hit for real during the v3.32.1 bump)
-- **Status:** Accepted — the build-time-render follow-on is **open**
+- **Status:** Accepted — the build-time-render follow-on is **open**. ⚠ The size rationale below is **corrected by [ADR-0039](0039-helm-installs-crds-over-the-apply-limit.md)**: the limit is client-side apply's annotation and does not bind Helm. The tier and Calico's place in it stand, on the Ansible-prime grounds.
 - **Supersedes / related:** [ADR-0019](0019-k3s-1.36-calico-3.32.1-version-pair.md) (the bump that surfaced it), [ADR-0016](0016-calico-ansible-primes-flux-adopts.md) (one source, primed twice), [ADR-0028](0028-gitops-delivery-signed-oci-syncless-fluxinstance.md) (the OCI artifact that could carry the CRDs instead of Git), [ADR-0029](0029-drop-helm-for-calico.md). Code: `gitops/crds/`, `gitops/deployment/homelab/crds.yaml`, `ansible/playbooks/bootstrap-cluster.yml`.
 
 ## Context

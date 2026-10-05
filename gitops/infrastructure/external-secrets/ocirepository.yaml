@@ -1,0 +1,18 @@
+# Chart source for External Secrets Operator. Upstream publishes OCI charts to
+# GHCR, so this is the OCIRepository + chartRef pattern, same as cert-manager
+# and nginx-gateway-fabric.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: external-secrets
+  namespace: external-secrets
+spec:
+  interval: 1h
+  url: oci://ghcr.io/external-secrets/charts/external-secrets
+  # Pinned literally (Renovate bumps it). ⚠ Bare semver tag, no leading `v` —
+  # unlike cert-manager's.
+  ref:
+    tag: "2.11.0"
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy

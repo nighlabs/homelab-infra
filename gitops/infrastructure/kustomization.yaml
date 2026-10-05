@@ -27,3 +27,8 @@ resources:
   # Its CRDs are therefore in ../crds/ceph-csi; its CRs and the two
   # StorageClasses are in ../infrastructure-config/ceph-csi.
   - ceph-csi-operator
+  # Secrets (ADR-0034, ADR-0038): External Secrets Operator with the 1Password
+  # SDK provider — no in-cluster secrets server, so nothing here depends on
+  # cert-manager or on storage. The chart installs its own CRDs (ADR-0039); the
+  # ClusterSecretStores and ExternalSecrets are in ../infrastructure-config.
+  - external-secrets

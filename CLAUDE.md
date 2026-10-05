@@ -56,12 +56,14 @@ in any form. Described by role only here:
 **Secrets, credentials, and topology blinding.** **1Password** (cloud-hosted)
 is the durable store for everything; the split is about *who reads it when*
 (`docs/decisions/0034-secrets-store-1password.md`,
+`0038-three-vaults-platform-secrets-seed-and-sync.md`,
 `0021-topology-blinding-postbuild-substitution.md`):
 
 | Tier | Example | Mechanism |
 |---|---|---|
 | **Credentials** | Proxmox API token, k3s join token | **1Password, read at run time** via the `op` CLI — one `op item get` per item, values as labelled fields |
-| **Bootstrap secrets** | anything needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
+| **Bootstrap secrets** | needed before ESO exists | Ansible-seeded `Secret` at bootstrap, from 1Password |
+| **Platform secrets** | Cloudflare DNS-01 token, cephx keys | bootstrap secrets that keep rotating: Ansible **seeds** them and ESO **keeps them current** (`creationPolicy: Merge`), both from that cluster's `homelab-platform-<cluster>` vault |
 | **Runtime app secrets** | app passwords, API keys | ESO + the 1Password **SDK provider** (no in-cluster server), from that cluster's own `homelab-apps-<cluster>` vault |
 | **Topology (blinding only)** | BGP peer IP/ASN, LB range, node IPs | Flux `postBuild.substituteFrom` the Ansible-seeded `cluster-topology` `Secret` — *placeholders* in Git |
 
@@ -70,14 +72,16 @@ is the durable store for everything; the split is about *who reads it when*
   in a keychain. A scoped, read-only **service account** is used only where no
   app can run: CI, a Linux control node, and **ESO in-cluster**. Vault grants
   on a service account are **immutable** — decide them at creation.
-- **Vaults split by CONSUMER, and per-cluster on the apps side.** The control
-  node reads one fleet-wide `homelab-infra`; each cluster's ESO reads only its
-  own `homelab-apps-<cluster>` and *cannot* reach the infra vault or another cluster's
-  — a SecretStore names exactly one vault, so "cluster compromise must not
-  reach the Proxmox token, or the rest of the fleet" is enforced by the API
-  shape, not by discipline. Same blast-radius rule as per-cluster k3s tokens
-  (ADR-0026); it is affordable now only because 1Password lifts BWS's
-  3-project cap.
+- **Three vaults, split by who reads them** (ADR-0038): `homelab-infra`
+  (fleet-wide, control node only: Proxmox token, SSH keys, join tokens, the ESO
+  tokens), `homelab-platform-<cluster>` (control node **and** that cluster's
+  ESO: the platform secrets above, each in exactly one place) and
+  `homelab-apps-<cluster>` (that cluster's ESO only). One ESO service account
+  per cluster, granted exactly its two vaults (asserted before seeding).
+  It *cannot* reach the infra vault or another cluster's, and a store names
+  exactly one vault, so "cluster compromise must not reach the Proxmox token,
+  or the rest of the fleet" is enforced by the API shape, not by discipline.
+  Same blast-radius rule as per-cluster k3s tokens (ADR-0026).
 - **Never commit a credential in any form, including ciphertext.** Encrypted
   secrets in Git are permanent, unrotatable without a commit, and unauditable.
 - **There is no `vault.yml`** and no vault passphrase. Nothing secret lives in

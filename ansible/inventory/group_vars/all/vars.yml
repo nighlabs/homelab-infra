@@ -522,19 +522,25 @@ cluster_bgp: >-
 # the repo<->domain LINK only — the zone itself goes public in the CT logs the
 # moment the wildcard cert issues.
 #
-# ⚠ FLEET-WIDE TODAY, and that flat shape BREAKS AT CLUSTER #2: two clusters
-# can't both own `*.<base_domain>` — split-horizon DNS can point the wildcard
-# at only ONE Gateway's LB IP. Certs aren't the problem (each cluster has its
-# own ACME account; LE allows duplicates); NAME OWNERSHIP is. The fix is
-# seed-side only, because the manifests carry ${base_domain} rather than a
-# literal: derive per-cluster here (e.g. `{{ cluster_name }}.` ~ the zone) or
-# add `base_domain_<cluster>` secrets on the k3s_token_<cluster> pattern —
-# zero gitops/ edits either way. Same deferred-until-a-second-cluster bucket
-# as the calico_version note above.
+# ⚠ PER CLUSTER, from the cluster's PLATFORM VAULT (homelab-platform-<cluster>,
+# item `cert-manager`, label `base_domain`), right next to the DNS-01 token
+# (ADR-0038). Not because ESO needs it (it reaches the cluster via
+# cluster-topology, never ESO) but because a value lives in the vault that
+# matches its SCOPE, and this one's scope is the token's: the DNS zone
+# (ADR-0035). A zone-scoped token cannot issue for another zone, so the two
+# must fork together, and one item makes that structural.
 #
-# ⚠ If this forks, `cloudflare_api_token` MUST fork with it — see below. They
-# are one scope (the DNS zone), not two (ADR-0035).
-base_domain: "{{ secrets.base_domain }}"
+# Per-cluster also answers the cluster-#2 problem: two clusters can't both own
+# `*.<base_domain>` (split-horizon DNS points the wildcard at ONE Gateway's LB
+# IP), so each cluster's vault carries its own, typically `<cluster>.` + the
+# zone with the token scoped to the parent zone, or a separate zone and token.
+# Which shape is ADR-0035's open zone question; either is a vault edit, not a
+# repo change.
+#
+# Resolves per host from `cluster_name`; needs a play with
+# op_load_cluster_vaults: true. Its only consumer is the cluster-topology seed
+# in bootstrap-cluster.yml's Calico play.
+base_domain: "{{ secrets['base_domain_' ~ cluster_name] }}"
 
 # Cloudflare API token for cert-manager's DNS-01 solver. A CREDENTIAL (root
 # CLAUDE.md tiers): store-managed, seeded by bootstrap-cluster.yml into the
@@ -548,14 +554,22 @@ base_domain: "{{ secrets.base_domain }}"
 # solve a DNS-01 challenge for zone B. That makes forking it a CORRECTNESS
 # constraint rather than a per-cluster-revocation nicety (ADR-0035).
 #
+# ⚠ LIVES IN THE CLUSTER'S PLATFORM VAULT (homelab-platform-<cluster>, item
+# `cert-manager`, label `cloudflare_api_token`), not in homelab-infra — the
+# loader suffixes it to `cloudflare_api_token_<cluster>`. One copy, read by
+# both this play (seed at bootstrap) and that cluster's ESO (keeps the seeded
+# Secret current), so rotating it is one edit in 1Password (ADR-0038).
+#
 # It is scoped to whatever `base_domain` above is scoped to, and the two must
-# move together:
+# move together (which is why they share one 1Password item):
 #   - subdomains of ONE zone (`<cluster>.example.net`) -> one token scoped to
 #     the parent zone still serves every cluster and every site;
 #   - genuinely separate zones -> one token per zone, named on that axis.
 # Splitting one without the other gives a cluster that can name a hostname it
 # cannot get a certificate for.
-cloudflare_api_token: "{{ secrets.cloudflare_api_token }}"
+# Resolves per host from `cluster_name`; needs a play with
+# op_load_cluster_vaults: true (bootstrap-cluster.yml's Calico play).
+cloudflare_api_token: "{{ secrets['cloudflare_api_token_' ~ cluster_name] }}"
 
 # --- Storage: ceph-csi against the existing Proxmox Ceph (ADR-0006) ----------
 # ⚠ That Ceph cluster ALREADY SERVES LIVE PROXMOX VM STORAGE. Everything here
@@ -614,17 +628,35 @@ ceph_csi:
   # is exactly one reference to that secret.
   fs_name: "{{ ceph_fs_name }}"
 
-# The two cephx keys. CREDENTIALS (root CLAUDE.md tiers): store-managed, seeded by
+# The two cephx keys. CREDENTIALS (root CLAUDE.md tiers): seeded by
 # bootstrap-cluster.yml into the ceph-csi namespace, never in any manifest.
 #
-# ⚠ Bootstrap-secret tier, and that is a CONSEQUENCE OF ORDERING, not a
-# preference: ceph-csi lands before ESO in the §6 chain, so on a from-scratch
-# rebuild ESO cannot supply these. Same open question as the cert-manager token
-# — whether ESO later ADOPTS them (docs/decisions/README.md, "Open questions").
-# Unlike that token, these are NOT upstream of ESO, so if the adoption ADR ever
-# moves ceph-csi below ESO these seeds could genuinely retire.
-ceph_k8s_rbd_key: "{{ secrets.ceph_k8s_rbd_key }}"
-ceph_k8s_cephfs_key: "{{ secrets.ceph_k8s_cephfs_key }}"
+# ⚠ They live in the cluster's PLATFORM VAULT (homelab-platform-<cluster>,
+# item `ceph-csi`, labels as below), not in homelab-infra — the loader
+# suffixes them `_<cluster>`. Ansible seeds them so a from-scratch rebuild has
+# storage before ESO exists; ESO then keeps the same Secrets current from the
+# same fields with creationPolicy: Merge (ADR-0038). Seed and sync are
+# permanent partners, not a handover.
+#
+# ⚠ AT CLUSTER #2: the cephx entities (`ceph_csi.rbd_client`/`cephfs_client`)
+# are fleet-wide names today, so a second cluster on the same Ceph would hold
+# a COPY of the same key in its own vault. The per-cluster vault wants
+# per-cluster cephx users (and per-cluster caps) instead — same deferred bucket
+# as base_domain above.
+ceph_k8s_rbd_key: "{{ secrets['ceph_k8s_rbd_key_' ~ cluster_name] }}"
+ceph_k8s_cephfs_key: "{{ secrets['ceph_k8s_cephfs_key_' ~ cluster_name] }}"
+
+# ESO's 1Password service-account token for THIS cluster — read from the
+# `eso-service-accounts` item in homelab-infra (field
+# `eso_op_service_account_token_<cluster>`, ADR-0026 naming), seeded by
+# bootstrap-cluster.yml into the external-secrets namespace.
+#
+# ⚠ It lives in homelab-infra, NOT in either vault it grants: the thing that
+# grants access cannot live behind the access it grants. The account itself is
+# granted read_items on exactly homelab-platform-<cluster> and
+# homelab-apps-<cluster> — immutable, fixed at creation — and
+# bootstrap-cluster.yml asserts that before seeding (ADR-0038).
+eso_op_service_account_token: "{{ secrets['eso_op_service_account_token_' ~ cluster_name] }}"
 
 # --- 1Password connection ---------------------------------------------------
 # How playbooks/tasks/load-secrets.yml reaches 1Password. Nothing
@@ -657,11 +689,30 @@ op_vault: "homelab-infra"
 # here, not merely within one; the load task refuses on a duplicate, because
 # 1Password itself will not. Layout: ../SECRETS.md.
 #
-# The ESO service-account token gets its OWN item when that milestone lands, so
-# the credential gating cluster access stays separately rotatable and its
-# history isn't coupled to everything else. Add "eso-service-account" here then.
+# The ESO service-account tokens get their OWN item, so the credentials gating
+# cluster access stay separately rotatable and their history isn't coupled to
+# everything else.
 op_items:
   - "control-node"
+  - "eso-service-accounts"
+
+# Per-CLUSTER platform vaults (ADR-0038): bootstrap secrets that keep changing
+# after bootstrap — read by the control node to SEED them and by that cluster's
+# ESO to keep them current, from the same fields. Read only by plays that set
+# `op_load_cluster_vaults: true`, at one call per item PER CLUSTER. Field labels
+# are plain in 1Password and suffixed `_<cluster>` by the loader.
+#
+# The three vaults, by who reads them:
+#   homelab-infra               control node only (fleet-wide; this file's op_vault)
+#   homelab-platform-<cluster>  control node + that cluster's ESO
+#   homelab-apps-<cluster>      that cluster's ESO only
+op_cluster_vault_prefix: "homelab-platform-"
+# Not read by Ansible at all — named here only so bootstrap-cluster.yml can
+# assert the ESO token's grant is exactly {platform, apps} for its cluster.
+eso_apps_vault_prefix: "homelab-apps-"
+op_cluster_items:
+  - "cert-manager"
+  - "ceph-csi"
 
 # Service-account auth needs op >= 2.18.0. Below it, `op` ignores
 # OP_SERVICE_ACCOUNT_TOKEN and falls back to an interactive session, which in a

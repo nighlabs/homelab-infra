@@ -102,13 +102,18 @@
       # list is; this assert only catches the two cases we can see from here.
 
     # --- The cluster-side values: present yet? -------------------------------
-    # Deliberately NOT asserts. On a from-scratch run these five secrets CANNOT
+    # Deliberately NOT asserts. On a from-scratch run these secrets CANNOT
     # exist yet — ceph-k8s-keys.sh is what produces them. Failing here would
     # make the play impossible to run the first time, which is the only time it
     # is strictly required.
     - name: Check whether the cluster-side secrets exist yet
       vars:
-        expected: [ceph_mons, ceph_fsid, ceph_k8s_rbd_key, ceph_k8s_cephfs_key]
+        # The two cephx KEYS are not checked here: they live in each cluster's
+        # homelab-platform-<cluster> vault (ADR-0038), which this play does not
+        # read — opting in would make the FIRST run impossible, since the items
+        # cannot exist before ceph-k8s-keys.sh has printed the keys.
+        # bootstrap-cluster.yml's loader refuses loudly if they're missing.
+        expected: [ceph_mons, ceph_fsid]
         # `secret_names` is already the sorted name list (ADR-0033) — no
         # `.keys() | list` over the values dict, and this task never sees a
         # secret value.
@@ -120,8 +125,9 @@
           — this looks like a re-render, not a first run.
           {% else %}
           NOTE: {{ missing | join(', ') }} not in the store yet. Expected on a FIRST
-          run: ceph-k8s-keys.sh is what produces them. Run the scripts, store
-          the values under those names, then bootstrap-cluster.yml can seed them.
+          run: ceph-k8s-keys.sh is what produces them (and the two cephx keys,
+          which go to homelab-platform-<cluster> instead). Run the scripts,
+          store the values as it says, then bootstrap-cluster.yml can seed them.
           {% endif %}
 
     - name: Assert the mon addresses are on the Ceph public network

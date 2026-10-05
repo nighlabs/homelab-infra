@@ -29,9 +29,10 @@ spec:
   # Topology blinding (gitops/CLAUDE.md): the manifests under ./gitops/infrastructure
   # carry ${...} placeholders — ${bgp_peer_ip}, ${bgp_peer_asn}, ${cluster_asn},
   # ${lb_range}, ${k3s_api_ip} — and this is what fills them in. The Secret is
-  # Ansible-seeded by bootstrap-cluster.yml (tier 2: needed before ESO exists,
-  # and it configures the very LoadBalancer IP that ESO's dependency chain waits
-  # on — that cycle is deliberate, see the root CLAUDE.md).
+  # Ansible-seeded by bootstrap-cluster.yml, permanently: a Secret produced by a
+  # controller INSIDE this tier (ESO) can never be a substitution source FOR it
+  # — one pass, no intra-tier ordering — and Calico is primed from the same
+  # values before Flux exists (root CLAUDE.md, ADR-0021).
   #
   # ⚠ A missing key substitutes to the EMPTY STRING and reconciles as HEALTHY.
   # The only thing that turns that into a failure is the kustomize-controller
