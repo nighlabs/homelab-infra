@@ -67,7 +67,27 @@ before:
    `reconcile.external-secrets.io/data-hash`. That's harmless; Ansible's apply
    leaves them, because it never sets them.
 
-**Still owed:** a rotation round-trip via `force-sync`; a deliberately broken
+**Rotation round-trip: verified, Cloudflare token.** The token was *rolled*
+in the Cloudflare console. Rolling invalidates the old value at once, so the
+cluster held a dead token until the sync. Then the new value went into
+`homelab-platform-testnode/cert-manager` only.
+
+| Step | Result |
+|---|---|
+| `force-sync` annotation | Secret updated in ~1 s: value sha256 `9e7a5cf3…` → `c66af4a7…`, new ESO data-hash, still one key, no ownerReference |
+| Secret == 1Password | sha256 of the Secret matches sha256 of `op read` on the field (hashes only, never values) |
+| Token live at Cloudflare | `GET /zones` succeeds (1 zone). `/user/tokens/verify` fails, the known account-owned-token quirk (`SECRETS.md` §2b) |
+| Wildcard re-issue | revision 2, new serial, **but proves nothing**: the order's authorization was `initialState: valid`, reused from 2026-09-14, so no DNS-01 ran |
+| Throwaway Certificate for a never-validated hostname | fresh Challenge → *Presented* (TXT written with the new token) → *DomainVerified* → Ready in ~77 s. TXT record cleaned up; Certificate and Secret deleted |
+
+⚠ **Lesson: re-issuing a certificate does not test a DNS-01 credential**
+while Let's Encrypt still holds a valid authorization for that name. The
+order completes from the cached authorization, in seconds, without
+touching DNS. To test the token, issue for a name that has never been
+validated (and accept that it appears in CT logs). Check the order's
+`authorizations[].initialState`: `valid` means nothing was solved.
+
+**Still owed:** a deliberately broken
 remote ref to measure the real retry cadence (expected ~16.7 min at the cap;
 faster means status events bypass the backoff); a deliberately wrong token
 to see the grant assert fire; and the from-scratch `site.yml` that proves

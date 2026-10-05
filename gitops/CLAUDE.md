@@ -298,6 +298,12 @@ Calico CRs, so they're plain manifests — they can't go through `valuesFrom`.
   `userID`.
 - **Rotation:** edit the field in 1Password, then
   `kubectl -n <ns> annotate externalsecret <name> force-sync=$(date +%s) --overwrite`.
+  The Secret updates within seconds (verified with the Cloudflare token,
+  worklog 2026-10-05). ⚠ To prove a rotated DNS-01 token *works*, don't
+  re-issue an existing certificate: Let's Encrypt reuses a still-valid
+  authorization and no challenge runs (the order shows
+  `initialState: valid`). Issue a throwaway Certificate for a never-validated
+  hostname instead, then delete it.
   The platform store has no provider `cache:` on purpose, since a cache would
   answer that force-sync from memory.
 - ⚠ **Rate limit is the design constraint**: 1,000 requests/24h per *account*
